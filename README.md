@@ -56,16 +56,19 @@ baseline so this first board gate does not depend on unverified hardware.
 
 The Tang32 core also runs a first terrain renderer, `firmware/terrain/`. The
 user's own Land 1 is converted on the PC by `tools/convert_land.py` into a
-188 KB file under `build/land/`. The converter reads the `.lnd` format as
+142 KB file under `build/land/`. The converter reads the `.lnd` format as
 openblack does and gives each vertex the daylight colour openblack's terrain
 shader would give it, from the cell's materials, noise, bump map and
-luminosity. It averages each triangle's colour and fits the results to 239
-palette entries. The AE350 receives the file over the loader, orbits the
-island once over 600 frames, and draws flat-coloured triangles back to front
-into the 320 by 180 indexed framebuffers in integer arithmetic. Every
-triangle passes through a single `submit()` call, which is where a fabric
-rasterizer will take over. The same source builds for the PC as
-`terrain_host`, so the board's frame CRC can be checked against it.
+luminosity, then fits those vertex colours to 239 palette entries. The AE350
+receives the file over the loader, orbits the island once over 600 frames,
+and draws shaded triangles back to front into the 320 by 180 indexed
+framebuffers in integer arithmetic. Each pixel takes the palette entry
+nearest the point of its triangle's colour plane that its own weights give,
+those weights quantised to quarters, which is what the fabric can do in a
+clock and what `tc_soft` does to the bit. Every triangle passes through a
+single `submit()` call, which is where the fabric rasterizer takes over. The
+same source builds for the PC as `terrain_host`, so the board's frame CRC can
+be checked against it.
 
     bash tools/build_tang32.sh
     bash tools/test_tang32_raster.sh        # the rasterizer in simulation
@@ -74,7 +77,7 @@ rasterizer will take over. The same source builds for the PC as
 
 A run can be driven instead of scripted. The camera belongs to the program
 once something moves it, and a run's mouse reports ride in the land file's
-tail, where the program finds them after the TCL1 header says where the land
+tail, where the program finds them after the TCL2 header says where the land
 ends. `tools/tang_input.py` writes such a sequence, and `TINYCREATURE_INPUT`
 makes the runner append it and hand the same reports to the PC twin, so the
 board and the PC must draw the same frames.
@@ -116,7 +119,7 @@ the same land CRC, triangle and pixel means and frame CRC as the PC. Set
 game's data and is never committed.
 
 The accepted board run drew all 600 frames identically to the PC, frame CRC
-`4a893c8b` from land CRC `ed38589d`. It drew a mean 20,085 triangles and
+`da75b4c1` from land CRC `c3794636`. It drew a mean 20,085 triangles and
 filled 33,072 pixels per frame, took a mean 30.3 ms and at most 33.5 ms to
 draw a frame on the AE350's software path, and so showed most frames in two
 vertical blanks and the rest in three, with zero late line fetches. That draw
@@ -128,7 +131,15 @@ time is the CPU baseline the fabric renderer has to beat.
 bus window. It takes `ROWS` and `TRI` commands through a 512-word FIFO, sets
 up each triangle's three edge functions with a radix-4 sequential multiplier,
 and fills the pixels whose centres all three functions place inside, one a
-clock over the clamped bounding box. It draws into two 320 by 180 frame
+clock over the clamped bounding box. A `TRI` word carries its three corners'
+palette entries, one byte each, and each filled pixel is shaded between them:
+the edge functions give the pixel's weights, quantised to quarters by a
+handful of compares instead of a divide, and the mix is done in the five bits
+a channel the game's materials carry, which is what keeps the command four
+words wide. The colour that comes out is looked up in a 32 KB table the
+program loads, entry by entry, which holds the land's nearest entry to each
+of those 32768 colours, and the palette itself is 256 entries in the same five
+bits. It draws into two 320 by 180 frame
 buffers of its own in single-clock block RAM, which the video unit shows
 through the same line-fetch handshake as the SDRAM, and the CPU reads a buffer
 back through two registers, which is also where the unit starts and reports a
@@ -139,11 +150,20 @@ byte for byte, through the read-back registers and the line fetch, and checks
 the unit's frame checksum against the same value the C computes.
 
 On the board the rasterizer drew all 600 frames as the PC model did, frame
-CRC `4a893c8b` from 20,085 triangles and 33,072 pixels a frame, with zero
-late line fetches. It was idle by the time each frame had been sent, so the
-CPU sets the pace: a mean 27.7 ms to send a frame and at most 33.0 ms,
+CRC `da75b4c1` from 20,085 triangles and 33,072 pixels a frame, with zero
+late line fetches. It is idle by the time each frame has been sent, so the
+CPU sets the pace: a mean 29.4 ms to send a frame and at most 35.2 ms,
 against 30.3 ms and 33.5 ms for the same frames filled in software
-(`terrain-soft`). Three seconds of the run's twenty-five were not drawing at
+(`terrain-soft`). Shading every pixel between its triangle's three corner
+colours, rather than filling it with their mean, costs about 1.6 ms a frame
+and the worst frame 2.2 ms: the fill takes two clocks a pixel instead of one,
+each triangle walks the palette before it starts, and the CPU waits on a
+fuller FIFO more often. The mean period is 36.7 ms, about 27 frames a second,
+where the unshaded fill held 30. The mesh averages under two screen pixels a
+triangle at the default orbit, so most of that interpolation is finer than the
+display can show; the user judged the look on the board, close in where it
+tells, and accepted the frame drop. Three seconds of the run's twenty-five
+were not drawing at
 all: reading each frame's buffer back over the bus to check it cost about 5 ms
 a frame, an eighth of the period, so the rasterizer now folds a frame's buffer
 into a CRC-32 itself, in address order and seeded with the state the run has

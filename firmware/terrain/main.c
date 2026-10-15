@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// TinyCreature's terrain run on the Tang32 core: asks for a TCL1 land file
+// TinyCreature's terrain run on the Tang32 core: asks for a TCL2 land file
 // (tools/convert_land.py) with
 //   TinyNES WANT <address> <bytes>
 // and draws FRAMES frames of one orbit of the island, flipping each at a
@@ -56,6 +56,8 @@
 #define RASTER_RB_ADDR TN_REG(0x18020)
 #define RASTER_RB_DATA TN_REG(0x18024)
 #define RASTER_NONZERO TN_REG(0x18028)
+#define RASTER_PAL     TN_REG(0x1802c)
+#define RASTER_LUT     TN_REG(0x18030)
 #define RASTER_ID_VALUE 0x54435231u /* "TCR1" */
 #define RASTER_SHOW   0x1u
 #define RASTER_TARGET 0x2u
@@ -240,13 +242,26 @@ static void fabric_rows(void *ctx, uint32_t first, uint32_t end, uint8_t colour)
 	RASTER_FIFO = 2u << 28 | end << 16 | first << 8 | colour;
 }
 
-static void fabric_triangle(void *ctx, const int32_t *x, const int32_t *y, uint8_t colour)
+static void fabric_triangle(void *ctx, const int32_t *x, const int32_t *y,
+			    uint32_t colours)
 {
 	(void)ctx;
-	RASTER_FIFO = 1u << 28 | colour;
+	RASTER_FIFO = 1u << 28 | colours;
 	RASTER_FIFO = (uint32_t)(uint16_t)y[0] << 16 | (uint16_t)x[0];
 	RASTER_FIFO = (uint32_t)(uint16_t)y[1] << 16 | (uint16_t)x[1];
 	RASTER_FIFO = (uint32_t)(uint16_t)y[2] << 16 | (uint16_t)x[2];
+}
+
+// Give the fabric the shading tables: the palette in five bits a channel and
+// the table from a colour they make back to a land entry. This happens once,
+// before the first frame, and about a millisecond of a run. It is the same
+// arithmetic the fill does, on a program that would otherwise not need it.
+static void fabric_tables(const struct tc_shade *shade)
+{
+	for (unsigned i = 0; i < TC_PAL5_ENTRIES; i++)
+		RASTER_PAL = (uint32_t)shade->pal5[i] << 16 | i;
+	for (unsigned i = 0; i < TC_LUT_BYTES; i++)
+		RASTER_LUT = (uint32_t)shade->lut[i] << 24 | i;
 }
 
 int main(void)
@@ -261,12 +276,12 @@ int main(void)
 		RASTER_CTRL = 0; // show the SDRAM buffers
 	uint32_t bytes;
 	const uint8_t *file = receive(&bytes);
-	/* The file is a TCL1 land, and a run's recorded mouse reports follow it,
+	/* The file is a TCL2 land, and a run's recorded mouse reports follow it,
 	 * six bytes each. The header's body length says where the land ends, so
 	 * the land's own check and CRC see the land alone. */
 	uint32_t land_bytes = 0;
 	if (bytes >= 32u && file[0] == 'T' && file[1] == 'C' && file[2] == 'L' &&
-	    file[3] == '1')
+	    file[3] == '2')
 		land_bytes = 32u + ((uint32_t)file[16] | (uint32_t)file[17] << 8 |
 				    (uint32_t)file[18] << 16 |
 				    (uint32_t)file[19] << 24);
@@ -285,11 +300,14 @@ int main(void)
 	void *work = malloc(tc_work_bytes(&land));
 	if (!work)
 		fail("MEMORY");
-	tc_init(&land, work);
+	struct tc_shade shade = tc_init(&land, work);
 	for (unsigned i = 0; i < TN_VIDEO_PALETTE_SIZE; i++)
 		TN_VIDEO_PALETTE(i) = tc_palette(&land, i);
+	if (FABRIC)
+		fabric_tables(&shade);
 
-	struct tc_soft soft = {.stride = TN_VIDEO_FB_STRIDE};
+	struct tc_soft soft = {.stride = TN_VIDEO_FB_STRIDE,
+			       .pal5 = shade.pal5, .lut = shade.lut};
 	const struct tc_target target = FABRIC ?
 		(struct tc_target){fabric_rows, fabric_triangle, 0} :
 		(struct tc_target){tc_soft_rows, tc_soft_triangle, &soft};

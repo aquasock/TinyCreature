@@ -4,7 +4,7 @@
 
 One report is six bytes: the frame it belongs to and the mouse's HID boot
 report -- buttons, dx, dy, wheel. A run's whole sequence is appended to the
-TCL1 land file the program asks for with its TinyNES WANT line, and
+TCL2 land file the program asks for with its TinyNES WANT line, and
 terrain_host reads the same file, so the board and the PC draw the same
 frames however the link was paced. The board applies a report at the frame
 it names, so nothing depends on when the bytes arrive.
@@ -67,8 +67,8 @@ def main(argv):
         with open(argv[2], "rb") as f:
             land = f.read()
         data = reports(argv[3])
-        if not land.startswith(b"TCL1"):
-            raise SystemExit(f"{argv[2]} is not a TCL1 land file")
+        if not land.startswith(b"TCL2"):
+            raise SystemExit(f"{argv[2]} is not a TCL2 land file")
         with open(argv[4], "wb") as f:
             f.write(land + data)
         print(f"{argv[4]}: {len(land)} land bytes, {len(data) // 6} reports")

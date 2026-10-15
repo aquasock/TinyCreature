@@ -50,7 +50,7 @@ terrain|terrain-soft)
     mkdir -p "$(dirname "$land")"
     python3 -I "$root/tools/convert_land.py" "$lnd" "$land"
     # A run's recorded mouse input rides in the land file's tail, where the
-    # program looks for it after the TCL1 header says where the land ends;
+    # program looks for it after the TCL2 header says where the land ends;
     # the PC twin is given the same reports on their own.
     loaded="$land"
     input="${TINYCREATURE_INPUT:-}"

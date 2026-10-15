@@ -58,10 +58,26 @@ module raster_tb;
 
     reg [7:0] expect0 [0:57599];
     reg [7:0] expect1 [0:57599];
+    reg [15:0] pal [0:255];
+    reg [7:0] lut [0:32767];
     function automatic [7:0] expected(input integer slot, input integer i);
         expected = slot ? expect1[i] : expect0[i];
     endfunction
     integer tris_sent [0:1];
+
+    // The shading's tables, which the program hands the fabric once: the 256
+    // palette entries in five bits a channel, and the 32768-entry table from
+    // a colour those channels make back to an entry.
+    task automatic load_tables;
+        integer i;
+        begin
+            for (i = 0; i < 256; i = i + 1)
+                write(15'h002c, {pal[i], 16'h0000} | {24'h0, i[7:0]});
+            for (i = 0; i < 32768; i = i + 1)
+                write(15'h0030, {lut[i], 24'h0} | i[14:0]);
+            $display("tables loaded: 256 palette entries, 32768 colours");
+        end
+    endtask
 
     // Push one frame's command words, counting its triangles.
     task automatic push(input [8*256-1:0] path, input integer slot);
@@ -106,23 +122,27 @@ module raster_tb;
     endtask
 
     task automatic check_readback(input integer slot);
-        integer k, bad;
-        reg [31:0] q;
+        integer k, bad, holes;
+        reg [31:0] q, want;
         begin
-            bad = 0;
+            bad = 0; holes = 0;
             write(15'h0020, 0);
             for (k = 0; k < 14400; k = k + 1) begin
+                want = {expected(slot, 4*k+3), expected(slot, 4*k+2),
+                        expected(slot, 4*k+1), expected(slot, 4*k)};
                 read(15'h0024, q);
-                if (q !== {expected(slot, 4*k+3), expected(slot, 4*k+2),
-                           expected(slot, 4*k+1), expected(slot, 4*k)}) begin
-                    if (bad < 4)
-                        $display("FAIL: buffer %0d word %0d read %h", slot, k, q);
+                if (q !== want) begin
+                    if (bad < 6)
+                        $display("FAIL: buffer %0d word %0d got %h want %h", slot, k, q, want);
                     bad = bad + 1;
+                    if (^q === 1'bx)
+                        holes = holes + 1;
                 end
             end
-            if (bad) errors = errors + 1;
-            else $display("buffer %0d: read-back matches terrain_host", slot);
-        end
+            if (bad) begin
+                $display("buffer %0d: %0d of 14400 words differ, %0d of them hold x", slot, bad, holes);
+                errors = errors + 1;
+            end else $display("buffer %0d: read-back matches terrain_host", slot);        end
     endtask
 
     task automatic check_line(input integer slot, input integer line);
@@ -151,7 +171,7 @@ module raster_tb;
         end
     endtask
 
-    reg [8*256-1:0] cmd0, cmd1, fb0, fb1;
+    reg [8*256-1:0] cmd0, cmd1, fb0, fb1, pal_path, lut_path;
     reg [31:0] q, tris0, pixels0, stalls;
 
     // The fabric's frame checksum, against the C the firmware and
@@ -196,8 +216,10 @@ module raster_tb;
     integer want_nz0, want_nz1;
     initial begin
         if (!$value$plusargs("cmd0=%s", cmd0) || !$value$plusargs("cmd1=%s", cmd1) ||
-            !$value$plusargs("fb0=%s", fb0) || !$value$plusargs("fb1=%s", fb1)) begin
-            $display("FAIL: give +cmd0= +cmd1= +fb0= +fb1=");
+            !$value$plusargs("fb0=%s", fb0) || !$value$plusargs("fb1=%s", fb1) ||
+            !$value$plusargs("pal=%s", pal_path) ||
+            !$value$plusargs("lut=%s", lut_path)) begin
+            $display("FAIL: give +cmd0= +cmd1= +fb0= +fb1= +pal= +lut=");
             $finish;
         end
         if (!$value$plusargs("crc0=%h", want_crc0) ||
@@ -209,6 +231,8 @@ module raster_tb;
         end
         $readmemh(fb0, expect0);
         $readmemh(fb1, expect1);
+        $readmemh(pal_path, pal);
+        $readmemh(lut_path, lut);
         repeat (4) @(posedge clk);
         resetn = 1;
 
@@ -216,6 +240,7 @@ module raster_tb;
         if (q != 32'h54435231) begin
             $display("FAIL: ID %h", q); errors = errors + 1;
         end
+        load_tables;
         read(15'h10, tris0);
         write(15'h04, 32'h0);          // draw into buffer 0
         push(cmd0, 0);

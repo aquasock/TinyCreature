@@ -8,22 +8,28 @@ shader would colour it in daylight (src/3D/LandBlock.cpp BuildVertexList,
 assets/shaders/fs_terrain.sc): the cell's country, altitude and noise pick a
 pair of materials blended by the pair's coefficient, scaled by the bump map's
 mean and by clamp(2 * luminosity, 0.5, 1). Each material is reduced to its
-mean colour, each triangle to the mean of its three vertices, and the
-triangles' colours are fitted to TERRAIN_COLOURS palette entries by median
-cut, so the output is deterministic for a given .lnd file.
+mean colour, each *vertex* is given its own colour, and those colours are
+fitted to TERRAIN_COLOURS palette entries by median cut weighted by how many
+drawn triangles use the vertex, so the output is deterministic for a given
+.lnd file. A vertex carries one colour rather than a triangle one mean,
+because the renderer interpolates the three corners of each triangle.
 
-TCL1, little-endian, is a 32-byte header
+TCL2, little-endian, is a 32-byte header
 
-    0  "TCL1"           12  origin x, z (u16 each, island cells)
-    4  version (1)       16  body bytes
+    0  "TCL2"           12  origin x, z (u16 each, island cells)
+    4  version (2)       16  body bytes
     8  cells x, z (u16)  20  CRC-32 of the body
                          24  palette entries, first index (u16 each)
                          28  0
 
 followed by the body: the palette as u32 0x00RRGGBB, the (x + 1) * (z + 1)
-vertex altitudes as u8, row z then column x, and per cell, row-major, a
-flags byte (bit 0 split, bit 1 first triangle drawn, bit 2 second triangle
-drawn) and the two triangles' palette indices. A triangle whose three
+vertex altitudes as u8, row z then column x, the same vertices' palette
+indices as u8 in the same order, and per cell, row-major, a flags byte
+(bit 0 split, bit 1 first triangle drawn, bit 2 second triangle drawn). The
+corner order of a cell's triangles is the one LNDFile.cpp builds and the
+renderer submits: a split cell is (bot-left, top-left, top-right) then
+(bot-left, bot-right, top-right), and an unsplit one (top-left, top-right,
+bot-right) then (top-left, bot-left, bot-right). A triangle whose three
 vertices are all water is not drawn, as openblack discards it. The game's
 data is copyrighted: write the output under build/, never into the
 repository.
@@ -185,7 +191,8 @@ def convert(data):
             water[gz * vx + gx] = 1 if properties & WATER else 0
             colours[gz * vx + gx] = vertex_colour(x, z)
 
-    # Each cell's two triangles, as LandBlock::BuildVertexList splits it.
+    # Each cell's two triangles, as LandBlock::BuildVertexList splits it, as
+    # the three grid vertices it joins.
     triangles = []
     for gz in range(cells_z):
         for gx in range(cells_x):
@@ -200,48 +207,51 @@ def convert(data):
                 ((tl, tr, br), (tl, bl, br))
             out = [split]
             for corners in pair:
-                if all(water[v] for v in corners):
-                    out.append(None)
-                    continue
-                out.append(tuple(
-                    round(sum(colours[v][ch] for v in corners) / 3)
-                    for ch in range(3)))
+                out.append(None if all(water[v] for v in corners) else corners)
             triangles.append(out)
 
-    weighted = {}
-    for t in triangles:
-        for colour in (t or [None])[1:]:
-            if colour is not None:
-                weighted[colour] = weighted.get(colour, 0) + 1
-    palette, index = median_cut(weighted, TERRAIN_COLOURS)
-
-    cell_bytes = bytearray()
+    # How often each vertex is drawn, and so weights the palette: a vertex
+    # gives one colour to the interpolation, but three of the six triangles
+    # around it are seen where it is, and the palette is fitted to what the
+    # screen shows. A vertex no triangle uses still needs an entry for the
+    # array to be complete, so its weight is one.
+    rounded = [tuple(round(c) for c in colours[v]) for v in range(vx * vz)]
+    usage = {}
     drawn = 0
     for t in triangles:
+        for corners in (t or [None])[1:]:
+            if corners is None:
+                continue
+            drawn += 1
+            for v in corners:
+                colour = rounded[v]
+                usage[colour] = usage.get(colour, 0) + 1
+    for colour in rounded:
+        usage.setdefault(colour, 1)
+    palette, index = median_cut(usage, TERRAIN_COLOURS)
+    entry = bytes(FIRST_COLOUR + index[colour] for colour in rounded)
+
+    cell_bytes = bytearray()
+    for t in triangles:
         if t is None:
-            cell_bytes += bytes(3)
+            cell_bytes.append(0)
             continue
         flags = 1 if t[0] else 0
-        pair = []
-        for bit, colour in ((2, t[1]), (4, t[2])):
-            if colour is None:
-                pair.append(0)
-            else:
+        for bit, corners in ((2, t[1]), (4, t[2])):
+            if corners is not None:
                 flags |= bit
-                drawn += 1
-                pair.append(FIRST_COLOUR + index[colour])
-        cell_bytes += bytes([flags] + pair)
+        cell_bytes.append(flags)
 
     body = b"".join(struct.pack("<I", r << 16 | g << 8 | b)
                     for r, g, b in palette)
-    body += bytes(altitudes) + bytes(cell_bytes)
-    header = struct.pack("<4sI4H2I2HI", b"TCL1", 1, cells_x, cells_z,
+    body += bytes(altitudes) + entry + bytes(cell_bytes)
+    header = struct.pack("<4sI4H2I2HI", b"TCL2", 2, cells_x, cells_z,
                          origin_x, origin_z, len(body), zlib.crc32(body),
                          len(palette), FIRST_COLOUR, 0)
     summary = {
         "blocks": len(blocks), "cells": f"{cells_x}x{cells_z}",
         "origin": f"{origin_x},{origin_z}", "triangles": drawn,
-        "colours": len(weighted), "palette": len(palette),
+        "colours": len(usage), "palette": len(palette),
         "bytes": len(header) + len(body),
     }
     return header + body, summary

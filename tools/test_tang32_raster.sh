@@ -33,5 +33,6 @@ iverilog -g2012 -s raster_tb -o "$out/raster_tb" \
     "$root/tests/raster_tb.sv" "$root/fpga/raster.sv"
 vvp -n "$out/raster_tb" +cmd0="$out/f0000.cmd" +cmd1="$out/f0075.cmd" \
     +fb0="$out/f0000.fb" +fb1="$out/f0075.fb" +crc0="$crc0" +crc01="$crc01" \
-    +nz0="$nz0" +nz1="$nz1" | tee "$out/raster_tb.log"
+    +pal="$out/fpal.hex" +lut="$out/flut.hex" +nz0="$nz0" +nz1="$nz1" \
+    | tee "$out/raster_tb.log"
 grep -q '^PASS raster_tb' "$out/raster_tb.log"

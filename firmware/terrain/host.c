@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The terrain renderer on this PC: draws the same frames as the AE350
-// program from the same TCL1 file through tc_soft, the fabric
+// program from the same TCL2 file through tc_soft, the fabric
 // rasterizer's model, and prints the same totals and frame CRC, so a board
 // run can be compared with it. For each chosen frame it writes
 // <prefix><frame>.png, <prefix><frame>.cmd, the rasterizer command words
@@ -32,15 +32,37 @@ static void rows(void *ctx, uint32_t first, uint32_t end, uint8_t colour)
 	tc_soft_rows(ctx, first, end, colour);
 }
 
-static void triangle(void *ctx, const int32_t *x, const int32_t *y, uint8_t colour)
+static void triangle(void *ctx, const int32_t *x, const int32_t *y, uint32_t colours)
 {
 	if (commands) {
-		fprintf(commands, "%08x\n", 1u << 28 | colour);
+		fprintf(commands, "%08x\n", 1u << 28 | colours);
 		for (int k = 0; k < 3; k++)
 			fprintf(commands, "%08x\n",
 				(uint32_t)(uint16_t)y[k] << 16 | (uint16_t)x[k]);
 	}
-	tc_soft_triangle(ctx, x, y, colour);
+	tc_soft_triangle(ctx, x, y, colours);
+}
+
+// What the fabric needs before its first triangle: the palette in the five
+// bits a channel the shading works in, and the table from a colour those
+// channels make back to a land entry. $readmemh reads both in this form.
+static int write_tables(const char *prefix, const struct tc_shade *shade)
+{
+	char path[4096];
+	snprintf(path, sizeof path, "%spal.hex", prefix);
+	FILE *f = fopen(path, "w");
+	if (!f)
+		return -1;
+	for (unsigned i = 0; i < TC_PAL5_ENTRIES; i++)
+		fprintf(f, "%04x\n", shade->pal5[i]);
+	fclose(f);
+	snprintf(path, sizeof path, "%slut.hex", prefix);
+	f = fopen(path, "w");
+	if (!f)
+		return -1;
+	for (unsigned i = 0; i < TC_LUT_BYTES; i++)
+		fprintf(f, "%02x\n", shade->lut[i]);
+	return fclose(f);
 }
 
 static void put32(FILE *f, uint32_t v)
@@ -134,7 +156,7 @@ int main(int argc, char **argv)
 	void *work = malloc(tc_work_bytes(&land));
 	if (!work || !frames)
 		return 1;
-	tc_init(&land, work);
+	struct tc_shade shade = tc_init(&land, work);
 
 	// A recorded input sequence, one report a frame and six bytes each: the
 	// frame it belongs to, the buttons, and the mouse's dx, dy and wheel,
@@ -168,7 +190,8 @@ int main(int argc, char **argv)
 
 	uint32_t crc = 0;
 	uint64_t tris = 0, pixels = 0;
-	struct tc_soft soft = {.fb = &frame[0][0], .stride = TC_WIDTH};
+	struct tc_soft soft = {.fb = &frame[0][0], .stride = TC_WIDTH,
+			       .pal5 = shade.pal5, .lut = shade.lut};
 	const struct tc_target target = {rows, triangle, &soft};
 	for (uint32_t i = 0; i < frames; i++) {
 		int chosen = 0;
@@ -198,6 +221,13 @@ int main(int argc, char **argv)
 		if (chosen) {
 			fclose(commands);
 			commands = NULL;
+			// The tables change with the land, not the frame.
+			static int wrote_tables;
+			if (!wrote_tables && write_tables(argv[3], &shade)) {
+				perror(argv[3]);
+				return 1;
+			}
+			wrote_tables = 1;
 			snprintf(path, sizeof path, "%s%04u.fb", argv[3], (unsigned)i);
 			FILE *fb = fopen(path, "w");
 			if (!fb) {

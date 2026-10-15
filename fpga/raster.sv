@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// TinyCreature's first fabric rasterizer: flat-coloured triangles into two
-// 320x180 indexed frame buffers in block RAM, which the video unit shows
-// through the same line-fetch handshake as the SDRAM (ahb_sdram.sv).
+// TinyCreature's fabric rasterizer: shaded triangles into two 320x180
+// indexed frame buffers in block RAM, which the video unit shows through
+// the same line-fetch handshake as the SDRAM (ahb_sdram.sv).
 //
 // Everything is on the bus clock: block RAM on two clocks reads back wrong
 // in the open flow on this chip (TinyNES TOOL-020), and each store maps to
@@ -28,18 +28,34 @@
 //                so a program reads the result a frame later rather than
 //                waiting for it.
 //   0x28 NONZERO read: how many bytes the last finished scan found not zero
-//   STATUS bit 1 set while a scan is running
+//                STATUS bit 1 is set while a scan is running
+//   0x2c PAL     write: entry << 16 | index, one of the 256 palette entries
+//                in the five bits a channel the shading mixes in
+//   0x30 LUT     write: entry << 24 | colour, one of the 32768 colours those
+//                channels make: the land's nearest entry to that colour
 //
 // Commands:
 //   ROWS  1 word: 2 << 28 | end << 16 | first << 8 | colour, fills rows
 //         first to end - 1
-//   TRI   4 words: 1 << 28 | colour, then y << 16 | x for each corner, as
-//         16-bit two's-complement Q4 screen coordinates
+//   TRI   4 words: 1 << 28 | c2 << 16 | c1 << 8 | c0, then y << 16 | x for
+//         each corner, as 16-bit two's-complement Q4 screen coordinates.
+//         c0, c1 and c2 are the corners' palette entries, one byte each.
 // A triangle fills pixel (i, j) when, at its centre (16i + 8, 16j + 8), all
 // three edge functions F = (by - ay)(px - ax) - (bx - ax)(py - ay) over its
 // edges a to b are >= 0; pixels outside the screen are never visited. The
 // corners must be in the order that makes F >= 0 inside, which for this
 // project is a front face (firmware/terrain/terrain.c, raster_triangle()).
+//
+// A filled pixel takes the colour of the three corners mixed by the pixel's
+// own weights: F1 / S belongs to the first corner, F2 / S to the second and
+// F0 / S to the third, each edge function measuring the corner across from
+// it, and S = F0 + F1 + F2 is the same at every pixel of a triangle. Those
+// weights are quantised to quarters -- a few compares instead of a divide,
+// and a triangle a few pixels across cannot tell the difference -- and the
+// mix is done in the five bits a channel the game's materials carry, which
+// is what tc_soft in terrain.c does to the bit, so the AE350 and a PC draw
+// identical frames. The colour that comes out is looked up in the table the
+// program loaded, which gives the palette entry to write.
 module raster #(
     parameter [31:0] ID_VALUE = 32'h54435231
 ) (
@@ -98,7 +114,8 @@ module raster #(
     wire is_reg = haddr[14:6] == 0;
     wire is_fb = is_reg && !hwrite && reg_index == 9;
     wire ok = word && is_reg &&
-              (hwrite ? reg_index <= 1 || reg_index == 7 || reg_index == 8
+              (hwrite ? (reg_index <= 1 || reg_index >= 7 && reg_index <= 8) ||
+                        reg_index == 11 || reg_index == 12
                       : (reg_index >= 1 && reg_index <= 7) || reg_index == 9 ||
                         reg_index == 10);
     // The CPU's read port request, served when the line fetch leaves it.
@@ -127,6 +144,10 @@ module raster #(
                     show <= hwdata[0]; target <= hwdata[1];
                 end
                 w_ctrl <= 0; hready <= 1;
+            end else if (w_pal) begin
+                w_pal <= 0; hready <= 1;
+            end else if (w_lut) begin
+                w_lut <= 0; hready <= 1;
             end else if (w_crc) begin
                 // One cycle of w_crc is the scan's start pulse.
                 w_crc <= 0; hready <= 1;
@@ -167,6 +188,10 @@ module raster #(
                         hready <= 0; w_fifo <= 1;
                     end else if (hwrite && reg_index == 7) begin
                         hready <= 0; w_crc <= 1;
+                    end else if (hwrite && (reg_index == 11 || reg_index == 12)) begin
+                        hready <= 0;
+                        w_pal <= reg_index == 11;
+                        w_lut <= reg_index == 12;
                     end else if (hwrite) begin
                         hready <= 0; w_ctrl <= 1; w_rb <= reg_index == 8;
                     end
@@ -183,6 +208,9 @@ module raster #(
     assign pop = !cmd_full && !fifo_empty && issued < len;
     reg [3:0] cmd_op = 0;
     reg [7:0] cmd_colour = 0, cmd_first = 0, cmd_end = 0;
+    // A triangle's three corner colours; the first is the byte a ROWS word
+    // also carries, so both commands read the same field.
+    reg [7:0] cmd_c1 = 0, cmd_c2 = 0;
     reg signed [15:0] cmd_x [0:2];
     reg signed [15:0] cmd_y [0:2];
     wire take;
@@ -203,6 +231,7 @@ module raster #(
                     cmd_op <= fifo_q[31:28]; cmd_colour <= fifo_q[7:0];
                     cmd_first <= fifo_q[15:8]; cmd_end <= fifo_q[23:16];
                     if (fifo_q[31:28] == 4'd1) begin
+                        cmd_c1 <= fifo_q[15:8]; cmd_c2 <= fifo_q[23:16];
                         len <= 4; got <= 1;
                     end else begin
                         cmd_full <= 1; got <= 0; issued <= 0; len <= 1;
@@ -221,9 +250,36 @@ module raster #(
     // Before word 0 arrives len is 1, so nothing is popped past a ROWS
     // word; a TRI's three corner words follow once its opcode is seen.
 
+    // ---- Palette and the nearest-colour table, one block RAM each ----
+    // The program loads both before its first frame: the 256 palette entries
+    // in the five bits a channel the shading works in, and the 32768-entry
+    // table from a colour those channels make back to a palette entry. Each
+    // is written straight from the bus in the cycle after its write is
+    // accepted, which is the cycle its data is on the bus, and read by the
+    // palette walk at the start of a triangle and by the fill's own stage.
+    // Both nine bits wide where they can be, the width this chip's video
+    // block RAMs are held to: only the 9-bit modes read back correctly in the
+    // open flow, so the palette is 18 bits and the table 9, not 16 and 8.
+    (* ram_style = "block" *) reg [17:0] palette [0:255];
+    (* ram_style = "block" *) reg [8:0] lut [0:32767];
+    reg [7:0] pal_addr = 0;
+    reg [14:0] lut_addr = 0;
+    reg [17:0] pal_q = 0;
+    reg [8:0] lut_q = 0;
+    // A write and a read in one clock, at different addresses, which is what
+    // maps to block RAM here: the same shape the frame buffers use, and no
+    // reset, so the flow sees a memory rather than a register file.
+    always @(posedge clk) begin
+        if (w_pal) palette[hwdata[7:0]] <= hwdata[31:16];
+        if (w_lut) lut[hwdata[14:0]] <= hwdata[31:24];
+        pal_q <= palette[pal_addr];
+        lut_q <= lut[lut_addr];
+    end
+
     // ---- Engine ----
     localparam S_IDLE = 0, S_ROWS = 1, S_BOX = 2, S_CLAMP = 3, S_LOAD = 4,
-               S_EDGE = 5, S_TRIPLE = 6, S_MUL = 7, S_FIN = 8, S_SCAN = 9;
+               S_EDGE = 5, S_TRIPLE = 6, S_MUL = 7, S_FIN = 8, S_PAL = 9,
+               S_SCAN = 10, S_DRAIN = 11;
     reg [3:0] state = S_IDLE;
     assign take = cmd_full && state == S_IDLE;
     assign busy = !fifo_empty || pop || q_valid || cmd_full || got != 0 ||
@@ -251,6 +307,69 @@ module raster #(
     reg we = 0;
     reg [15:0] waddr = 0;
     reg [7:0] wdata = 0;
+
+    // ---- The shading's own state ----
+    // S is the sum of the three edge functions, the same at every pixel of a
+    // triangle; two and three times it are the thresholds the weights are
+    // counted against. The corners' colours come from the palette, and the
+    // colour of each pixel the fill visits is registered here with whether
+    // it was covered and where it is, so the table's answer can be written a
+    // cycle later without stopping the scan.
+    reg signed [35:0] s_reg = 0, s2_reg = 0, s3_reg = 0;
+    reg [15:0] c0_c = 0, c1_c = 0, c2_c = 0;
+    // The command's three corner colours, taken with its corners: the
+    // assembler gathers the next command while this one draws, so the words
+    // it decoded are gone by the time the palette is read.
+    reg [7:0] c0_e = 0, c1_e = 0, c2_e = 0;
+    reg [2:0] pal_step = 0;
+    reg w_pal = 0, w_lut = 0;
+    reg [14:0] col15 = 0;
+    reg we1_r = 0;
+    reg [15:0] a1_r = 0;
+    reg [1:0] drain = 0;
+    // The fill takes two clocks a pixel: the first works out this pixel's
+    // weights and whether it is covered, the second mixes its colour from the
+    // registered weights. One clock would carry a 36-bit compare chain and
+    // the mix in a single path, which the bus clock does not hold.
+    reg phase = 0;
+    reg [1:0] aw_r = 0, bw_r = 0;
+    reg covered_r = 0;
+    reg [15:0] addr_r = 0;
+    reg last_p = 0;
+    wire [4:0] r0 = c0_c[14:10], g0 = c0_c[9:5], b0 = c0_c[4:0];
+    wire [4:0] r1 = c1_c[14:10], g1 = c1_c[9:5], b1 = c1_c[4:0];
+    wire [4:0] r2 = c2_c[14:10], g2 = c2_c[9:5], b2 = c2_c[4:0];
+    // The weights, in quarters: a triangle of no area has S zero, so every
+    // threshold would pass and its corners would be asked for a colour the
+    // mix cannot give, so its first corner colours it instead. The weight of
+    // the second corner is F2 / S and of the third F0 / S, each edge function
+    // measuring the corner across from it.
+    wire signed [35:0] f2 = e[2] <<< 2;
+    wire signed [35:0] f0s = e[0] <<< 2;
+    wire [1:0] aw = s_reg > 0 ? ({1'b0, f2 >= s_reg} + {1'b0, f2 >= s2_reg} +
+                                 {1'b0, f2 >= s3_reg}) : 2'd0;
+    wire [1:0] bw = s_reg > 0 ? ({1'b0, f0s >= s_reg} + {1'b0, f0s >= s2_reg} +
+                                 {1'b0, f0s >= s3_reg}) : 2'd0;
+    // The mix reads the weights the first phase registered, so nothing here
+    // waits on an edge function.
+    wire signed [3:0] aws = $signed({2'b0, aw_r});
+    wire signed [3:0] bws = $signed({2'b0, bw_r});
+    wire signed [8:0] dr1 = $signed({4'b0, r1}) - $signed({4'b0, r0});
+    wire signed [8:0] dg1 = $signed({4'b0, g1}) - $signed({4'b0, g0});
+    wire signed [8:0] db1 = $signed({4'b0, b1}) - $signed({4'b0, b0});
+    wire signed [8:0] dr2 = $signed({4'b0, r2}) - $signed({4'b0, r0});
+    wire signed [8:0] dg2 = $signed({4'b0, g2}) - $signed({4'b0, g0});
+    wire signed [8:0] db2 = $signed({4'b0, b2}) - $signed({4'b0, b0});
+    wire signed [12:0] mr = (dr1 * aws + dr2 * bws + 13'sd2) >>> 2;
+    wire signed [12:0] mg = (dg1 * aws + dg2 * bws + 13'sd2) >>> 2;
+    wire signed [12:0] mb = (db1 * aws + db2 * bws + 13'sd2) >>> 2;
+    wire signed [12:0] vr = $signed({7'b0, r0}) + mr;
+    wire signed [12:0] vg = $signed({7'b0, g0}) + mg;
+    wire signed [12:0] vb = $signed({7'b0, b0}) + mb;
+    wire [4:0] outr = vr[4:0];
+    wire [4:0] outg = vg[4:0];
+    wire [4:0] outb = vb[4:0];
+    wire [14:0] mixed = {outr, outg, outb};
 
     // Bounding box of the corners, in pixel centres, clamped to the screen,
     // over three cycles (S_BOX, S_CLAMP, S_LOAD) to keep each short.
@@ -292,7 +411,8 @@ module raster #(
     integer k;
     always @(posedge clk or negedge resetn) begin
         if (!resetn) begin
-            state <= S_IDLE; we <= 0; tris <= 0; pixels <= 0;
+            state <= S_IDLE; we <= 0; tris <= 0; pixels <= 0; we1_r <= 0;
+            phase <= 0; last_p <= 0;
         end else begin
             we <= 0;
             case (state)
@@ -303,6 +423,9 @@ module raster #(
                         for (k = 0; k < 3; k = k + 1) begin
                             vx[k] <= cmd_x[k]; vy[k] <= cmd_y[k];
                         end
+                        c0_e <= cmd_colour;
+                        c1_e <= cmd_c1;
+                        c2_e <= cmd_c2;
                         tris <= tris + 1'b1;
                         state <= S_BOX;
                     end else if (cmd_op == 4'd2 && cmd_first < cmd_end &&
@@ -378,30 +501,96 @@ module raster #(
                     e[k] <= acc_x[k] - acc_y[k];
                     e_row[k] <= acc_x[k] - acc_y[k];
                 end
-                state <= S_SCAN;
+                // S and its multiples, the thresholds the weights are
+                // counted against, from the first pixel's edge functions.
+                s_reg <= acc_x[0] - acc_y[0] + acc_x[1] - acc_y[1] +
+                         acc_x[2] - acc_y[2];
+                s2_reg <= (acc_x[0] - acc_y[0] + acc_x[1] - acc_y[1] +
+                           acc_x[2] - acc_y[2]) <<< 1;
+                s3_reg <= ((acc_x[0] - acc_y[0] + acc_x[1] - acc_y[1] +
+                            acc_x[2] - acc_y[2]) <<< 1) +
+                          (acc_x[0] - acc_y[0] + acc_x[1] - acc_y[1] +
+                           acc_x[2] - acc_y[2]);
+                pal_step <= 0;
+                state <= S_PAL;
+            end
+            S_PAL: begin
+                // The three corners' palette entries, in the five bits a
+                // channel. A read answers the cycle after it is asked for, so
+                // the address of the one after is given as each arrives.
+                case (pal_step)
+                    3'd0: pal_addr <= c0_e;
+                    3'd1: pal_addr <= c1_e;
+                    3'd2: begin pal_addr <= c2_e; c0_c <= pal_q[15:0]; end
+                    3'd3: c1_c <= pal_q[15:0];
+                    default: begin
+                        c2_c <= pal_q[15:0];
+                        we1_r <= 0;
+                        phase <= 0;
+                        last_p <= 0;
+                        state <= S_SCAN;
+                    end
+                endcase
+                pal_step <= pal_step + 1'b1;
             end
             S_SCAN: begin
-                if (covered) begin
-                    we <= 1; waddr <= addr; wdata <= colour;
-                    pixels <= pixels + 1'b1;
+                // Two clocks a pixel. The first takes this pixel's weights
+                // and its coverage and address, and steps the edge functions
+                // on; the second mixes its colour, from the weights just
+                // registered, and gives that colour to the table. A pixel's
+                // entry comes back a clock later, so the pixel written here
+                // is the one before: its colour was addressed in the last
+                // cycle, and it is written once, in the first phase.
+                if (phase && we1_r) begin
+                    we <= 1; waddr <= a1_r; wdata <= lut_q[7:0];
                 end
-                if (i == i1) begin
-                    if (j == j1)
-                        state <= S_IDLE;
-                    else begin
-                        j <= j + 1'b1; i <= i0;
-                        row_addr <= row_addr + 16'd320;
-                        addr <= row_addr + 16'd320;
-                        for (k = 0; k < 3; k = k + 1) begin
-                            e_row[k] <= e_row[k] + step_y[k];
-                            e[k] <= e_row[k] + step_y[k];
+                if (!phase) begin
+                    aw_r <= aw;
+                    bw_r <= bw;
+                    covered_r <= covered;
+                    addr_r <= addr;
+                    if (covered)
+                        pixels <= pixels + 1'b1;
+                    if (i == i1) begin
+                        if (j == j1)
+                            last_p <= 1;
+                        else begin
+                            j <= j + 1'b1; i <= i0;
+                            row_addr <= row_addr + 16'd320;
+                            addr <= row_addr + 16'd320;
+                            for (k = 0; k < 3; k = k + 1) begin
+                                e_row[k] <= e_row[k] + step_y[k];
+                                e[k] <= e_row[k] + step_y[k];
+                            end
                         end
+                    end else begin
+                        i <= i + 1'b1; addr <= addr + 1'b1;
+                        for (k = 0; k < 3; k = k + 1)
+                            e[k] <= e[k] + step_x[k];
                     end
                 end else begin
-                    i <= i + 1'b1; addr <= addr + 1'b1;
-                    for (k = 0; k < 3; k = k + 1)
-                        e[k] <= e[k] + step_x[k];
+                    lut_addr <= mixed;
+                    we1_r <= covered_r;
+                    a1_r <= addr_r;
+                    if (last_p) begin
+                        state <= S_DRAIN;
+                        drain <= 2'd2;
+                    end
                 end
+                phase <= ~phase;
+            end
+            S_DRAIN: begin
+                // The last pixel's entry arrives a clock after its colour
+                // went to the table: the first of these two clocks lets it
+                // arrive, the second writes it.
+                if (drain <= 1 && we1_r) begin
+                    we <= 1; waddr <= a1_r; wdata <= lut_q[7:0];
+                end
+                if (drain <= 1) begin
+                    we1_r <= 0;
+                    state <= S_IDLE;
+                end else
+                    drain <= drain - 1'b1;
             end
             default: state <= S_IDLE;
             endcase

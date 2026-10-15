@@ -41,6 +41,10 @@ struct vertex {
 
 static const struct tc_land *land;
 static struct vertex *vertices;
+/* The palette in five bits a channel and the table back to an entry,
+ * tc_init's own, in the working memory beside the vertices. */
+static const uint16_t *shade_pal5;
+static const uint8_t *shade_lut;
 static uint8_t *block_low, *block_high, *block_shown;
 static uint32_t verts_x, blocks_x, blocks_z, generation;
 static int32_t cam_x, cam_y, cam_z, sin_yaw, cos_yaw, sin_pitch, cos_pitch;
@@ -174,9 +178,9 @@ uint32_t tc_crc32(uint32_t crc, const uint8_t *data, size_t bytes)
 
 const char *tc_land_open(struct tc_land *out, const uint8_t *file, size_t bytes)
 {
-	if (bytes < 32 || memcmp(file, "TCL1", 4) != 0)
+	if (bytes < 32 || memcmp(file, "TCL2", 4) != 0)
 		return "MAGIC";
-	if (read32(file + 4) != 1)
+	if (read32(file + 4) != 2)
 		return "VERSION";
 	struct tc_land l = {
 		.cells_x = read16(file + 8), .cells_z = read16(file + 10),
@@ -194,7 +198,7 @@ const char *tc_land_open(struct tc_land *out, const uint8_t *file, size_t bytes)
 		return "PALETTE";
 	size_t vertices = (size_t)(l.cells_x + 1) * (l.cells_z + 1);
 	size_t cells = (size_t)l.cells_x * l.cells_z;
-	if (body != 4u * l.colours + vertices + 3 * cells)
+	if (body != 4u * l.colours + 2 * vertices + cells)
 		return "SIZE";
 	// to_camera holds each camera-space difference, and the products it forms
 	// with a Q14 sine or cosine, in 32 bits. This is the grid limit that keeps
@@ -213,7 +217,8 @@ const char *tc_land_open(struct tc_land *out, const uint8_t *file, size_t bytes)
 		return "TOO WIDE";
 	l.palette = (const uint32_t *)(file + 32);
 	l.altitude = file + 32 + 4 * l.colours;
-	l.cells = l.altitude + vertices;
+	l.colour = l.altitude + vertices;
+	l.cells = l.colour + vertices;
 	*out = l;
 	return 0;
 }
@@ -239,11 +244,62 @@ uint32_t tc_palette(const struct tc_land *l, unsigned index)
 	return 0;
 }
 
+// Five bits a channel is what the game's materials carry, B5G5R5, so a colour
+// reduced to them loses nothing the land ever held; the sky's and the sea's
+// own ramps are this renderer's and lose a little.
+static uint32_t to5(uint32_t colour)
+{
+	return (colour >> 19 & 31) << 10 | (colour >> 11 & 31) << 5 |
+	       (colour >> 3 & 31);
+}
+
+void tc_shade_tables(const struct tc_land *l, uint16_t *pal5, uint8_t *lut)
+{
+	for (unsigned i = 0; i < TC_PAL5_ENTRIES; i++)
+		pal5[i] = (uint16_t)to5(tc_palette(l, i));
+	for (uint32_t rgb = 0; rgb < TC_LUT_BYTES; rgb++) {
+		unsigned best = l->first;
+		int32_t best_d = -1;
+		for (unsigned i = l->first; i < l->first + l->colours; i++) {
+			int32_t d = 0;
+			for (int shift = 0; shift < 15; shift += 5) {
+				int32_t a = (int32_t)(rgb >> shift & 31);
+				int32_t b = (int32_t)(pal5[i] >> shift & 31);
+				d += (a - b) * (a - b);
+			}
+			if (best_d < 0 || d < best_d) {
+				best_d = d;
+				best = i;
+			}
+		}
+		lut[rgb] = (uint8_t)best;
+	}
+}
+
+// One pixel's colour: the palette entries the three corners name, mixed with
+// the weights a and b out of four of the second and third corners -- the
+// first corner's being what is left -- and then the land's nearest entry to
+// the result. fpga/raster.sv's fill computes this with the same numbers, a
+// compare and an add at a time.
+static uint8_t shade(const uint16_t *pal5, const uint8_t *lut,
+		     uint32_t colours, int32_t a, int32_t b)
+{
+	uint32_t out = 0;
+	for (int shift = 0; shift < 15; shift += 5) {
+		int32_t c0 = (int32_t)(pal5[colours & 0xff] >> shift & 31);
+		int32_t c1 = (int32_t)(pal5[colours >> 8 & 0xff] >> shift & 31);
+		int32_t c2 = (int32_t)(pal5[colours >> 16 & 0xff] >> shift & 31);
+		int32_t mix = c0 + (((c1 - c0) * a + (c2 - c0) * b + 2) >> 2);
+		out |= (uint32_t)(mix & 31) << shift;
+	}
+	return lut[out];
+}
+
 size_t tc_work_bytes(const struct tc_land *l)
 {
 	size_t blocks = (size_t)(l->cells_x / BLOCK) * (l->cells_z / BLOCK);
 	return (size_t)(l->cells_x + 1) * (l->cells_z + 1) * sizeof(struct vertex) +
-	       3 * blocks;
+	       3 * blocks + TC_PAL5_BYTES + TC_LUT_BYTES;
 }
 
 static int32_t height(uint32_t altitude)
@@ -256,7 +312,7 @@ static int32_t height(uint32_t altitude)
 static int32_t isin(uint32_t a);
 static int32_t icos(uint32_t a);
 
-void tc_init(const struct tc_land *l, void *work)
+struct tc_shade tc_init(const struct tc_land *l, void *work)
 {
 	land = l;
 	verts_x = l->cells_x + 1u;
@@ -286,6 +342,13 @@ void tc_init(const struct tc_land *l, void *work)
 	block_low = (uint8_t *)(vertices + count);
 	block_high = block_low + blocks_x * blocks_z;
 	block_shown = block_high + blocks_x * blocks_z;
+	// The shading tables, which every fill reads and main.c hands the fabric.
+	uint16_t *pal5 = (uint16_t *)(block_shown + blocks_x * blocks_z);
+	uint8_t *lut = (uint8_t *)pal5 + TC_PAL5_BYTES;
+	tc_shade_tables(l, pal5, lut);
+	shade_pal5 = pal5;
+	shade_lut = lut;
+	const struct tc_shade shade = {pal5, lut};
 	for (uint32_t bz = 0; bz < blocks_z; bz++)
 		for (uint32_t bx = 0; bx < blocks_x; bx++) {
 			uint8_t low = 255, high = 0, any = 0;
@@ -295,7 +358,7 @@ void tc_init(const struct tc_land *l, void *work)
 					low = a < low ? a : low;
 					high = a > high ? a : high;
 					if (z < (bz + 1) * BLOCK && x < (bx + 1) * BLOCK)
-						any |= l->cells[3 * (z * l->cells_x + x)] & 6;
+						any |= l->cells[z * l->cells_x + x] & 6;
 				}
 			uint32_t b = bz * blocks_x + bx;
 			block_low[b] = low;
@@ -303,6 +366,7 @@ void tc_init(const struct tc_land *l, void *work)
 			// An empty block stays culled for good.
 			block_shown[b] = any ? 1 : 0xff;
 		}
+	return shade;
 }
 
 // sin(a), Q14, a in 1/65536 of a turn: a seventh-order odd polynomial on
@@ -398,8 +462,13 @@ void tc_soft_rows(void *ctx, uint32_t first, uint32_t end, uint8_t colour)
 // fpga/raster.sv's rule: pixel (i, j) of the screen is filled when, at its
 // centre (16 i + 8, 16 j + 8), F = (by - ay)(px - ax) - (bx - ax)(py - ay)
 // is >= 0 for each edge a to b; only the bounding box of the corners'
-// pixel centres, clamped to the screen, is visited.
-void tc_soft_triangle(void *ctx, const int32_t *x, const int32_t *y, uint8_t colour)
+// pixel centres, clamped to the screen, is visited. A filled pixel's colour
+// is shade()'s, and S = F0 + F1 + F2 is the same at every pixel of a
+// triangle, being the sum of three affine functions whose slopes cancel.
+// The weight of the first corner is F1 / S, of the second F2 / S and of the
+// third F0 / S, each edge function measuring the far corner from its edge.
+void tc_soft_triangle(void *ctx, const int32_t *x, const int32_t *y,
+		      uint32_t colours)
 {
 	struct tc_soft *soft = ctx;
 	soft->triangles++;
@@ -426,12 +495,24 @@ void tc_soft_triangle(void *ctx, const int32_t *x, const int32_t *y, uint8_t col
 		step_x[k] = (int64_t)dy * 16;
 		step_y[k] = -(int64_t)dx * 16;
 	}
+	int64_t s = row[0] + row[1] + row[2];
+	int64_t s2 = s << 1, s3 = s + s2;
 	for (int32_t j = j0; j <= j1; j++) {
 		uint8_t *line = soft->fb + (uint32_t)j * soft->stride;
 		int64_t e0 = row[0], e1 = row[1], e2 = row[2];
 		for (int32_t i = i0; i <= i1; i++) {
 			if ((e0 | e1 | e2) >= 0) {
-				line[i] = colour;
+				int64_t f0 = e0 << 2, f2 = e2 << 2;
+				/* A triangle of no area has F all zero, so all
+				 * three thresholds pass; its one corner colours
+				 * it instead. Inside a real one, F0 + F1 <= S, so
+				 * no more than four quarters are ever asked for.*/
+				int32_t a = 0, b = 0;
+				if (s > 0) {
+					a = (f2 >= s) + (f2 >= s2) + (f2 >= s3);
+					b = (f0 >= s) + (f0 >= s2) + (f0 >= s3);
+				}
+				line[i] = shade(soft->pal5, soft->lut, colours, a, b);
 				soft->pixels++;
 			}
 			e0 += step_x[0];
@@ -445,10 +526,10 @@ void tc_soft_triangle(void *ctx, const int32_t *x, const int32_t *y, uint8_t col
 
 // Clip a convex polygon of n Q4 screen points, in place, to within GUARD of
 // the origin on both axes; returns the points left.
-static int clip_guard(int32_t *x, int32_t *y, int n)
+static int clip_guard(int32_t *x, int32_t *y, int32_t *wa, int32_t *wb, int n)
 {
 	for (int side = 0; side < 4 && n; side++) {
-		int32_t cx[9], cy[9];
+		int32_t cx[9], cy[9], ca[9], cb[9];
 		int m = 0;
 		int32_t sign = side & 2 ? -1 : 1;
 		for (int i = 0; i < n; i++) {
@@ -458,12 +539,20 @@ static int clip_guard(int32_t *x, int32_t *y, int n)
 			int64_t vq = sign * (int64_t)(side & 1 ? y[j] : x[j]);
 			if (vp <= GUARD) {
 				cx[m] = x[i];
-				cy[m++] = y[i];
+				cy[m] = y[i];
+				ca[m] = wa[i];
+				cb[m++] = wb[i];
 			}
 			if ((vp <= GUARD) != (vq <= GUARD)) {
 				int64_t num = GUARD - vp, den = vq - vp;
 				cx[m] = x[i] + (int32_t)((int64_t)(x[j] - x[i]) * num / den);
 				cy[m] = y[i] + (int32_t)((int64_t)(y[j] - y[i]) * num / den);
+				// A cut vertex's colour is the two it cuts mixed at
+				// the same fraction, in the quarters the fill uses.
+				ca[m] = (int32_t)(((int64_t)wa[i] * (den - num) +
+						   (int64_t)wa[j] * num + den / 2) / den);
+				cb[m] = (int32_t)(((int64_t)wb[i] * (den - num) +
+						   (int64_t)wb[j] * num + den / 2) / den);
 				if (side & 1)
 					cy[m] = sign * GUARD;
 				else
@@ -474,6 +563,8 @@ static int clip_guard(int32_t *x, int32_t *y, int n)
 		n = m;
 		memcpy(x, cx, sizeof(int32_t) * (size_t)m);
 		memcpy(y, cy, sizeof(int32_t) * (size_t)m);
+		memcpy(wa, ca, sizeof(int32_t) * (size_t)m);
+		memcpy(wb, cb, sizeof(int32_t) * (size_t)m);
 	}
 	return n;
 }
@@ -482,7 +573,7 @@ static int clip_guard(int32_t *x, int32_t *y, int n)
 // send it if it faces the camera and reaches the screen. Front faces wind
 // clockwise on the screen (y down), which is the order that makes the
 // rasterizer's edge functions >= 0 inside.
-static void emit(const int32_t *x, const int32_t *y, uint8_t colour)
+static void emit(const int32_t *x, const int32_t *y, uint32_t colours)
 {
 	int64_t cross = (int64_t)(x[1] - x[0]) * (y[2] - y[0]) -
 			(int64_t)(y[1] - y[0]) * (x[2] - x[0]);
@@ -501,7 +592,7 @@ static void emit(const int32_t *x, const int32_t *y, uint8_t colour)
 	    x_lo + 7 >= TC_WIDTH * 16 || ((y_lo + 7) >> 4) > ((y_hi - 8) >> 4) ||
 	    y_hi < 8 || y_lo + 7 >= TC_HEIGHT * 16)
 		return;
-	out->triangle(out->ctx, x, y, colour);
+	out->triangle(out->ctx, x, y, colours);
 	counts->triangles++;
 }
 
@@ -510,12 +601,15 @@ static void emit(const int32_t *x, const int32_t *y, uint8_t colour)
 // Recomputes camera space from the grid where it is needed, clips at the
 // near plane, and fans the result.
 static void submit_slow(const struct vertex *a, const struct vertex *b,
-			const struct vertex *c, uint8_t colour)
+			const struct vertex *c, uint32_t colours)
 {
 	const struct vertex *in[3] = {a, b, c};
 	uint32_t state[3];
 	int32_t x[3] = {0, 0, 0}, y[3] = {0, 0, 0}, z[3] = {0, 0, 0};
 	int32_t sx[3] = {0, 0, 0}, sy[3] = {0, 0, 0};
+	// The first corner's colour is what is left after the other two, so a
+	// polygon vertex needs only their two weights, in quarters.
+	int32_t wa[3] = {0, 4, 0}, wb[3] = {0, 0, 4};
 	int behind = 0;
 	for (int i = 0; i < 3; i++) {
 		state[i] = in[i]->stamp & 3u;
@@ -539,19 +633,23 @@ static void submit_slow(const struct vertex *a, const struct vertex *b,
 			if (state[i] == VERT_FRONT)
 				vertex_camera(in[i], &x[i], &y[i], &z[i]);
 	}
-	int32_t px[9], py[9];
+	int32_t px[9], py[9], pa[9], pb[9];
 	int n = 0;
 	if (!behind) {
 		for (int i = 0; i < 3; i++) {
 			px[n] = sx[i];
-			py[n++] = sy[i];
+			py[n] = sy[i];
+			pa[n] = wa[i];
+			pb[n++] = wb[i];
 		}
 	} else {
 		for (int i = 0; i < 3; i++) {
 			int j = (i + 1) % 3;
 			if (z[i] >= NEAR) {
 				px[n] = sx[i];
-				py[n++] = sy[i];
+				py[n] = sy[i];
+				pa[n] = wa[i];
+				pb[n++] = wb[i];
 			}
 			if ((z[i] >= NEAR) != (z[j] >= NEAR)) {
 				int64_t num = NEAR - z[i], den = z[j] - z[i];
@@ -560,19 +658,29 @@ static void submit_slow(const struct vertex *a, const struct vertex *b,
 				int32_t qx, qy;
 				project_xy(cx, cy, NEAR, &qx, &qy);
 				px[n] = qx;
-				py[n++] = qy;
+				py[n] = qy;
+				pa[n] = (int32_t)(((int64_t)wa[i] * (den - num) +
+						   (int64_t)wa[j] * num + den / 2) / den);
+				pb[n] = (int32_t)(((int64_t)wb[i] * (den - num) +
+						   (int64_t)wb[j] * num + den / 2) / den);
+				n++;
 			}
 		}
 	}
 	for (int i = 0; i < n; i++)
 		if (px[i] < -GUARD || px[i] > GUARD || py[i] < -GUARD || py[i] > GUARD) {
-			n = clip_guard(px, py, n);
+			n = clip_guard(px, py, pa, pb, n);
 			break;
 		}
 	for (int k = 1; k + 1 < n; k++) {
 		int32_t tx[3] = {px[0], px[k], px[k + 1]};
 		int32_t ty[3] = {py[0], py[k], py[k + 1]};
-		emit(tx, ty, colour);
+		uint32_t corner[3];
+		const int32_t at[3] = {0, k, k + 1};
+		for (int i = 0; i < 3; i++)
+			corner[i] = shade(shade_pal5, shade_lut, colours,
+					  pa[at[i]], pb[at[i]]);
+		emit(tx, ty, corner[0] | corner[1] << 8 | corner[2] << 16);
 	}
 }
 
@@ -582,7 +690,7 @@ static void submit_slow(const struct vertex *a, const struct vertex *b,
 // straight from the record, with none of the clip machinery's stack; a
 // corner beyond the guard band falls through to submit_slow().
 static void submit(const struct vertex *a, const struct vertex *b,
-		   const struct vertex *c, uint8_t colour)
+		   const struct vertex *c, uint32_t colours)
 {
 	if (!(a->stamp & 3u) && !(b->stamp & 3u) && !(c->stamp & 3u)) {
 		int32_t x[3] = {a->sx, b->sx, c->sx};
@@ -592,11 +700,11 @@ static void submit(const struct vertex *a, const struct vertex *b,
 			if (x[i] < -GUARD || x[i] > GUARD || y[i] < -GUARD || y[i] > GUARD)
 				break;
 		if (i == 3) {
-			emit(x, y, colour);
+			emit(x, y, colours);
 			return;
 		}
 	}
-	submit_slow(a, b, c, colour);
+	submit_slow(a, b, c, colours);
 }
 
 static int outside(int32_t x, int32_t y, int32_t z)
@@ -633,28 +741,40 @@ static int32_t floor_div(int32_t a, int32_t b)
 
 static void draw_cell(uint32_t gx, uint32_t gz)
 {
-	const uint8_t *cell = &land->cells[3 * (gz * land->cells_x + gx)];
+	const uint8_t *cell = &land->cells[gz * land->cells_x + gx];
 	uint8_t flags = cell[0];
 	if (!(flags & 6))
 		return;
 	struct vertex *tl = vertex(gx, gz), *tr = vertex(gx + 1, gz);
 	struct vertex *bl = vertex(gx, gz + 1), *br = vertex(gx + 1, gz + 1);
+	// Each corner carries its own colour, and they are handed over in the
+	// order the corners are, which is the order the fill shades between.
+	uint32_t ctl = land->colour[gz * verts_x + gx];
+	uint32_t ctr = land->colour[gz * verts_x + gx + 1];
+	uint32_t cbl = land->colour[(gz + 1) * verts_x + gx];
+	uint32_t cbr = land->colour[(gz + 1) * verts_x + gx + 1];
 	int32_t px = cam_x - (int32_t)gx * CELL, pz = cam_z - (int32_t)gz * CELL;
 	const struct vertex *t[2][3];
+	uint32_t c[2][3];
 	int far;
 	if (flags & 1) {
 		t[0][0] = bl, t[0][1] = tl, t[0][2] = tr;
 		t[1][0] = bl, t[1][1] = tr, t[1][2] = br;
+		c[0][0] = cbl, c[0][1] = ctl, c[0][2] = ctr;
+		c[1][0] = cbl, c[1][1] = ctr, c[1][2] = cbr;
 		far = px + pz > CELL ? 0 : 1;
 	} else {
 		t[0][0] = tl, t[0][1] = tr, t[0][2] = br;
 		t[1][0] = tl, t[1][1] = br, t[1][2] = bl;
+		c[0][0] = ctl, c[0][1] = ctr, c[0][2] = cbr;
+		c[1][0] = ctl, c[1][1] = cbr, c[1][2] = cbl;
 		far = px < pz ? 0 : 1;
 	}
 	for (int k = 0; k < 2; k++) {
 		int i = k ? 1 - far : far;
 		if (flags & (2 << i))
-			submit(t[i][0], t[i][1], t[i][2], cell[1 + i]);
+			submit(t[i][0], t[i][1], t[i][2],
+			       c[i][0] | c[i][1] << 8 | c[i][2] << 16);
 	}
 }
 
@@ -756,16 +876,17 @@ static void hand_rect(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
 		      uint8_t colour)
 {
 	int32_t x[3], y[3];
+	uint32_t colours = colour * 0x010101u;
 
 	x[0] = x0; y[0] = y0;
 	x[1] = x0; y[1] = y1;
 	x[2] = x1; y[2] = y1;
-	out->triangle(out->ctx, x, y, colour);
+	out->triangle(out->ctx, x, y, colours);
 	counts->triangles++;
 	x[0] = x0; y[0] = y0;
 	x[1] = x1; y[1] = y1;
 	x[2] = x1; y[2] = y0;
-	out->triangle(out->ctx, x, y, colour);
+	out->triangle(out->ctx, x, y, colours);
 	counts->triangles++;
 }
 
