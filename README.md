@@ -8,8 +8,43 @@ renderer built in the FPGA's fabric.
 
 **Status: a stripped openblack landscape playground builds and runs on a PC**
 with the game's files (below). It retains the complete world, renders it at 320
-by 180 in a retro pixel style, and has a 47.2 MiB headless startup peak. Nothing
-runs on the Tang yet.
+by 180 in a retro pixel style, and has a 47.2 MiB headless startup peak. The
+first 32 MiB Tang image builds in the open flow, meets timing, and has passed on
+the board with its animated retro landscape visible over HDMI.
+
+## Tang 32 MiB bring-up
+
+The first target image keeps TinyNES's proven AE350, J9 SDRAM, UART loader and
+720p HDMI foundation, while omitting its NES desk, audio and controller blocks.
+It displays two 320 by 180 indexed framebuffers at exact 4x nearest-neighbour
+scale. The buffers use 256 KiB at the top of SDRAM, leaving 31.75 MiB in the
+application link region.
+
+    bash tools/build_tang32.sh
+    bash tools/test_tang32_video.sh
+    bash tools/run_tang32.sh one-wire
+    # or, with the TinyTang shell on /dev/ttyACM0:
+    bash tools/run_tang32.sh two-wire
+
+The run command loads a ten-second animated retro landscape, flips both
+framebuffers, and requires a TinyCreature TANG32 OK report with zero late
+SDRAM line fetches. Set TINYCREATURE_TANG_UART, TINYTANG_PORT, or TINYTANG_DIR
+when the defaults do not match the local setup.
+
+The accepted board run tested all 32 MiB, uploaded the 47,636-byte application
+at 184.7 KB/s, displayed 600 frames at a 16,664 us mean period, and reported
+zero late line fetches. The user saw the moving 2D landscape and accepted it.
+
+The reproducible build pins TinyNES at
+f5011dd374cfc65f4f17616fec97c903a66b6cc8 and applies
+patches/tinynes-tang32.patch. It expects the same xPack RISC-V GCC, OSS CAD
+Suite, nextpnr fork, and Apicula fork used by TinyNES. The first route at seed
+11 achieved 82.41 MHz on the 75 MHz bus and 100.92 MHz on the 74.25 MHz pixel
+clock.
+
+The later 64 MiB configuration will add the separate J10 SDRAM bus as a second
+32 MiB bank. The current memory map and controller remain the 32 MiB J9
+baseline so this first board gate does not depend on unverified hardware.
 
 ## openblack on a PC
 

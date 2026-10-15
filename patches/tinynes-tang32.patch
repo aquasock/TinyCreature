@@ -1,0 +1,1515 @@
+diff --git a/firmware/apps/video_test/main.c b/firmware/apps/video_test/main.c
+index 33ed7c0..ea52418 100644
+--- a/firmware/apps/video_test/main.c
++++ b/firmware/apps/video_test/main.c
+@@ -1,27 +1,9 @@
+ // SPDX-License-Identifier: MIT
+-//
+-// TinyNES HDMI video test. Loads its own palette and per-line emphasis,
+-// then for FRAMES frames copies a 256x240 test picture into the frame
+-// buffer not being shown, in the SDRAM through the D-cache, draws a moving
+-// 8x8 white square on it, writes the D-cache back, asks for the buffer at
+-// the next vertical blank and waits until it is shown. Reports:
+-//
+-//   TinyNES VIDEO OK FRAMES=<n> PERIOD=<us> COPY=<us> FB=<KB/s> VBL=<n> LATE=<n>
+-//
+-// PERIOD is the mean time per frame (16,667 us at 60 Hz), COPY the mean time
+-// to write a whole frame buffer and write the D-cache back, FB that rate,
+-// VBL the vertical blanks the fabric counted meanwhile and LATE the lines it
+-// showed before their fetch from the SDRAM had finished, which fails the
+-// test. The picture stays up after the program ends. A failed check prints
+-// BAD VIDEO <name> and the program exits with 1.
+-//
+-// The picture, top to bottom inside a white border: eight colour bars, red,
+-// green and blue ramps, then seven strips drawn with emphasis 1 to 7, each
+-// a ramp in its own colour (red, green, yellow, blue, magenta, cyan, white).
++// TinyCreature's first Tang target workload: a 320x180 indexed landscape
++// animated for ten seconds through both SDRAM framebuffers.
+ #include <stdint.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+-#include <string.h>
+ 
+ #include "tinynes.h"
+ 
+@@ -29,163 +11,111 @@
+ #define W TN_VIDEO_WIDTH
+ #define H TN_VIDEO_HEIGHT
+ 
+-static uint32_t picture[W * H / 4];
+-
+ static uint32_t rgb(uint32_t r, uint32_t g, uint32_t b)
+ {
+ 	return r << 16 | g << 8 | b;
+ }
+ 
++static void fail(const char *name)
++{
++	printf("BAD TINYCREATURE %s\n", name);
++	exit(1);
++}
++
+ static void load_palette(void)
+ {
+-	static const uint32_t bars[8] = {
+-		0xffffff, 0xffff00, 0x00ffff, 0x00ff00,
+-		0xff00ff, 0xff0000, 0x0000ff, 0x404040,
+-	};
+-	for (uint32_t i = 0; i < TN_VIDEO_PALETTE_SIZE; i++) {
+-		uint32_t c = 0;
+-		if (i == 1)
+-			c = 0xffffff;
+-		else if (i >= 2 && i < 10)
+-			c = bars[i - 2];
+-		else if (i >= 64 && i < 128)
+-			c = rgb((i - 64) * 4 + 3, 0, 0);
+-		else if (i >= 128 && i < 192)
+-			c = rgb(0, (i - 128) * 4 + 3, 0);
+-		else if (i >= 192 && i < 256)
+-			c = rgb(0, 0, (i - 192) * 4 + 3);
+-		else if (i >= 256) {
+-			uint32_t e = (i - 256) >> 6, v = (i & 63) * 4 + 3;
+-			c = rgb(e & 1 ? v : 0, e & 2 ? v : 0, e & 4 ? v : 0);
+-		}
+-		TN_VIDEO_PALETTE(i) = c;
++	TN_VIDEO_PALETTE(0) = rgb(8, 14, 28);
++	for (uint32_t i = 1; i < 64; i++)
++		TN_VIDEO_PALETTE(i) = rgb(18 + i / 2, 42 + i, 78 + 2 * i);
++	for (uint32_t i = 64; i < 112; i++)
++		TN_VIDEO_PALETTE(i) = rgb(14, 54 + i / 2, 86 + i);
++	for (uint32_t i = 112; i < 176; i++)
++		TN_VIDEO_PALETTE(i) = rgb(18 + i / 3, 42 + i, 18 + i / 4);
++	for (uint32_t i = 176; i < 224; i++)
++		TN_VIDEO_PALETTE(i) = rgb(55 + 4 * (i - 176), 35 + i / 2, 18);
++	for (uint32_t i = 224; i < 256; i++) {
++		uint32_t v = 80 + (i - 224) * 5;
++		TN_VIDEO_PALETTE(i) = rgb(v, v, v > 255 ? 255 : v);
+ 	}
+ }
+ 
+-static uint32_t strip_emphasis(uint32_t y)
++static uint32_t ridge(uint32_t x, uint32_t phase)
+ {
+-	return y >= 176 && y < 225 ? 1 + (y - 176) / 7 : 0;
++	// A cheap, deliberately angular height field that reads as pixel art.
++	uint32_t a = (x + phase) & 63u;
++	uint32_t b = (x * 3u + phase / 2u) & 127u;
++	uint32_t tri_a = a < 32 ? a : 63 - a;
++	uint32_t tri_b = b < 64 ? b : 127 - b;
++	return 52u + tri_a / 2u + tri_b / 5u;
+ }
+ 
+-static void draw_picture(void)
++static uint32_t draw_frame(uint32_t buffer, uint32_t frame)
+ {
+-	uint8_t *p = (uint8_t *)picture;
++	uint32_t nonzero = 0;
++	uint32_t sun_x = 38u + (frame / 4u) % 244u;
+ 	for (uint32_t y = 0; y < H; y++) {
++		uint8_t *row = TN_VIDEO_FB_ROW(buffer, y);
+ 		for (uint32_t x = 0; x < W; x++) {
+-			uint8_t c = 0;
+-			if (x == 0 || x == W - 1 || y == 0 || y == H - 1)
+-				c = 1;
+-			else if (y >= 8 && y < 64)
+-				c = 2 + x / 32;
+-			else if (y >= 72 && y < 104)
+-				c = 64 + x / 4;
+-			else if (y >= 104 && y < 136)
+-				c = 128 + x / 4;
+-			else if (y >= 136 && y < 168)
+-				c = 192 + x / 4;
+-			else if (strip_emphasis(y))
+-				c = 64 + x / 4;
+-			p[y * W + x] = c;
++			uint8_t c;
++			uint32_t dx = x > sun_x ? x - sun_x : sun_x - x;
++			uint32_t dy = y > 34 ? y - 34 : 34 - y;
++			if (dx * dx + dy * dy < 11u * 11u)
++				c = 252;
++			else if (y < ridge(x, 0))
++				c = 8u + y / 3u;
++			else if (y < ridge(x, 29) + 24u)
++				c = 120u + ((x / 8u + y / 5u) & 15u);
++			else if (y < 132u)
++				c = 148u + ((x / 6u + y / 4u) & 15u);
++			else
++				c = 68u + ((x / 8u + y / 3u + frame / 6u) & 15u);
++			// Sparse high-contrast grid gives the intended retro terrain read.
++			if (y >= 92u && ((x + 2u * y) & 31u) == 0)
++				c = 188;
++			row[x] = c;
++			nonzero += c != 0;
+ 		}
+ 	}
+-	for (uint32_t b = 0; b < 2; b++)
+-		for (uint32_t y = 0; y < H; y++)
+-			TN_VIDEO_EMPHASIS(b, y) = strip_emphasis(y);
+-}
+-
+-static void fail(const char *name)
+-{
+-	printf("BAD VIDEO %s\n", name);
+-	exit(1);
++	return nonzero;
+ }
+ 
+ int main(void)
+ {
+ 	if (TN_VIDEO_ID != TN_VIDEO_ID_VALUE)
+-		fail("ID");
++		fail("VIDEO ID");
+ 	load_palette();
+-	draw_picture();
+-	// Both buffers through the D-cache, written back, then read back from
+-	// the SDRAM once the D-cache no longer holds them.
+-	for (uint32_t b = 0; b < 2; b++)
+-		memcpy(TN_VIDEO_FB(b), picture, sizeof picture);
+-	tn_dcache_wbinval();
+-	for (uint32_t b = 0; b < 2; b++)
+-		if (memcmp(TN_VIDEO_FB(b), picture, sizeof picture) != 0)
+-			fail("SDRAM");
+-
+-	uint32_t sx = 20, sy = 20;
+-	int32_t dx = 1, dy = 1;
+-	uint64_t copy_cycles = 0;
+-	uint32_t vbl0 = 0;
+ 	uint32_t late0 = TN_VIDEO_LATE;
+-	uint64_t start = 0;
++	uint32_t vbl0 = TN_VIDEO_FRAMES;
++	uint64_t start = tn_cycles64();
++	uint32_t expected_pixels = 0;
+ 	for (uint32_t frame = 0; frame <= FRAMES; frame++) {
+-		uint32_t back = (TN_VIDEO_STATUS & TN_VIDEO_BUFFER) ? 0 : 1;
+-		uint8_t *fb = TN_VIDEO_FB(back);
+-
+-		uint64_t t0 = tn_cycles64();
+-		memcpy(fb, picture, sizeof picture);
+-		for (uint32_t y = 0; y < 8; y++)
+-			memset(fb + (sy + y) * W + sx, 1, 8);
++		uint32_t back = (TN_VIDEO_STATUS & TN_VIDEO_BUFFER) ? 0u : 1u;
++		expected_pixels = draw_frame(back, frame) * 16u;
+ 		tn_dcache_wbinval();
+-		if (frame > 0)
+-			copy_cycles += tn_cycles64() - t0;
+-		if (sx + dx < 1 || sx + dx + 8 > W - 1)
+-			dx = -dx;
+-		if (sy + dy < 1 || sy + dy + 8 > H - 1)
+-			dy = -dy;
+-		sx += dx;
+-		sy += dy;
+-
+-		TN_VIDEO_CTRL = TN_VIDEO_ENABLE | (back ? TN_VIDEO_BUFFER : 0);
+-		uint32_t want = TN_VIDEO_SHOWING | (back ? TN_VIDEO_BUFFER : 0);
++		TN_VIDEO_CTRL = TN_VIDEO_ENABLE | (back ? TN_VIDEO_BUFFER : 0u);
++		uint32_t want = TN_VIDEO_SHOWING | (back ? TN_VIDEO_BUFFER : 0u);
+ 		uint64_t wait = tn_cycles64();
+ 		while ((TN_VIDEO_STATUS & (TN_VIDEO_SHOWING | TN_VIDEO_BUFFER)) != want)
+-			if (tn_cycles64() - wait > TN_CORE_HZ / 10)
+-				fail("flip");
+-		// Frame 0 only lines up with the vertical blank.
+-		if (frame == 0) {
+-			start = tn_cycles64();
+-			vbl0 = TN_VIDEO_FRAMES;
+-		}
++			if (tn_cycles64() - wait > TN_CORE_HZ / 10u)
++				fail("FLIP");
+ 	}
+-	uint64_t total = tn_cycles64() - start;
++	uint64_t elapsed = tn_cycles64() - start;
+ 	uint32_t vbl = TN_VIDEO_FRAMES - vbl0;
+ 	uint32_t late = TN_VIDEO_LATE - late0;
+-	uint32_t period_us = (uint32_t)(total / FRAMES / (TN_CORE_HZ / 1000000u));
+-	uint32_t copy_us = (uint32_t)(copy_cycles / FRAMES / (TN_CORE_HZ / 1000000u));
+-	uint32_t rate = copy_us ? W * H * 1000u / copy_us : 0;
+-	if (vbl < FRAMES - 1 || vbl > FRAMES + 1)
+-		fail("FRAMES");
+-	if (late != 0) {
+-		printf("BAD VIDEO LATE=%u\n", (unsigned)late);
+-		exit(1);
+-	}
+-
+-	// What the fabric shows of the buffer left up: its non-zero pixels,
+-	// each 3x3 on the screen, and the start of each line-buffer half.
+-	const uint8_t *shown = TN_VIDEO_FB((TN_VIDEO_STATUS & TN_VIDEO_BUFFER) ? 1 : 0);
+-	uint32_t want = 0;
+-	for (uint32_t i = 0; i < W * H; i++)
+-		want += shown[i] != 0;
+-	want *= 9;
++	uint32_t period_us = (uint32_t)(elapsed / (FRAMES + 1u) /
++					       (TN_CORE_HZ / 1000000u));
+ 	uint32_t f = TN_VIDEO_FRAMES;
+-	while (TN_VIDEO_FRAMES - f < 2)
++	while (TN_VIDEO_FRAMES - f < 2u)
+ 		;
+-	uint32_t pixels = TN_VIDEO_PIXELS;
+-	printf("VIDEO PIXELS=%u WANT=%u BITS=%04x LB0=", (unsigned)pixels, (unsigned)want,
+-	       (unsigned)(TN_VIDEO_BITS & 0xffffu));
+-	for (uint32_t i = 0; i < 8; i++)
+-		printf("%04x", (unsigned)(TN_VIDEO_LB(i) & 0xffffu));
+-	printf(" LB1=");
+-	for (uint32_t i = 128; i < 136; i++)
+-		printf("%04x", (unsigned)(TN_VIDEO_LB(i) & 0xffffu));
+-	printf("\n");
+-	if (pixels != want)
++	uint32_t shown_pixels = TN_VIDEO_PIXELS;
++	if (late)
++		fail("LATE");
++	if (shown_pixels != expected_pixels)
+ 		fail("PIXELS");
+-	printf("TinyNES VIDEO OK FRAMES=%u PERIOD=%u COPY=%u FB=%u VBL=%u LATE=%u\n",
+-	       (unsigned)FRAMES, (unsigned)period_us, (unsigned)copy_us,
+-	       (unsigned)rate, (unsigned)vbl, (unsigned)late);
++	printf("TinyCreature TANG32 OK RAM=%uMiB VIDEO=%ux%u SCALE=4 "
++	       "FRAMES=%u PERIOD=%uus VBL=%u LATE=%u\n",
++	       (unsigned)(TN_SDRAM_BYTES >> 20), (unsigned)W, (unsigned)H,
++	       (unsigned)FRAMES, (unsigned)period_us, (unsigned)vbl,
++	       (unsigned)late);
+ 	return 0;
+ }
+diff --git a/firmware/include/tinynes.h b/firmware/include/tinynes.h
+index 43881c2..1aee22f 100644
+--- a/firmware/include/tinynes.h
++++ b/firmware/include/tinynes.h
+@@ -50,13 +50,12 @@ volatile uint32_t *tn_host_reg(uint32_t offset);
+ #define TN_LINK_FRAMES(s)  (((s) >> 8) & 0xffu)
+ #define TN_LINK_CELLS(s)   ((s) >> 16)
+ 
+-/* HDMI video (fpga/ae350_soc/video.sv): 1280x720 60 Hz showing a 256x240
+- * frame buffer at 3x, or fabric colour bars until TN_VIDEO_ENABLE is set.
++/* HDMI video (fpga/ae350_soc/video.sv): 1280x720 60 Hz showing a 320x180
++ * indexed frame buffer at exactly 4x, or colour bars until enabled.
+  * CTRL changes take effect at the next vertical blank; STATUS reports what
+- * is being shown. Palette and emphasis are write-only; the palette index of
+- * a pixel is the pixel itself when its line's emphasis is 0, else 256 +
+- * emphasis * 64 + (pixel & 63). The two frame buffers are the top 128 KiB
+- * of the SDRAM, pixel (x, y) at TN_VIDEO_FB(b) + 256 * y + x, written
++ * is being shown. The palette is write-only and the framebuffer byte is its
++ * palette index. The two frame buffers are the top 256 KiB of the SDRAM;
++ * pixel (x, y) is at TN_VIDEO_FB(b) + 512 * y + x, written
+  * through the D-cache: write the D-cache back (tn_dcache_wbinval) before
+  * asking for a buffer to be shown. Programs must not use that memory. */
+ #define TN_VIDEO_CTRL    TN_REG(0x10000) /* read and write */
+@@ -66,25 +65,22 @@ volatile uint32_t *tn_host_reg(uint32_t offset);
+ #define TN_VIDEO_LATE    TN_REG(0x10010) /* read: lines shown before fetched */
+ #define TN_VIDEO_PIXELS  TN_REG(0x10014) /* read: non-zero pixels, last frame */
+ #define TN_VIDEO_BITS    TN_REG(0x10018) /* read: pixel bits seen 1 (7:0), 0 (15:8) */
+-#define TN_VIDEO_ASPECT  TN_REG(0x1001c) /* read and write: pixel aspect at the next vblank */
+ #define TN_VIDEO_LB(i)   TN_REG(0x10800 + 4 * (i)) /* read: line-buffer halfword */
+ #define TN_VIDEO_PALETTE(i)     TN_REG(0x11000 + 4 * (i)) /* 0xRRGGBB */
+-#define TN_VIDEO_EMPHASIS(b, y) TN_REG(0x12000 + 4 * (256 * (b) + (y)))
+-#define TN_VIDEO_FB_BASE  0x41fe0000u
+-#define TN_VIDEO_FB_BYTES (128u << 10)
+-#define TN_VIDEO_FB(b) ((uint8_t *)(TN_VIDEO_FB_BASE + 0x10000u * (b)))
++#define TN_VIDEO_FB_BASE  0x41fc0000u
++#define TN_VIDEO_FB_BYTES (256u << 10)
++#define TN_VIDEO_FB_STRIDE 512u
++#define TN_VIDEO_FB(b) ((uint8_t *)(TN_VIDEO_FB_BASE + 0x20000u * (b)))
++#define TN_VIDEO_FB_ROW(b, y) (TN_VIDEO_FB(b) + TN_VIDEO_FB_STRIDE * (y))
+ 
+ #define TN_VIDEO_ENABLE    0x1u /* CTRL: show the frame buffers */
+ #define TN_VIDEO_BUFFER    0x2u /* CTRL: the buffer to show (STATUS: shown) */
+ #define TN_VIDEO_VBLANK    0x1u /* STATUS */
+ #define TN_VIDEO_SHOWING   0x4u /* STATUS: the frame buffers are shown */
+-#define TN_VIDEO_ID_VALUE  0x544e5631u /* "TNV1" */
+-#define TN_VIDEO_ASPECT_8_7 0u /* ASPECT: the authentic pixel aspect, 878 columns */
+-#define TN_VIDEO_ASPECT_1_1 1u /* ASPECT: square pixels, 768, the reset value */
+-#define TN_VIDEO_ASPECT_4_3 2u /* ASPECT: stretched to the television frame, 960 */
+-#define TN_VIDEO_WIDTH     256u
+-#define TN_VIDEO_HEIGHT    240u
+-#define TN_VIDEO_PALETTE_SIZE 768u
++#define TN_VIDEO_ID_VALUE  0x54435631u /* "TCV1" */
++#define TN_VIDEO_WIDTH     320u
++#define TN_VIDEO_HEIGHT    180u
++#define TN_VIDEO_PALETTE_SIZE 256u
+ 
+ /* Wii Classic Controller inputs on PMOD0. Four separate I2C buses run in
+  * fabric, one per adjacent PMOD signal pair. Reading DATA also captures its
+diff --git a/firmware/rt/link.ld b/firmware/rt/link.ld
+index a2ae317..e1aed21 100644
+--- a/firmware/rt/link.ld
++++ b/firmware/rt/link.ld
+@@ -2,7 +2,7 @@
+  *
+  * TinyNES AE350 runtime programs, loaded into the SDRAM by the boot ROM:
+  * code, data, .bss and the heap (from _end to __heap_end) in the SDRAM below
+- * its top 128 KiB, which holds the video frame buffers (TN_VIDEO_FB_BASE),
++ * its top 256 KiB, which holds the video frame buffers (TN_VIDEO_FB_BASE),
+  * the stack in the 64 KiB fabric block RAM, whose bottom edge is a bus
+  * error.
+  */
+@@ -11,7 +11,7 @@ ENTRY(_start)
+ 
+ MEMORY
+ {
+-	sdram (rwx) : ORIGIN = 0x40000000, LENGTH = 32M - 128K
++	sdram (rwx) : ORIGIN = 0x40000000, LENGTH = 32M - 256K
+ 	ram (rw)    : ORIGIN = 0x60000000, LENGTH = 64K
+ }
+ 
+diff --git a/fpga/ae350_soc/ae350_soc.sv b/fpga/ae350_soc/ae350_soc.sv
+index a157f7b..250c0cd 100644
+--- a/fpga/ae350_soc/ae350_soc.sv
++++ b/fpga/ae350_soc/ae350_soc.sv
+@@ -1,17 +1,11 @@
+ // SPDX-License-Identifier: MIT
+-// TinyNES AE350 system: the A25 boots C firmware from a block-RAM ROM on the
++// TinyCreature Tang 32 MiB foundation: the A25 boots C firmware from ROM,
+ // ROM port (ahb_boot_rom), keeps its data and stack in block RAM on the RAM
+ // port at 0x60000000 (ahb_ram), has the dock's 32 MiB SDRAM on J9 at
+ // 0x40000000 on the same port (ahb_sdram), and sends and receives on the
+-// FPGA UART at 2,000,000 baud 8N1 through registers in the EXTS window
+-// (exts_uart), and drives the HDMI port at 1280x720 60 Hz (video) from two
+-// frame buffers in the top 128 KiB of the SDRAM, read through the SDRAM's
+-// video channel, with its registers, palette and emphasis in the EXTS
+-// window at 0xe8010000. Four Wii Classic Controllers on PMOD0 are read at
+-// 0xe8040000 (wii_pads), and stereo I2S for a Pmod I2S2 on PMOD1 is fed
+-// through a sample FIFO at 0xe8050000 (i2s_out). In the UART's link mode
+-// (desk_link) the line carries TinyTang's frames instead, and TinyDesk's
+-// layer is drawn over the picture.
++// FPGA UART at 2,000,000 baud, and drives 720p60 HDMI from a 320x180 indexed
++// framebuffer in the top 256 KiB. NES-specific desk, audio and controller
++// blocks are omitted from this target.
+ //
+ // If the CPU has written nothing to the UART 2^NOBOOT_BITS bus clocks after
+ // reset (about 1.8 s), fabric reports instead, about once a second until the
+@@ -159,9 +153,9 @@ module ae350_soc_top #(
+     wire [63:0] sd_rdata;
+ 
+     wire vid_start;
+-    wire [24:8] vid_addr;
++    wire [24:9] vid_addr;
+     wire vid_valid;
+-    wire [6:0] vid_index;
++    wire [7:0] vid_index;
+     wire [15:0] vid_data;
+     wire vid_done;
+ 
+@@ -239,43 +233,29 @@ module ae350_soc_top #(
+     wire fb_ready;
+     wire cpu_owns;
+ 
+-    wire link, rx_link_valid, txt_valid, txt_ready, ln_valid, ln_ready;
+-    wire link_idle, link_flush;
+-    wire [7:0] rx_link_data, txt_data, ln_data;
+-    wire [31:0] link_status;
+-    wire [15:0] pad0_held;
+-    wire layer_on, cell_valid, cell_ready;
+-    wire [11:0] cell_addr;
+-    wire [36:0] cell_data;
+-
+-    // The EXTS window: 0xe8010000 selects video, 0xe8040000 selects the
+-    // Wii pads, 0xe8050000 the audio, and 0xe8000000 selects UART. The open flow has no
+-    // timing model for the AE350's ports, so each path to or from them has
+-    // at most one LUT: HREADY is the AND of the slaves' registered HREADYs,
+-    // HRESP their OR, and read data a mux on a registered UART select.
+-    wire video_hit = !exts_addr[18] && (exts_addr[17] | exts_addr[16]);
+-    wire pads_hit = exts_addr[18] && !(exts_addr[17] | exts_addr[16]);
+-    wire audio_hit = exts_addr[18] && !exts_addr[17] && exts_addr[16];
++    wire link, rx_link_valid, txt_valid, ln_ready, link_flush;
++    wire [7:0] rx_link_data, txt_data;
++    // The minimal EXTS window contains UART at 0xe8000000 and video at
++    // 0xe8010000. Other accesses receive the UART slave's error response.
++    wire video_hit = exts_addr[17:16] == 2'b01;
+     reg data_uart = 1'b1;
+-    wire [31:0] uart_rdata, video_rdata, pads_rdata, audio_rdata;
+-    wire uart_ready, uart_resp, video_ready, video_resp, pads_ready, pads_resp;
+-    wire audio_ready, audio_resp;
++    wire [31:0] uart_rdata, video_rdata;
++    wire uart_ready, uart_resp, video_ready, video_resp;
+     always @(posedge bus_clk or negedge resetn)
+         if (!resetn)
+             data_uart <= 1'b1;
+         else if (exts_ready)
+-            data_uart <= !video_hit && !pads_hit && !audio_hit;
+-    assign exts_rdata = data_uart ? uart_rdata
+-                                  : (video_rdata | pads_rdata | audio_rdata);
+-    assign exts_ready = uart_ready & video_ready & pads_ready & audio_ready;
+-    assign exts_resp = uart_resp | video_resp | pads_resp | audio_resp;
++            data_uart <= !video_hit;
++    assign exts_rdata = data_uart ? uart_rdata : video_rdata;
++    assign exts_ready = uart_ready & video_ready;
++    assign exts_resp = uart_resp | video_resp;
+ 
+     exts_uart #(.UART_DIV2(UART_DIV2), .DROP_CPU_TX(CPU_TX_DROP)) regs (
+         .clk(bus_clk),
+         .resetn(resetn),
+         .haddr(exts_addr),
+         .htrans(exts_trans),
+-        .hsel(exts_sel && !video_hit && !pads_hit && !audio_hit),
++        .hsel(exts_sel && !video_hit),
+         .hready_in(exts_ready),
+         .hwrite(exts_write),
+         .hwdata(exts_wdata),
+@@ -291,72 +271,19 @@ module ae350_soc_top #(
+         .rx_link_data(rx_link_data),
+         .txt_valid(txt_valid),
+         .txt_data(txt_data),
+-        .txt_ready(txt_ready),
+-        .ln_valid(ln_valid),
+-        .ln_data(ln_data),
++        .txt_ready(1'b1),
++        .ln_valid(1'b0),
++        .ln_data(8'd0),
+         .ln_ready(ln_ready),
+-        .link_idle(link_idle),
++        .link_idle(1'b1),
+         .link_flush(link_flush),
+-        .link_status(link_status),
++        .link_status(32'd0),
+         .tx(uart_tx),
+         .rx(uart_rx)
+     );
+ 
+-    // The instance name sorts after "bus_clk" (DEV-016; see sound below).
+-    desk_link desk (
+-        .clk(bus_clk), .resetn(resetn), .link(link),
+-        .rx_valid(rx_link_valid), .rx_data(rx_link_data),
+-        .txt_valid(txt_valid), .txt_data(txt_data), .txt_ready(txt_ready),
+-        .flush(link_flush),
+-        .ln_valid(ln_valid), .ln_data(ln_data), .ln_ready(ln_ready),
+-        .idle(link_idle),
+-        .pad_held(pad0_held),
+-        .cell_valid(cell_valid), .cell_addr(cell_addr), .cell_data(cell_data),
+-        .cell_ready(cell_ready),
+-        .layer_on(layer_on),
+-        .status(link_status)
+-    );
+-
+-    wire [3:0] pad_scl_in, pad_sda_in, pad_scl_low, pad_sda_low;
+-    genvar pad_index;
+-    generate
+-        for (pad_index = 0; pad_index < 4; pad_index = pad_index + 1) begin : pad_io
+-            // Digilent pins 1-4 are SCL, pins 7-10 are SDA. Sipeed's IO
+-            // numbering interleaves the rows: each controller uses a pair.
+-            IOBUF scl_buf (
+-                .I(1'b0), .OEN(!pad_scl_low[pad_index]),
+-                .O(pad_scl_in[pad_index]), .IO(pmod0[2*pad_index])
+-            );
+-            IOBUF sda_buf (
+-                .I(1'b0), .OEN(!pad_sda_low[pad_index]),
+-                .O(pad_sda_in[pad_index]), .IO(pmod0[2*pad_index+1])
+-            );
+-        end
+-    endgenerate
+-
+-    wii_pads pads (
+-        .clk(bus_clk), .resetn(resetn),
+-        .haddr(exts_addr[11:0]), .htrans(exts_trans),
+-        .hsel(exts_sel && pads_hit), .hwrite(exts_write),
+-        .hsize(exts_size), .hwdata(exts_wdata), .hready_in(exts_ready),
+-        .hrdata(pads_rdata), .hready(pads_ready), .hresp(pads_resp),
+-        .scl_in(pad_scl_in), .sda_in(pad_sda_in),
+-        .scl_low(pad_scl_low), .sda_low(pad_sda_low),
+-        .pad0_held(pad0_held)
+-    );
+-
+-    // The instance name sorts after "bus_clk": Yosys names a flattened net
+-    // after the alphabetically first of its names, and nextpnr's
+-    // NPNR_GOWIN_CLK_FIRST finds the bus clock only as bus_clk (DEV-016).
+-    i2s_out sound (
+-        .clk(bus_clk), .resetn(resetn),
+-        .haddr(exts_addr[11:0]), .htrans(exts_trans),
+-        .hsel(exts_sel && audio_hit), .hwrite(exts_write),
+-        .hsize(exts_size), .hwdata(exts_wdata), .hready_in(exts_ready),
+-        .hrdata(audio_rdata), .hready(audio_ready), .hresp(audio_resp),
+-        .mclk(pmod1_dac[0]), .lrck(pmod1_dac[1]),
+-        .sclk(pmod1_dac[2]), .sdin(pmod1_dac[3])
+-    );
++    assign pmod0 = 8'hzz;
++    assign pmod1_dac = 4'd0;
+ 
+     // HDMI: 50 MHz -> 27 MHz -> 371.25 MHz serial clock (hdmi_pll), divided
+     // by 5 to the 74.25 MHz pixel clock. 50 * 27 = 1350 MHz VCO / 50; 27 * 55
+@@ -523,11 +450,6 @@ module ae350_soc_top #(
+         .vindex(vid_index),
+         .vdata(vid_data),
+         .vdone(vid_done),
+-        .layer_on(layer_on),
+-        .cell_valid(cell_valid),
+-        .cell_addr(cell_addr),
+-        .cell_data(cell_data),
+-        .cell_ready(cell_ready),
+         .pix_clk(pix_clk),
+         .pix_reset(pix_reset),
+         .tmds_blue(tmds_ch[0]),
+diff --git a/fpga/ae350_soc/ahb_sdram.sv b/fpga/ae350_soc/ahb_sdram.sv
+index 8f7588b..aa0e05d 100644
+--- a/fpga/ae350_soc/ahb_sdram.sv
++++ b/fpga/ae350_soc/ahb_sdram.sv
+@@ -17,10 +17,10 @@
+ // progress; it is merged into the buffer if it hits the buffered line and
+ // then written to the SDRAM, only its own byte lanes changing.
+ //
+-// The video channel reads one 256-byte line for the video unit:
++// The video channel reads one 320-byte line for the video unit:
+ //
+ //   vstart pulses with vaddr, which stays steady until vdone; the line's
+-//   128 halfwords come back in order, each on vdata with its index while
++//   160 halfwords come back in order, each on vdata with its index while
+ //   vvalid is high, and vdone pulses once after the last.
+ //
+ // A pending video line goes ahead of a waiting A25 transfer, and refresh
+@@ -57,9 +57,9 @@ module ahb_sdram #(
+     output reg         ready,
+ 
+     input  wire        vstart,
+-    input  wire [24:8] vaddr,
++    input  wire [24:9] vaddr,
+     output reg         vvalid,
+-    output reg  [6:0]  vindex,
++    output reg  [7:0]  vindex,
+     output reg  [15:0] vdata,
+     output reg         vdone,
+ 
+@@ -136,7 +136,7 @@ module ahb_sdram #(
+     reg [3:0] state = S_INIT;
+     reg [3:0] after_wait = S_IDLE;
+     reg [15:0] wait_count = INIT_CYCLES[15:0];
+-    reg [6:0] step = 7'd0;
++    reg [7:0] step = 8'd0;
+     reg op_write = 1'b0;
+     reg op_video = 1'b0;
+     reg video_pending = 1'b0;
+@@ -148,7 +148,7 @@ module ahb_sdram #(
+     // clock.
+     reg [CAPTURE-1:0] pipe_valid = 0;
+     reg [CAPTURE-1:0] pipe_video = 0;
+-    reg [6:0] pipe_index [0:CAPTURE-1];
++    reg [7:0] pipe_index [0:CAPTURE-1];
+ 
+     reg [9:0] refresh_count = 10'd0;
+     reg refresh_due = 1'b0;
+@@ -163,12 +163,12 @@ module ahb_sdram #(
+             state <= S_INIT;
+             after_wait <= S_IDLE;
+             wait_count <= INIT_CYCLES[15:0];
+-            step <= 7'd0;
++            step <= 8'd0;
+             op_write <= 1'b0;
+             op_video <= 1'b0;
+             video_pending <= 1'b0;
+             vvalid <= 1'b0;
+-            vindex <= 7'd0;
++            vindex <= 8'd0;
+             vdata <= 16'd0;
+             vdone <= 1'b0;
+             ready <= 1'b0;
+@@ -204,7 +204,7 @@ module ahb_sdram #(
+                 vvalid <= 1'b1;
+                 vindex <= pipe_index[CAPTURE-1];
+                 vdata <= dq_rise;
+-                vdone <= pipe_index[CAPTURE-1] == 7'd127;
++                vdone <= pipe_index[CAPTURE-1] == 8'd159;
+             end else if (pipe_valid[CAPTURE-1]) begin
+                 line[16 * pipe_index[CAPTURE-1][3:0] +: 16] <= dq_rise;
+                 if (pipe_index[CAPTURE-1][1:0] == 2'd3)
+@@ -236,7 +236,7 @@ module ahb_sdram #(
+                 S_INIT_PRE: begin
+                     {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= CMD_PRECHARGE;
+                     sdram_a[10] <= 1'b1;
+-                    step <= 7'd0;
++                    step <= 8'd0;
+                     wait_count <= 16'd0;
+                     after_wait <= S_INIT_REF;
+                     state <= S_WAIT;
+@@ -245,7 +245,7 @@ module ahb_sdram #(
+                     {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= CMD_REFRESH;
+                     step <= step + 1'b1;
+                     wait_count <= T_RC - 2;
+-                    after_wait <= step == 7'd7 ? S_INIT_MODE : S_INIT_REF;
++                    after_wait <= step == 8'd7 ? S_INIT_MODE : S_INIT_REF;
+                     state <= S_WAIT;
+                 end
+                 S_INIT_MODE: begin
+@@ -265,7 +265,7 @@ module ahb_sdram #(
+                         video_pending <= 1'b0;
+                         op_video <= 1'b1;
+                         op_write <= 1'b0;
+-                        op_addr <= {vaddr, 5'd0};
++                        op_addr <= {vaddr, 6'd0};
+                         state <= S_ACTIVE;
+                     end else if (req && !ack && idle && (write || !line_hit)) begin
+                         op_video <= 1'b0;
+@@ -291,7 +291,7 @@ module ahb_sdram #(
+                     {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= CMD_ACTIVE;
+                     sdram_ba <= op_addr[11:10];
+                     sdram_a <= op_addr[24:12];
+-                    step <= 7'd0;
++                    step <= 8'd0;
+                     wait_count <= 16'd0;
+                     after_wait <= op_video ? S_VREAD : op_write ? S_WRITE : S_READ;
+                     state <= S_WAIT;
+@@ -307,12 +307,12 @@ module ahb_sdram #(
+                 end
+                 S_VREAD: begin
+                     {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= CMD_READ;
+-                    sdram_a <= {4'b0000, op_addr[9:8], step};
++                    sdram_a <= {4'b0000, op_addr[9], step};
+                     pipe_valid[0] <= 1'b1;
+                     pipe_video[0] <= 1'b1;
+                     pipe_index[0] <= step;
+                     step <= step + 1'b1;
+-                    if (step == 7'd127)
++                    if (step == 8'd159)
+                         state <= S_PRECHARGE;
+                 end
+                 S_WRITE: begin
+diff --git a/fpga/ae350_soc/video.sv b/fpga/ae350_soc/video.sv
+index 428c206..ef21bda 100644
+--- a/fpga/ae350_soc/video.sv
++++ b/fpga/ae350_soc/video.sv
+@@ -1,649 +1,251 @@
+ // SPDX-License-Identifier: MIT
+-// HDMI (DVI) video for the A25: two 256x240 8-bit indexed frame buffers in
+-// the SDRAM, a 768-entry palette and per-line colour emphasis, shown at
+-// 1280x720 60 Hz with each NES pixel three rows tall and as many columns
+-// wide as the ASPECT register asks for: three at 1:1, which is the square
+-// 768x720 picture, and more at 8:7 or 4:3, which widen it to 878 or 960 and
+-// keep the height, centred between black side bars. The palette index of a
+-// pixel follows FCEUmm's:
+-// the pixel value itself when its line's emphasis is 0, otherwise 256 +
+-// emphasis * 64 + (pixel & 63).
++// TinyCreature 320x180 indexed framebuffer, scaled exactly 4x to 720p60.
+ //
+-// Frame buffer b is the SDRAM at byte FB_BASE + 0x10000 * b, pixel (x, y)
+-// at 256 * y + x, which the A25 writes through its cached RAM port and
+-// must write back from its D-cache before asking for the buffer to be
+-// shown. While each line is shown the unit fetches the next through
+-// ahb_sdram's video channel into the other of two flip-flop line buffers.
+-// The palette and emphasis are block RAM written and read on the pixel
+-// clock, the bus side handing each write across. No block RAM is written on
+-// one clock and read on the other: Apicula's block RAM reads back wrong in
+-// that use on the GW5AST-138 (core-log entry 14).
++// Two framebuffers occupy the top 256 KiB of the 32 MiB SDRAM. Each source
++// line has a 512-byte stride so a 320-byte fetch never crosses an SDRAM row:
++// pixel (x,y) of buffer b is at 0x41fc0000 + b*0x20000 + y*512 + x.
++// The CPU writes palette indices and this unit fetches one source line ahead.
+ //
+-// Bus side (clk), offsets from 0xe8010000; the top level selects this unit
+-// for 0xe8010000 to 0xe803ffff and passes the low 18 address bits:
+-//   0x0000  CTRL, read and write: bit 0 shows the frame buffers (0 shows
+-//           fabric colour bars), bit 1 the buffer to show. Both take effect
+-//           at the next vertical blank.
+-//   0x0004  STATUS, read: bit 0 in vertical blank, bit 1 the buffer being
+-//           shown, bit 2 the frame buffers are being shown.
+-//   0x0008  FRAMES, read: vertical blanks since reset.
+-//   0x000c  ID, read: ID_VALUE.
+-//   0x0010  LATE, read: lines shown since reset whose fetch from the SDRAM
+-//           had not finished, so that the line before was shown again.
+-//   0x0014  PIXELS, read: screen pixels of the last whole frame shown whose
+-//           frame-buffer value was not 0, nine for each such NES pixel
+-//           (diagnostic; it changes at each vertical blank).
+-//   0x0018  BITS, read: for the last whole frame shown, bit n (0 to 7) set
+-//           if pixel bit n was ever 1 and bit 8 + n if it was ever 0
+-//           (diagnostic).
+-//   0x001c  ASPECT, read and write: the picture's pixel aspect, taken at the
+-//           next vertical blank. 0 = 8:7, the authentic pixel aspect, 878
+-//           columns wide; 1 = 1:1, square pixels, 768; 2 = 4:3, stretched to
+-//           the television frame, 960; anything else is taken as 1:1. Reset
+-//           1:1, the picture this unit drew before the register existed.
+-//   0x0800 + 4 * i, read: line-buffer halfword i (0 to 255) in bits 15:0,
+-//           halfword k of line y at 128 * (y & 1) + k, with one wait state
+-//           (diagnostic).
+-//   0x1000 + 4 * i, write: palette entry i (0 to 1023; 768 to 1023 unused),
+-//           red in bits 23:16, green 15:8, blue 7:0.
+-//   0x2000 + 4 * (256 * b + y), write: emphasis (bits 2:0) of line y of
+-//           buffer b.
+-// Registers, palette and emphasis take 32-bit transfers only. Any other
+-// access gets an AHB ERROR response. Register transfers complete with no
+-// wait state; a palette or emphasis write waits until the one before it has
+-// reached the pixel side, a few clocks.
+-//
+-// Pixel side (pix_clk, 74.25 MHz): CEA-861 1280x720p60 timing, positive
+-// syncs. The TMDS encoder is TinyTang's fpga/hdmi_test/hdmi_test.v's (MIT).
+-//
+-// The desk layer (desk_link.sv): 80x45 cells of 16x16 pixels, each an 8x8
+-// glyph of the font in FONT_FILE (desk_font.hex) drawn twice its size in a
+-// foreground and a background colour. While layer_on is set, taken at the
+-// next vertical blank like CTRL, the layer replaces the whole picture, side
+-// bars and colour bars included. Cells are written from the bus side one at
+-// a time (cell_valid, cell_ready) and handed to the pixel side, where the
+-// cell store and the font are kept, as palette writes are.
++// Bus offsets from 0xe8010000:
++//   0x0000 CTRL: bit 0 enable, bit 1 framebuffer
++//   0x0004 STATUS: bit 0 vertical blank, bit 1 framebuffer, bit 2 enabled
++//   0x0008 FRAMES; 0x000c ID ("TCV1"); 0x0010 LATE
++//   0x0014 PIXELS; 0x0018 BITS
++//   0x0800 + 4*i: diagnostic line-buffer halfword i, 0..319
++//   0x1000 + 4*i: write palette entry i, 0x00RRGGBB, 0..255
+ module video #(
+-    parameter [31:0] ID_VALUE = 32'h544e5631, // "TNV1"
+-    // Frame buffer 0's SDRAM byte address, bits 24:17 (bits 16:0 are 0):
+-    // the top 128 KiB of the 32 MiB.
+-    parameter [24:17] FB_BASE = 8'hff,
+-    // Diagnostic: colour each pixel from its palette index, not the palette.
+-    parameter DEBUG_INDEX = 0,
+-    // The desk layer's font, relative to the repository root.
+-    parameter FONT_FILE = "fpga/ae350_soc/desk_font.hex"
++    parameter [31:0] ID_VALUE = 32'h54435631,
++    parameter [24:18] FB_BASE = 7'h7f
+ ) (
+-    input  wire        clk,
+-    input  wire        resetn,
+-    input  wire [17:0] haddr,     // address bits 17:0
+-    input  wire [1:0]  htrans,
+-    input  wire        hsel,
+-    input  wire        hwrite,
+-    input  wire [2:0]  hsize,
+-    input  wire [31:0] hwdata,
+-    input  wire        hready_in, // the EXTS port's HREADY
+-    output reg  [31:0] hrdata,
+-    output reg         hready,
+-    output reg         hresp,
+-
+-    // ahb_sdram's video channel, on clk.
+-    output reg         vstart,
+-    output reg  [24:8] vaddr,
+-    input  wire        vvalid,
+-    input  wire [6:0]  vindex,
+-    input  wire [15:0] vdata,
+-    input  wire        vdone,
+-
+-    // The desk layer, on clk.
+-    input  wire        layer_on,
+-    input  wire        cell_valid,
+-    input  wire [11:0] cell_addr,
+-    input  wire [36:0] cell_data,  // {character, foreground, background}
+-    output wire        cell_ready,
+-
+-    input  wire        pix_clk,
+-    input  wire        pix_reset,
+-    output wire [9:0]  tmds_blue,
+-    output wire [9:0]  tmds_green,
+-    output wire [9:0]  tmds_red
++    input wire clk, input wire resetn,
++    input wire [17:0] haddr, input wire [1:0] htrans, input wire hsel,
++    input wire hwrite, input wire [2:0] hsize, input wire [31:0] hwdata,
++    input wire hready_in, output reg [31:0] hrdata, output reg hready,
++    output reg hresp,
++    output reg vstart, output reg [24:9] vaddr,
++    input wire vvalid, input wire [7:0] vindex, input wire [15:0] vdata,
++    input wire vdone,
++    input wire pix_clk, input wire pix_reset,
++    output wire [9:0] tmds_blue, output wire [9:0] tmds_green,
++    output wire [9:0] tmds_red
+ );
+-    localparam integer H_ACTIVE = 1280, H_FP = 110, H_SYNC = 40, H_BP = 220;
+-    localparam integer V_ACTIVE = 720, V_FP = 5, V_SYNC = 5, V_BP = 20;
+-    localparam integer H_TOTAL = H_ACTIVE + H_FP + H_SYNC + H_BP;
+-    localparam integer V_TOTAL = V_ACTIVE + V_FP + V_SYNC + V_BP;
+-    // The picture is 256 NES pixels across per line. At 1:1 each is three
+-    // columns wide and the picture fills 768 of them; the other aspects widen
+-    // it and leave its height alone, so one NES pixel spans three or four
+-    // columns and the line buffer is read through an accumulator below
+-    // rather than by a fixed divide by three.
+-    localparam [9:0] PIC_8_7 = 10'd878;    // 256 * 3 * 8 / 7, rounded
+-    localparam [9:0] PIC_1_1 = 10'd768;    // 256 * 3
+-    localparam [9:0] PIC_4_3 = 10'd960;    // 256 * 3 * 5 / 4
+-    localparam integer BAR = H_ACTIVE / 8;
+-
+-    // ------------------------------------------------------------ storage --
+-    // Palette and emphasis, both ports on pix_clk. The emphasis store is 9
+-    // bits wide, bits 8:3 stored and never read, so that it maps to block
+-    // RAM in 9-bit mode like the palette.
+-    reg [23:0] palette [0:1023];
+-    reg [8:0] emphasis [0:511];
+-
+-    // Two line buffers, halfword by halfword: line y of the frame is in half
+-    // y[0]. Written on clk as the fetch arrives and read on pix_clk while
+-    // they are steady, so they are kept in flip-flops, not block RAM.
+-    (* ram_style = "logic" *) reg [15:0] lb [0:255];
+-
+-    // Pixel-side state the bus side reads through synchronisers.
+-    reg shown_buf = 1'b0;
+-    reg shown_en = 1'b0;
+-    reg pix_vblank = 1'b0;
+-    reg hs_ack = 1'b0;     // the last palette or emphasis write taken
+-    reg fr_req = 1'b0;     // toggles to ask for line fr_line of fr_buf
+-    reg fr_buf = 1'b0;
+-    reg [7:0] fr_line = 8'd0;
+-    reg late_t = 1'b0;     // toggles for each line shown late
+-
+-    // ---------------------------------------------------------- bus side --
+-    localparam [2:0] R_CTRL = 3'd0, R_STATUS = 3'd1, R_FRAMES = 3'd2, R_ID = 3'd3,
+-                     R_LATE = 3'd4, R_PIXELS = 3'd5, R_BITS = 3'd6, R_ASPECT = 3'd7;
+-
+-    reg [1:0] ctrl = 2'b00;          // {buffer, enable}
+-    reg [1:0] aspect = 2'd1;         // 0 = 8:7, 1 = 1:1, 2 = 4:3
+-    reg [31:0] frames = 32'd0;
+-    reg [31:0] late = 32'd0;
+-    reg [2:0] vblank_sync = 3'b000;  // the last two give an edge
+-    reg [2:0] late_sync = 3'b000;
+-    reg [1:0] shown_buf_sync = 2'b00;
+-    reg [1:0] shown_en_sync = 2'b00;
+-
+-    // A register write in its data phase, and whether it is ASPECT rather
+-    // than CTRL; ERROR response second cycle.
+-    reg d_reg = 1'b0, d_aspect = 1'b0, err2 = 1'b0;
+-    // A line-buffer read in its wait state, and its halfword.
+-    reg lb_read = 1'b0;
+-    reg [7:0] lb_index = 8'd0;
+-
+-    // A palette or emphasis write waiting in its data phase, and the one
+-    // being handed to the pixel side, which takes it when hs_req changes and
+-    // answers by copying it to hs_ack.
+-    reg w_wait = 1'b0, w_emph = 1'b0;
+-    reg [9:0] w_addr = 10'd0;
+-    reg hs_req = 1'b0, hs_emph = 1'b0;
+-    reg [9:0] hs_addr = 10'd0;
+-    reg [23:0] hs_data = 24'd0;
+-    reg [1:0] hs_ack_sync = 2'b00;
+-    wire hs_busy = hs_req != hs_ack_sync[1];
+-
+-    // A cell write handed to the pixel side the same way.
+-    reg c_req = 1'b0, c_ack = 1'b0;
+-    reg [11:0] c_addr = 12'd0;
+-    reg [36:0] c_data = 37'd0;
+-    reg [1:0] c_ack_sync = 2'b00;
+-    assign cell_ready = c_req == c_ack_sync[1];
+-    always @(posedge clk) begin
+-        c_ack_sync <= {c_ack_sync[0], c_ack};
+-        if (cell_valid && cell_ready) begin
+-            c_req <= !c_req;
+-            c_addr <= cell_addr;
+-            c_data <= cell_data;
+-        end
+-    end
+-
+-    wire accept = hready_in && hsel && htrans[1];
+-    wire word = hsize == 3'd2 && haddr[1:0] == 2'b00;
+-    wire is_unit = haddr[17:16] == 2'b01;
+-    wire is_reg = is_unit && haddr[15:12] == 4'h0 && haddr[11:5] == 7'd0;
+-    wire is_lb = is_unit && haddr[15:12] == 4'h0 && haddr[11:10] == 2'b10;
+-    wire is_pal = is_unit && haddr[15:12] == 4'h1;
+-    wire is_emph = is_unit && haddr[15:12] == 4'h2 && haddr[11] == 1'b0;
+-    wire ok = word && (is_reg ? (hwrite ? (haddr[4:2] == R_CTRL || haddr[4:2] == R_ASPECT)
+-                                            : haddr[4:2] <= R_ASPECT) :
+-                       is_lb ? !hwrite : (is_pal || is_emph) && hwrite);
+-    reg [19:0] pixels;               // pixel side, steady between blanks
+-    reg [15:0] bits;                 // likewise
++    localparam H_ACTIVE=1280, H_FP=110, H_SYNC=40, H_BP=220;
++    localparam V_ACTIVE=720, V_FP=5, V_SYNC=5, V_BP=20;
++    localparam H_TOTAL=H_ACTIVE+H_FP+H_SYNC+H_BP;
++    localparam V_TOTAL=V_ACTIVE+V_FP+V_SYNC+V_BP;
++    localparam BAR=H_ACTIVE/8;
++
++    reg [23:0] palette [0:255];
++    // Logic storage avoids the broken open-flow dual-clock block-RAM mode.
++    (* ram_style = "logic" *) reg [15:0] lb [0:319];
++    reg shown_buf=0, shown_en=0, pix_vblank=0;
++    reg fr_req=0, fr_buf=0, late_t=0;
++    reg [7:0] fr_line=0;
++    reg [1:0] ctrl=0;
++    reg [31:0] frames=0, late=0;
++    reg [2:0] vblank_sync=0, late_sync=0;
++    reg [1:0] shown_buf_sync=0, shown_en_sync=0;
++    reg [19:0] pixels=0;
++    reg [15:0] bits=0;
++
++    reg d_ctrl=0, err2=0, lb_read=0, w_wait=0;
++    reg [8:0] lb_index=0;
++    reg hs_req=0, hs_ack=0;
++    reg [7:0] hs_addr=0, w_addr=0;
++    reg [23:0] hs_data=0;
++    reg [1:0] hs_ack_sync=0;
++    wire hs_busy=hs_req != hs_ack_sync[1];
++    wire accept=hready_in && hsel && htrans[1];
++    wire word=hsize==3'd2 && haddr[1:0]==0;
++    wire is_unit=haddr[17:16]==2'b01;
++    wire is_reg=is_unit && haddr[15:5]==0;
++    wire is_lb=is_unit && haddr[15:11]==5'b00001 && haddr[10:2]<9'd320;
++    wire is_pal=is_unit && haddr[15:12]==4'h1 && haddr[11:10]==0;
++    wire ok=word && (is_reg ? (hwrite ? haddr[4:2]==0 : haddr[4:2]<=6) :
++                     is_lb ? !hwrite : is_pal && hwrite);
+ 
+     always @(posedge clk or negedge resetn) begin
+         if (!resetn) begin
+-            ctrl <= 2'b00;
+-            aspect <= 2'd1;
+-            frames <= 32'd0;
+-            late <= 32'd0;
+-            vblank_sync <= 3'b000;
+-            late_sync <= 3'b000;
+-            shown_buf_sync <= 2'b00;
+-            shown_en_sync <= 2'b00;
+-            d_reg <= 1'b0;
+-            err2 <= 1'b0;
+-            w_wait <= 1'b0;
+-            w_emph <= 1'b0;
+-            w_addr <= 10'd0;
+-            lb_read <= 1'b0;
+-            lb_index <= 8'd0;
+-            hs_ack_sync <= 2'b00;
+-            hrdata <= 32'd0;
+-            hready <= 1'b1;
+-            hresp <= 1'b0;
++            ctrl<=0; frames<=0; late<=0; vblank_sync<=0; late_sync<=0;
++            shown_buf_sync<=0; shown_en_sync<=0; d_ctrl<=0; err2<=0;
++            lb_read<=0; w_wait<=0; hs_ack_sync<=0; hrdata<=0;
++            hready<=1; hresp<=0;
+         end else begin
+-            vblank_sync <= {vblank_sync[1:0], pix_vblank};
+-            late_sync <= {late_sync[1:0], late_t};
+-            shown_buf_sync <= {shown_buf_sync[0], shown_buf};
+-            shown_en_sync <= {shown_en_sync[0], shown_en};
+-            hs_ack_sync <= {hs_ack_sync[0], hs_ack};
+-            if (vblank_sync[1] && !vblank_sync[2])
+-                frames <= frames + 1'b1;
+-            if (late_sync[1] != late_sync[2])
+-                late <= late + 1'b1;
+-
+-            if (d_reg) begin
+-                if (d_aspect)
+-                    aspect <= hwdata[1:0];
+-                else
+-                    ctrl <= hwdata[1:0];
+-            end
+-            d_reg <= 1'b0;
+-
+-            if (err2) begin
+-                // Second cycle of an ERROR response.
+-                err2 <= 1'b0;
+-                hready <= 1'b1;
+-            end else if (lb_read) begin
+-                lb_read <= 1'b0;
+-                hrdata <= {16'd0, lb[lb_index]};
+-                hready <= 1'b1;
++            vblank_sync<={vblank_sync[1:0],pix_vblank};
++            late_sync<={late_sync[1:0],late_t};
++            shown_buf_sync<={shown_buf_sync[0],shown_buf};
++            shown_en_sync<={shown_en_sync[0],shown_en};
++            hs_ack_sync<={hs_ack_sync[0],hs_ack};
++            if (vblank_sync[1] && !vblank_sync[2]) frames<=frames+1'b1;
++            if (late_sync[1]!=late_sync[2]) late<=late+1'b1;
++            if (d_ctrl) ctrl<=hwdata[1:0];
++            d_ctrl<=0;
++            if (err2) begin err2<=0; hready<=1; end
++            else if (lb_read) begin
++                lb_read<=0; hrdata<={16'd0,lb[lb_index]}; hready<=1;
+             end else if (w_wait) begin
+                 if (!hs_busy) begin
+-                    hs_req <= !hs_req;
+-                    hs_emph <= w_emph;
+-                    hs_addr <= w_addr;
+-                    hs_data <= hwdata[23:0];
+-                    w_wait <= 1'b0;
+-                    hready <= 1'b1;
++                    hs_req<=!hs_req; hs_addr<=w_addr;
++                    hs_data<=hwdata[23:0]; w_wait<=0; hready<=1;
+                 end
+             end else begin
+-                hresp <= 1'b0;
+-                // Read data is registered here, in the address phase; a
+-                // CTRL write in its data phase now is passed straight on.
+-                hrdata <= 32'd0;
++                hresp<=0; hrdata<=0;
+                 if (accept && !hwrite && ok && !is_lb)
+                     case (haddr[4:2])
+-                        R_CTRL: hrdata <= {30'd0, d_reg && !d_aspect ? hwdata[1:0] : ctrl};
+-                        R_STATUS: hrdata <= {29'd0, shown_en_sync[1], shown_buf_sync[1], vblank_sync[1]};
+-                        R_FRAMES: hrdata <= frames;
+-                        R_ID: hrdata <= ID_VALUE;
+-                        R_LATE: hrdata <= late;
+-                        R_PIXELS: hrdata <= {12'd0, pixels};
+-                        R_ASPECT: hrdata <= {30'd0, aspect};
+-                        default: hrdata <= {16'd0, bits};
++                        0:hrdata<={30'd0,d_ctrl?hwdata[1:0]:ctrl};
++                        1:hrdata<={29'd0,shown_en_sync[1],shown_buf_sync[1],vblank_sync[1]};
++                        2:hrdata<=frames; 3:hrdata<=ID_VALUE; 4:hrdata<=late;
++                        5:hrdata<={12'd0,pixels}; default:hrdata<={16'd0,bits};
+                     endcase
+                 if (accept) begin
+-                    w_emph <= is_emph;
+-                    w_addr <= is_emph ? {1'b0, haddr[10:2]} : haddr[11:2];
+-                    if (!ok) begin
+-                        hready <= 1'b0;
+-                        hresp <= 1'b1;
+-                        err2 <= 1'b1;
+-                    end else if (is_lb) begin
+-                        lb_index <= haddr[9:2];
+-                        lb_read <= 1'b1;
+-                        hready <= 1'b0;
+-                    end else if (hwrite && is_reg) begin
+-                        d_reg <= 1'b1;
+-                        d_aspect <= haddr[4:2] == R_ASPECT;
+-                    end else if (hwrite) begin
+-                        hready <= 1'b0;
+-                        w_wait <= 1'b1;
++                    if (!ok) begin hready<=0; hresp<=1; err2<=1; end
++                    else if (is_lb) begin
++                        lb_index<=haddr[10:2]; lb_read<=1; hready<=0;
++                    end else if (hwrite && is_reg) d_ctrl<=1;
++                    else if (hwrite) begin
++                        w_addr<=haddr[9:2]; hready<=0; w_wait<=1;
+                     end
+                 end
+             end
+         end
+     end
+ 
+-    // Line fetches: when fr_req changes, fetch line fr_line of buffer fr_buf
+-    // into line-buffer half fr_line[0], then copy fr_req to fd. One fetch is
+-    // in progress at a time; a request made during one is taken after it.
+-    reg [1:0] fr_sync = 2'b00;
+-    reg fr_seen = 1'b0;
+-    reg fd = 1'b0;
+-    reg fetching = 1'b0;
+-    reg lb_half = 1'b0;
+-
++    reg [1:0] fr_sync=0;
++    reg fr_seen=0, fd=0, fetching=0, lb_half=0;
++    wire [8:0] lb_write_index=(lb_half?9'd160:9'd0)+{1'b0,vindex};
+     always @(posedge clk or negedge resetn) begin
+         if (!resetn) begin
+-            fr_sync <= 2'b00;
+-            fr_seen <= 1'b0;
+-            fd <= 1'b0;
+-            fetching <= 1'b0;
+-            lb_half <= 1'b0;
+-            vstart <= 1'b0;
+-            vaddr <= 17'd0;
++            fr_sync<=0; fr_seen<=0; fd<=0; fetching<=0; lb_half<=0;
++            vstart<=0; vaddr<=0;
+         end else begin
+-            fr_sync <= {fr_sync[0], fr_req};
+-            vstart <= 1'b0;
+-            if (!fetching && fr_sync[1] != fr_seen) begin
+-                fr_seen <= fr_sync[1];
+-                vaddr <= {FB_BASE, fr_buf, fr_line};
+-                lb_half <= fr_line[0];
+-                vstart <= 1'b1;
+-                fetching <= 1'b1;
+-            end
+-            if (vdone) begin
+-                fetching <= 1'b0;
+-                fd <= fr_seen;
++            fr_sync<={fr_sync[0],fr_req}; vstart<=0;
++            if (!fetching && fr_sync[1]!=fr_seen) begin
++                fr_seen<=fr_sync[1]; vaddr<={FB_BASE,fr_buf,fr_line};
++                lb_half<=fr_line[0]; vstart<=1; fetching<=1;
+             end
++            if (vdone) begin fetching<=0; fd<=fr_seen; end
+         end
+     end
++    always @(posedge clk) if (vvalid) lb[lb_write_index]<=vdata;
+ 
+-    always @(posedge clk)
+-        if (vvalid)
+-            lb[{lb_half, vindex}] <= vdata;
+-
+-    // -------------------------------------------------------- pixel side --
+-    reg [1:0] ctrl_meta = 2'b00, ctrl_sync = 2'b00;
+-    reg [1:0] fd_sync = 2'b00;
+-    reg [2:0] hs_req_sync = 3'b000;  // the last two give an edge
+-    wire hs_take = hs_req_sync[2] != hs_req_sync[1];
+-
+-    always @(posedge pix_clk) begin
+-        if (hs_take && !hs_emph)
+-            palette[hs_addr] <= hs_data;
+-        if (hs_take && hs_emph)
+-            emphasis[hs_addr[8:0]] <= hs_data[8:0];
+-    end
+-
+-    // The desk layer's cell store and font, both on pix_clk only. The store
+-    // is five 9-bit slices so that it maps to block RAM in 9-bit mode, as the
+-    // palette and emphasis do; that mode is the one shown to work on this
+-    // chip (core-log entry 14, TOOL-020).
+-    reg [8:0] cells0 [0:4095];
+-    reg [8:0] cells1 [0:4095];
+-    reg [8:0] cells2 [0:4095];
+-    reg [8:0] cells3 [0:4095];
+-    reg [8:0] cells4 [0:4095];
+-    wire [44:0] c_wide = {8'd0, c_data};
+-    reg [7:0] font [0:1023];
+-    initial $readmemh(FONT_FILE, font);
+-    reg [2:0] c_req_sync = 3'b000;
+-    wire c_take = c_req_sync[2] != c_req_sync[1];
+-    reg [1:0] layer_sync = 2'b00;
+-    reg layer_shown = 1'b0;
++    reg [1:0] ctrl_meta=0, ctrl_sync=0, fd_sync=0;
++    reg [2:0] hs_req_sync=0;
++    wire hs_take=hs_req_sync[2]!=hs_req_sync[1];
+     always @(posedge pix_clk) begin
+-        c_req_sync <= {c_req_sync[1:0], c_req};
+-        if (c_take) begin
+-            cells0[c_addr] <= c_wide[8:0];
+-            cells1[c_addr] <= c_wide[17:9];
+-            cells2[c_addr] <= c_wide[26:18];
+-            cells3[c_addr] <= c_wide[35:27];
+-            cells4[c_addr] <= c_wide[44:36];
+-            c_ack <= c_req_sync[1];
+-        end
+-        layer_sync <= {layer_sync[0], layer_on};
++        hs_req_sync<={hs_req_sync[1:0],hs_req};
++        if (hs_take) begin palette[hs_addr]<=hs_data; hs_ack<=hs_req_sync[1]; end
+     end
+ 
+-    // The aspect, taken at vertical blank like the buffer and the enable, and
+-    // the picture it gives: 256 NES pixels over pic_w columns, centred by x0.
+-    reg [1:0] aspect_meta = 2'd1, aspect_sync = 2'd1;
+-    reg [1:0] shown_aspect = 2'd1;
+-    wire [9:0] pic_w = shown_aspect == 2'd0 ? PIC_8_7 :
+-                       shown_aspect == 2'd2 ? PIC_4_3 : PIC_1_1;
+-    wire [10:0] x0 = (H_ACTIVE - pic_w) >> 1;
+-
+-    reg [10:0] hcnt = 11'd0;
+-    reg [9:0] vcnt = 10'd0;
+-    reg [11:0] cell_row = 12'd0;
+-    reg [7:0] nx = 8'd0, ny = 8'd0;   // the NES pixel at (hcnt, vcnt)
+-    reg [9:0] hacc = 10'd0;           // ...and how far into it the column is
+-    reg [1:0] vsub = 2'd0;
+-    // One output column further across the picture: the next source pixel is
+-    // due when that reaches pic_w. hacc is below pic_w at the start of a
+-    // column and 256 is below pic_w, so at most one step is ever due, and
+-    // the remainder is below 256.
+-    wire [10:0] hacc_next = {1'b0, hacc} + 11'd256;
+-    wire [10:0] hacc_step = hacc_next - {1'b0, pic_w};
+-    wire h_last = hcnt == H_TOTAL - 1;
+-    wire [10:0] h_next = h_last ? 11'd0 : hcnt + 1'b1;
+-    wire [9:0] v_next = vcnt == V_TOTAL - 1 ? 10'd0 : vcnt + 1'b1;
+-    // At h_last: the next raster line starts NES line ny_next.
+-    wire new_line = v_next == 10'd0 || (vsub == 2'd2 && v_next < V_ACTIVE);
+-    wire [7:0] ny_next = v_next == 10'd0 ? 8'd0 : ny + 1'b1;
+-
++    reg [10:0] hcnt=0;
++    reg [9:0] vcnt=0;
++    wire h_last=hcnt==H_TOTAL-1;
++    wire [10:0] h_next=h_last?0:hcnt+1'b1;
++    wire [9:0] v_next=vcnt==V_TOTAL-1?0:vcnt+1'b1;
++    wire new_source_line=v_next<V_ACTIVE && v_next[1:0]==0;
++    wire [7:0] source_line_next=v_next[9:2];
+     always @(posedge pix_clk) begin
+-        ctrl_meta <= ctrl;
+-        ctrl_sync <= ctrl_meta;
+-        aspect_meta <= aspect;
+-        aspect_sync <= aspect_meta;
+-        fd_sync <= {fd_sync[0], fd};
+-        hs_req_sync <= {hs_req_sync[1:0], hs_req};
+-        if (hs_take)
+-            hs_ack <= hs_req_sync[1];
++        ctrl_meta<=ctrl; ctrl_sync<=ctrl_meta; fd_sync<={fd_sync[0],fd};
+         if (pix_reset) begin
+-            hcnt <= 11'd0;
+-            vcnt <= 10'd0;
+-            nx <= 8'd0;
+-            hacc <= 10'd0;
+-            ny <= 8'd0;
+-            vsub <= 2'd0;
+-            shown_buf <= 1'b0;
+-            shown_en <= 1'b0;
+-            layer_shown <= 1'b0;
+-            pix_vblank <= 1'b0;
+-            cell_row <= 12'd0;
++            hcnt<=0; vcnt<=0; shown_buf<=0; shown_en<=0; pix_vblank<=0;
+         end else begin
+-            hcnt <= h_next;
+-            if (h_next == x0) begin
+-                nx <= 8'd0;
+-                hacc <= 10'd0;
+-            end else if (hacc_next >= {1'b0, pic_w}) begin
+-                nx <= nx + 1'b1;
+-                hacc <= hacc_step[9:0];
+-            end else begin
+-                hacc <= hacc_next[9:0];
+-            end
++            hcnt<=h_next;
+             if (h_last) begin
+-                vcnt <= v_next;
+-                // The first cell of the cell row the next line is in.
+-                if (v_next == 10'd0)
+-                    cell_row <= 12'd0;
+-                else if (v_next[3:0] == 4'd0)
+-                    cell_row <= cell_row + 12'd80;
+-                if (v_next == 10'd0) begin
+-                    ny <= 8'd0;
+-                    vsub <= 2'd0;
+-                end else if (vsub == 2'd2) begin
+-                    ny <= ny + 1'b1;
+-                    vsub <= 2'd0;
+-                end else begin
+-                    vsub <= vsub + 1'b1;
+-                end
+-                // Each NES line, once its fetch is checked, asks for the
+-                // next; line 0 is asked for as vertical blank begins.
+-                if (new_line && shown_en) begin
+-                    if (fd_sync[1] != fr_req)
+-                        late_t <= !late_t;
+-                    if (ny_next != 8'd239) begin
+-                        fr_line <= ny_next + 1'b1;
+-                        fr_buf <= shown_buf;
+-                        fr_req <= !fr_req;
++                vcnt<=v_next;
++                if (new_source_line && shown_en) begin
++                    if (fd_sync[1]!=fr_req) late_t<=!late_t;
++                    if (source_line_next!=8'd179) begin
++                        fr_line<=source_line_next+1'b1; fr_buf<=shown_buf;
++                        fr_req<=!fr_req;
+                     end
+                 end
+-                // The new buffer and mode are taken as vertical blank begins.
+-                if (v_next == V_ACTIVE) begin
+-                    shown_buf <= ctrl_sync[1];
+-                    shown_en <= ctrl_sync[0];
+-                    shown_aspect <= aspect_sync;
+-                    layer_shown <= layer_sync[1];
+-                    pix_vblank <= 1'b1;
++                if (v_next==V_ACTIVE) begin
++                    shown_buf<=ctrl_sync[1]; shown_en<=ctrl_sync[0];
++                    pix_vblank<=1;
+                     if (ctrl_sync[0]) begin
+-                        fr_line <= 8'd0;
+-                        fr_buf <= ctrl_sync[1];
+-                        fr_req <= !fr_req;
++                        fr_line<=0; fr_buf<=ctrl_sync[1]; fr_req<=!fr_req;
+                     end
+-                end else if (v_next == 10'd0) begin
+-                    pix_vblank <= 1'b0;
+-                end
++                end else if (v_next==0) pix_vblank<=0;
+             end
+         end
+     end
+ 
+-    // Stage 0: the raster position, above. Stage 1: the line-buffer pixel
+-    // and the line's emphasis; the layer's cell. Stage 2: the palette index;
+-    // the cell's glyph row. Stage 3: the colour; the layer's colour. Stage 4:
+-    // the colour, bars or layer, registered. The encoders register stage 4.
+-    wire de0 = hcnt < H_ACTIVE && vcnt < V_ACTIVE;
+-    wire pic0 = hcnt >= x0 && hcnt < x0 + pic_w && vcnt < V_ACTIVE;
+-    wire hs0 = hcnt >= H_ACTIVE + H_FP && hcnt < H_ACTIVE + H_FP + H_SYNC;
+-    wire vs0 = vcnt >= V_ACTIVE + V_FP && vcnt < V_ACTIVE + V_FP + V_SYNC;
+-    wire [2:0] bar0 = hcnt < BAR ? 3'd0 : hcnt < 2 * BAR ? 3'd1 :
+-                      hcnt < 3 * BAR ? 3'd2 : hcnt < 4 * BAR ? 3'd3 :
+-                      hcnt < 5 * BAR ? 3'd4 : hcnt < 6 * BAR ? 3'd5 :
+-                      hcnt < 7 * BAR ? 3'd6 : 3'd7;
+-    wire [15:0] lb_word = lb[{ny[0], nx[7:1]}];
+-    wire [11:0] cell0 = cell_row + {5'd0, hcnt[10:4]};
+-
+-    // {layer, de, pic, hs, vs, en, bar} per stage.
+-    reg [8:0] ctl1 = 9'd0, ctl2 = 9'd0, ctl3 = 9'd0;
+-    reg [7:0] pixel1 = 8'd0;
+-    reg [2:0] emph1 = 3'd0;
+-    reg [9:0] index2 = 10'd0;
+-    reg [23:0] rgb3 = 24'd0;
+-    reg [44:0] cell1 = 45'd0;
+-    reg [2:0] row1 = 3'd0, col1 = 3'd0, col2 = 3'd0;
+-    reg [29:0] colours2 = 30'd0;
+-    reg [7:0] glyph2 = 8'd0;
+-    reg [23:0] lay3 = 24'd0;
+-
+-    // A 15-bit {b, g, r} colour as 24-bit RGB.
+-    function [23:0] rgb15(input [14:0] c);
+-        rgb15 = {c[4:0], c[4:2], c[9:5], c[9:7], c[14:10], c[14:12]};
+-    endfunction
+-
++    wire de0=hcnt<H_ACTIVE && vcnt<V_ACTIVE;
++    wire hs0=hcnt>=H_ACTIVE+H_FP && hcnt<H_ACTIVE+H_FP+H_SYNC;
++    wire vs0=vcnt>=V_ACTIVE+V_FP && vcnt<V_ACTIVE+V_FP+V_SYNC;
++    wire [2:0] bar0=hcnt<BAR?0:hcnt<2*BAR?1:hcnt<3*BAR?2:hcnt<4*BAR?3:
++                    hcnt<5*BAR?4:hcnt<6*BAR?5:hcnt<7*BAR?6:7;
++    wire [8:0] source_x=hcnt<H_ACTIVE?hcnt[10:2]:9'd0;
++    wire [7:0] source_y=vcnt[9:2];
++    wire [8:0] lb_read_index=(source_y[0]?9'd160:0)+{1'b0,source_x[8:1]};
++    wire [15:0] lb_word=lb[lb_read_index];
++    reg [6:0] ctl1=0, ctl2=0;
++    reg [7:0] pixel1=0;
++    reg [23:0] rgb2=0;
+     always @(posedge pix_clk) begin
+-        cell1 <= {cells4[cell0], cells3[cell0], cells2[cell0], cells1[cell0], cells0[cell0]};
+-        row1 <= vcnt[3:1];
+-        col1 <= hcnt[3:1];
+-        glyph2 <= font[{cell1[36:30], row1}];
+-        colours2 <= cell1[29:0];
+-        col2 <= col1;
+-        lay3 <= glyph2[col2] ? rgb15(colours2[29:15]) : rgb15(colours2[14:0]);
++        ctl1<={de0,hs0,vs0,shown_en,bar0};
++        pixel1<=source_x[0]?lb_word[15:8]:lb_word[7:0];
++        ctl2<=ctl1; rgb2<=palette[pixel1];
+     end
+ 
+-    always @(posedge pix_clk) begin
+-        pixel1 <= nx[0] ? lb_word[15:8] : lb_word[7:0];
+-        emph1 <= emphasis[{shown_buf, ny}][2:0];
+-        if (DEBUG_INDEX == 0)
+-            rgb3 <= palette[index2];
+-        else
+-            rgb3 <= index2 == 10'd0 ? 24'd0 :
+-                    {index2[7:0] | 8'h20, index2[4:0], 3'b111, index2[2:0], 5'b11111};
+-    end
+-
+-    // Non-zero pixels of the frame being shown, latched as it ends.
+-    // Likewise the pixel bits seen as 1 and as 0.
+-    reg [19:0] pixel_count = 20'd0;
+-    reg [7:0] seen1 = 8'd0, seen0 = 8'd0;
+-    initial pixels = 20'd0;
+-    initial bits = 16'd0;
+-    always @(posedge pix_clk) begin
+-        if (h_last && v_next == V_ACTIVE) begin
+-            pixels <= pixel_count;
+-            bits <= {seen0, seen1};
+-            pixel_count <= 20'd0;
+-            seen1 <= 8'd0;
+-            seen0 <= 8'd0;
+-        end else if (ctl1[6] && ctl1[3]) begin  // pic and en
+-            if (pixel1 != 8'd0)
+-                pixel_count <= pixel_count + 1'b1;
+-            seen1 <= seen1 | pixel1;
+-            seen0 <= seen0 | ~pixel1;
++    reg [19:0] pixel_count=0;
++    reg [7:0] seen1=0, seen0=0;
++    always @(posedge pix_clk)
++        if (h_last && v_next==V_ACTIVE) begin
++            pixels<=pixel_count; bits<={seen0,seen1};
++            pixel_count<=0; seen1<=0; seen0<=0;
++        end else if (ctl1[6] && ctl1[3]) begin
++            if (pixel1!=0) pixel_count<=pixel_count+1'b1;
++            seen1<=seen1|pixel1; seen0<=seen0|~pixel1;
+         end
+-    end
+ 
++    wire [2:0] bar2=ctl2[2:0];
++    wire r_on=bar2==0||bar2==1||bar2==4||bar2==5;
++    wire g_on=bar2==0||bar2==1||bar2==2||bar2==3;
++    wire b_on=bar2==0||bar2==2||bar2==4||bar2==6;
++    wire [23:0] colour2=!ctl2[3]?
++        {r_on?8'd192:8'd16,g_on?8'd192:8'd16,b_on?8'd192:8'd16}:rgb2;
++    reg [23:0] colour3=0;
++    reg de3=0, hs3=0, vs3=0;
+     always @(posedge pix_clk) begin
+-        ctl1 <= {layer_shown, de0, pic0, hs0, vs0, shown_en, bar0};
+-        ctl2 <= ctl1;
+-        ctl3 <= ctl2;
+-        index2 <= emph1 == 3'd0 ? {2'b00, pixel1} :
+-                  10'd256 + {1'b0, emph1, 6'd0} + {4'd0, pixel1[5:0]};
++        colour3<=colour2; de3<=ctl2[6]; hs3<=ctl2[5]; vs3<=ctl2[4];
+     end
+-
+-    // white, yellow, cyan, green, magenta, red, blue, black
+-    wire [2:0] bar3 = ctl3[2:0];
+-    wire r_on = bar3 == 3'd0 || bar3 == 3'd1 || bar3 == 3'd4 || bar3 == 3'd5;
+-    wire g_on = bar3 == 3'd0 || bar3 == 3'd1 || bar3 == 3'd2 || bar3 == 3'd3;
+-    wire b_on = bar3 == 3'd0 || bar3 == 3'd2 || bar3 == 3'd4 || bar3 == 3'd6;
+-    wire de3 = ctl3[7], pic3 = ctl3[6], hs3 = ctl3[5], vs3 = ctl3[4], en3 = ctl3[3];
+-    wire layer3 = ctl3[8];
+-    wire [23:0] colour3 = layer3 ? lay3 :
+-                          !en3 ? {r_on ? 8'd192 : 8'd16, g_on ? 8'd192 : 8'd16,
+-                                  b_on ? 8'd192 : 8'd16} :
+-                          pic3 ? rgb3 : 24'd0;
+-
+-    reg [23:0] colour4 = 24'd0;
+-    reg de4 = 1'b0, hs4 = 1'b0, vs4 = 1'b0;
+-    always @(posedge pix_clk) begin
+-        colour4 <= colour3;
+-        de4 <= de3;
+-        hs4 <= hs3;
+-        vs4 <= vs3;
+-    end
+-
+-    tmds_encoder enc_blue (.clk(pix_clk), .reset(pix_reset), .de(de4), .ctrl({vs4, hs4}),
+-                           .d(colour4[7:0]), .q(tmds_blue));
+-    tmds_encoder enc_green (.clk(pix_clk), .reset(pix_reset), .de(de4), .ctrl(2'b00),
+-                            .d(colour4[15:8]), .q(tmds_green));
+-    tmds_encoder enc_red (.clk(pix_clk), .reset(pix_reset), .de(de4), .ctrl(2'b00),
+-                          .d(colour4[23:16]), .q(tmds_red));
++    tmds_encoder enc_blue(.clk(pix_clk),.reset(pix_reset),.de(de3),
++        .ctrl({vs3,hs3}),.d(colour3[7:0]),.q(tmds_blue));
++    tmds_encoder enc_green(.clk(pix_clk),.reset(pix_reset),.de(de3),
++        .ctrl(2'b00),.d(colour3[15:8]),.q(tmds_green));
++    tmds_encoder enc_red(.clk(pix_clk),.reset(pix_reset),.de(de3),
++        .ctrl(2'b00),.d(colour3[23:16]),.q(tmds_red));
+ endmodule
+ 
+-// DVI 1.0 TMDS encoder (section 3.3.3); q[0] is the first bit on the wire.
+-// From TinyTang's fpga/hdmi_test/hdmi_test.v (MIT), without its clock enable.
+-module tmds_encoder (
+-    input  wire       clk,
+-    input  wire       reset,
+-    input  wire       de,
+-    input  wire [1:0] ctrl,
+-    input  wire [7:0] d,
+-    output reg  [9:0] q
+-);
+-    wire [3:0] n1d = d[0] + d[1] + d[2] + d[3] + d[4] + d[5] + d[6] + d[7];
+-    wire use_xnor = n1d > 4'd4 || (n1d == 4'd4 && d[0] == 1'b0);
+-
++module tmds_encoder(input wire clk,input wire reset,input wire de,
++    input wire [1:0] ctrl,input wire [7:0] d,output reg [9:0] q);
++    wire [3:0] n1d=d[0]+d[1]+d[2]+d[3]+d[4]+d[5]+d[6]+d[7];
++    wire use_xnor=n1d>4'd4||(n1d==4'd4&&!d[0]);
+     wire [8:0] qm;
+-    assign qm[0] = d[0];
++    assign qm[0]=d[0];
+     genvar k;
+-    generate
+-        for (k = 1; k < 8; k = k + 1) begin : stage
+-            assign qm[k] = use_xnor ? ~(qm[k-1] ^ d[k]) : (qm[k-1] ^ d[k]);
+-        end
+-    endgenerate
+-    assign qm[8] = ~use_xnor;
+-
+-    wire [3:0] n1q = qm[0] + qm[1] + qm[2] + qm[3] + qm[4] + qm[5] + qm[6] + qm[7];
+-    wire signed [4:0] diff = $signed({1'b0, n1q}) - $signed(5'd8 - {1'b0, n1q});  // N1 - N0
+-    wire signed [4:0] two_qm8  = qm[8] ? 5'sd2 : 5'sd0;
+-    wire signed [4:0] two_nqm8 = qm[8] ? 5'sd0 : 5'sd2;
+-
+-    reg signed [4:0] cnt = 5'sd0;
+-    initial q = 10'd0;
++    generate for(k=1;k<8;k=k+1) begin:stage
++        assign qm[k]=use_xnor?~(qm[k-1]^d[k]):qm[k-1]^d[k];
++    end endgenerate
++    assign qm[8]=~use_xnor;
++    wire [3:0] n1q=qm[0]+qm[1]+qm[2]+qm[3]+qm[4]+qm[5]+qm[6]+qm[7];
++    wire signed [4:0] diff=$signed({1'b0,n1q})-$signed(5'd8-{1'b0,n1q});
++    wire signed [4:0] two_qm8=qm[8]?5'sd2:5'sd0;
++    wire signed [4:0] two_nqm8=qm[8]?5'sd0:5'sd2;
++    reg signed [4:0] cnt=0;
++    initial q=0;
+     always @(posedge clk)
+-        if (reset) begin
+-            cnt <= 5'sd0;
+-            q   <= 10'd0;
+-        end else if (!de) begin
+-            cnt <= 5'sd0;
+-            case (ctrl)
+-                2'b00: q <= 10'b1101010100;
+-                2'b01: q <= 10'b0010101011;
+-                2'b10: q <= 10'b0101010100;
+-                2'b11: q <= 10'b1010101011;
++        if(reset) begin cnt<=0;q<=0; end
++        else if(!de) begin
++            cnt<=0;
++            case(ctrl)
++                0:q<=10'b1101010100;1:q<=10'b0010101011;
++                2:q<=10'b0101010100;default:q<=10'b1010101011;
+             endcase
+-        end else if (cnt == 5'sd0 || diff == 5'sd0) begin
+-            q   <= {~qm[8], qm[8], qm[8] ? qm[7:0] : ~qm[7:0]};
+-            cnt <= qm[8] ? cnt + diff : cnt - diff;
+-        end else if ((cnt > 5'sd0 && diff > 5'sd0) || (cnt < 5'sd0 && diff < 5'sd0)) begin
+-            q   <= {1'b1, qm[8], ~qm[7:0]};
+-            cnt <= cnt + two_qm8 - diff;
+-        end else begin
+-            q   <= {1'b0, qm[8], qm[7:0]};
+-            cnt <= cnt - two_nqm8 + diff;
+-        end
++        end else if(cnt==0||diff==0) begin
++            q<={~qm[8],qm[8],qm[8]?qm[7:0]:~qm[7:0]};
++            cnt<=qm[8]?cnt+diff:cnt-diff;
++        end else if((cnt>0&&diff>0)||(cnt<0&&diff<0)) begin
++            q<={1'b1,qm[8],~qm[7:0]};cnt<=cnt+two_qm8-diff;
++        end else begin q<={1'b0,qm[8],qm[7:0]};cnt<=cnt-two_nqm8+diff;end
+ endmodule
+diff --git a/tools/build_ae350_soc.sh b/tools/build_ae350_soc.sh
+index 3c594f2..0518544 100755
+--- a/tools/build_ae350_soc.sh
++++ b/tools/build_ae350_soc.sh
+@@ -58,7 +58,7 @@ cd "$root"
+ echo "Yosys synthesis"
+ yosys -Q -T -q -l "$out/synth.log" -p "
+     read_verilog -lib $suite/share/yosys/gowin/cells_xtra_gw5a.v
+-    read_verilog -sv $src/ahb_boot_rom.sv $src/ahb_ram.sv $src/ahb_sdram.sv $src/exts_uart.sv $src/desk_link.sv $src/video.sv $src/wii_pads.sv $src/i2s_out.sv $src/ae350_soc.sv
++    read_verilog -sv $src/ahb_boot_rom.sv $src/ahb_ram.sv $src/ahb_sdram.sv $src/exts_uart.sv $src/video.sv $src/ae350_soc.sv
+     $synth_param
+     synth_gowin -family gw5a -top ae350_soc_top
+     write_json $out/ae350_soc.json
