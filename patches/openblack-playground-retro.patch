@@ -1,0 +1,430 @@
+diff --git a/assets/shaders/fs_pixel_upscale.sc b/assets/shaders/fs_pixel_upscale.sc
+new file mode 100644
+--- /dev/null
++++ b/assets/shaders/fs_pixel_upscale.sc
+@@ -0,0 +1,10 @@
++$input v_texcoord0
++
++#include <bgfx_shader.sh>
++
++SAMPLER2D(s_diffuse, 0);
++
++void main()
++{
++	gl_FragColor = texture2D(s_diffuse, v_texcoord0.xy);
++}
+diff --git a/assets/shaders/vs_pixel_upscale.sc b/assets/shaders/vs_pixel_upscale.sc
+new file mode 100644
+--- /dev/null
++++ b/assets/shaders/vs_pixel_upscale.sc
+@@ -0,0 +1,10 @@
++$input a_position
++$output v_texcoord0
++
++#include <bgfx_shader.sh>
++
++void main()
++{
++	gl_Position = vec4(a_position.xy, 0.0, 1.0);
++	v_texcoord0.xy = vec2(a_position.x * 0.5 + 0.5, 0.5 - a_position.y * 0.5);
++}
+diff --git a/src/3D/LandBlock.cpp b/src/3D/LandBlock.cpp
+--- a/src/3D/LandBlock.cpp
++++ b/src/3D/LandBlock.cpp
+@@ -20,6 +20,7 @@
+ #include "Dynamics/LandBlockBulletMeshInterface.h"
+ #include "Graphics/Mesh.h"
+ #include "Graphics/VertexBuffer.h"
++#include "Locator.h"
+ 
+ using namespace openblack;
+ using namespace openblack::graphics;
+@@ -67,6 +68,10 @@ void LandBlock::BuildMesh(LandIslandInterface& island)
+ 
+ 	auto* vertexBuffer = new VertexBuffer("LandBlock", verticesMem, decl);
+ 	_mesh = std::make_unique<Mesh>(vertexBuffer);
++	if (Locator::config::value().playground)
++	{
++		return;
++	}
+ 
+ 	_dynamicsMeshInterface = std::make_unique<dynamics::LandBlockBulletMeshInterface>(vertices);
+ 
+diff --git a/src/3D/Implementations/LandIsland.cpp b/src/3D/Implementations/LandIsland.cpp
+--- a/src/3D/Implementations/LandIsland.cpp
++++ b/src/3D/Implementations/LandIsland.cpp
+@@ -146,8 +146,13 @@ void LandIsland::LoadFromFile(const std::filesystem::path& path)
+ 
+ 	// build the meshes (we could move this elsewhere)
++	size_t blockIndex = 0;
+ 	for (auto& block : _landBlocks)
+ 	{
+ 		block.BuildMesh(*this);
++		if (Locator::config::value().playground && ++blockIndex % 8 == 0)
++		{
++			bgfx::frame();
++		}
+ 	}
+ 	bgfx::frame();
+ }
+diff --git a/src/Debug/Gui.cpp b/src/Debug/Gui.cpp
+--- a/src/Debug/Gui.cpp
++++ b/src/Debug/Gui.cpp
+@@ -91,6 +91,16 @@ using namespace openblack::debug::gui;
+ 
+ namespace
+ {
++class NoOpGui final: public DebugGuiInterface
++{
++public:
++	[[nodiscard]] bool StealsFocus() const noexcept override { return false; }
++	void SetScale(float) noexcept override {}
++	bool ProcessEvents(const SDL_Event&) noexcept override { return false; }
++	bool Loop() noexcept override { return false; }
++	void Draw() noexcept override {}
++};
++
+ const std::array<bgfx::EmbeddedShader, 5> k_EmbeddedShaders = {{
+     BGFX_EMBEDDED_SHADER(vs_ocornut_imgui),
+     BGFX_EMBEDDED_SHADER(fs_ocornut_imgui),
+@@ -103,6 +113,11 @@ const std::array<bgfx::EmbeddedShader, 5> k_EmbeddedShaders = {{
+ 
+ std::unique_ptr<DebugGuiInterface> DebugGuiInterface::Create(graphics::RenderPass viewId) noexcept
+ {
++	if (Locator::config::value().playground)
++	{
++		return std::make_unique<NoOpGui>();
++	}
++
+ 	IMGUI_CHECKVERSION();
+ 	auto* imgui = ImGui::CreateContext();
+ 	ImGui::GetIO().BackendRendererName = "imgui_impl_bgfx";
+diff --git a/src/EngineConfig.h b/src/EngineConfig.h
+--- a/src/EngineConfig.h
++++ b/src/EngineConfig.h
+@@ -67,6 +67,8 @@ struct EngineConfig
+ 
+ 	GraphicsBackend graphicsBackend {GraphicsBackend::Noop};
+ 	glm::u16vec2 resolution {256, 256};
++	glm::u16vec2 renderResolution {256, 256};
++	uint16_t pixelScale {1};
+ 	windowing::DisplayMode displayMode {windowing::DisplayMode::Windowed};
+ 
+ 	uint32_t numFramesToSimulate {0};
+diff --git a/src/Game.cpp b/src/Game.cpp
+--- a/src/Game.cpp
++++ b/src/Game.cpp
+@@ -9,6 +9,8 @@
+ 
+ #include "Game.h"
+ 
++#include <algorithm>
+ #include <string>
++#include <thread>
+ 
+ #include <LHVM.h>
+@@ -116,6 +117,8 @@ Game::Game(Arguments&& args) noexcept
+ 	config.numFramesToSimulate = args.numFramesToSimulate;
+ 	config.numFramesToSimulate = args.numFramesToSimulate;
+ 	config.resolution = {args.windowWidth, args.windowHeight};
++	config.pixelScale = config.playground ? std::max<uint16_t>(1, args.pixelScale) : 1;
++	config.renderResolution = glm::max(config.resolution / config.pixelScale, glm::u16vec2(1, 1));
+ 	config.displayMode = args.displayMode;
+ 	config.graphicsBackend = args.graphicsBackend;
+ 	config.vsync = args.vsync;
+@@ -160,12 +163,14 @@ bool Game::ProcessEvents(const SDL_Event& event) noexcept
+ 		}
+ 		else if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED)
+ 		{
+-			const auto resolution = glm::u16vec2(event.window.data1, event.window.data2);
+-			Locator::rendererInterface::value().Reset(resolution);
+-			Locator::rendererInterface::value().ConfigureView(graphics::RenderPass::Main, resolution, 0x274659ff);
++			auto& config = Locator::config::value();
++			config.resolution = glm::u16vec2(event.window.data1, event.window.data2);
++			config.renderResolution = glm::max(config.resolution / config.pixelScale, glm::u16vec2(1, 1));
++			Locator::rendererInterface::value().Reset(config.resolution);
++			Locator::rendererInterface::value().ConfigureView(graphics::RenderPass::Main, config.renderResolution, 0x274659ff);
++			Locator::rendererInterface::value().ConfigureView(graphics::RenderPass::PixelUpscale, config.resolution, 0x000000ff);
+ 
+ 			auto aspect = window.GetAspectRatio();
+-			const auto& config = Locator::config::value();
+ 			camera.SetProjectionMatrixPerspective(config.cameraXFov, aspect, config.cameraNearClip, config.cameraFarClip);
+ 		}
+ 		break;
+@@ -810,6 +815,9 @@ bool Game::Run() noexcept
+ 		return false;
+ 	}
+ 
+-	Locator::dynamicsSystem::value().RegisterRigidBodies();
++	if (!config.playground)
++	{
++		Locator::dynamicsSystem::value().RegisterRigidBodies();
++	}
+ 
+ 	auto& fileSystem = Locator::filesystem::value();
+@@ -849,8 +857,12 @@ bool Game::Run() noexcept
+ 
+ 	if (Locator::windowing::has_value())
+ 	{
+-		const auto size = static_cast<glm::u16vec2>(Locator::windowing::value().GetSize());
+-		Locator::rendererInterface::value().ConfigureView(graphics::RenderPass::Main, size, 0x274659ff);
++		Locator::rendererInterface::value().ConfigureView(graphics::RenderPass::Main, config.renderResolution, 0x274659ff);
++		if (config.playground)
++		{
++			Locator::rendererInterface::value().ConfigureView(graphics::RenderPass::PixelUpscale, config.resolution,
++			                                                   0x000000ff);
++		}
+ 	}
+ 
+ 	if (!config.playground)
+@@ -875,6 +887,7 @@ bool Game::Run() noexcept
+ 
+ 	_frameCount = 0;
+ 	auto lastTime = std::chrono::high_resolution_clock::now();
++	auto nextPlaygroundFrame = std::chrono::steady_clock::now();
+ 	auto& profiler = Locator::profiler::value();
+ 	while (Update())
+ 	{
+@@ -922,6 +935,19 @@ bool Game::Run() noexcept
+ 			auto section = profiler.BeginScoped(Profiler::Stage::RendererFrame);
+ 			Locator::rendererInterface::value().Frame();
+ 		}
++		if (config.playground)
++		{
++			nextPlaygroundFrame += std::chrono::microseconds(33333);
++			const auto now = std::chrono::steady_clock::now();
++			if (now < nextPlaygroundFrame)
++			{
++				std::this_thread::sleep_until(nextPlaygroundFrame);
++			}
++			else
++			{
++				nextPlaygroundFrame = now;
++			}
++		}
+ 
+ 		// Clear the stale screenshot request
+ 		if (_requestScreenshot.has_value())
+@@ -1016,6 +1029,9 @@ void Game::LoadLandscape(const std::filesystem::path& path)
+ 	ecs::archetypes::PlayerArchetype::Create(PlayerNames::PLAYER_ONE);
+ 
+ 	Locator::cameraBookmarkSystem::value().Initialize();
+-	Locator::dynamicsSystem::value().RegisterIslandRigidBodies(Locator::terrainSystem::value());
++	if (!Locator::config::value().playground)
++	{
++		Locator::dynamicsSystem::value().RegisterIslandRigidBodies(Locator::terrainSystem::value());
++	}
+ 	Locator::playerSystem::value().RegisterPlayers();
+ }
+diff --git a/src/Game.h b/src/Game.h
+--- a/src/Game.h
++++ b/src/Game.h
+@@ -60,6 +60,7 @@ struct Arguments
+ 	std::string gamePath;
+ 	float guiScale;
+ 	bool playground {false};
++	uint16_t pixelScale {1};
+ 	uint32_t numFramesToSimulate;
+ 	std::string logFile;
+ 	std::array<spdlog::level::level_enum, k_LoggingSubsystemStrs.size()> logLevels;
+diff --git a/src/Graphics/RenderPass.h b/src/Graphics/RenderPass.h
+--- a/src/Graphics/RenderPass.h
++++ b/src/Graphics/RenderPass.h
+@@ -22,6 +22,7 @@ enum class RenderPass : uint8_t
+ 	Footprint,
+ 	Reflection,
+ 	Main,
++	PixelUpscale,
+ 	ImGui,
+ 	MeshViewer,
+ 
+@@ -32,6 +33,7 @@ static constexpr std::array<std::string_view, static_cast<uint8_t>(RenderPass::_
+     "Footprint Pass",   //
+     "Reflection Pass",  //
+     "Main Pass",        //
++    "Pixel Upscale",    //
+     "ImGui Pass",       //
+     "Mesh Viewer Pass", //
+ };
+diff --git a/src/Graphics/Renderer.cpp b/src/Graphics/Renderer.cpp
+--- a/src/Graphics/Renderer.cpp
++++ b/src/Graphics/Renderer.cpp
+@@ -268,6 +268,12 @@ Renderer::Renderer(uint32_t bgfxReset, std::unique_ptr<BgfxCallback>&& bgfxCallb
+ {
+ 	_shaderManager->LoadShaders();
+ 	_plane = Primitive::CreatePlane();
++	if (Locator::config::value().playground)
++	{
++		const auto resolution = Locator::config::value().renderResolution;
++		_pixelFrameBuffer = std::make_unique<FrameBuffer>("Pixel Playground", resolution.x, resolution.y,
++		                                                  TextureFormat::RGBA8, TextureFormat::Depth24Stencil8);
++	}
+ 
+ 	// give debug names to views
+ 	// TODO (#749) use std::views::enumerate
+@@ -280,6 +286,7 @@ Renderer::Renderer(uint32_t bgfxReset, std::unique_ptr<BgfxCallback>&& bgfxCallb
+ 
+ Renderer::~Renderer() noexcept
+ {
++	_pixelFrameBuffer.reset();
+ 	_plane.reset();
+ 	_shaderManager.reset();
+ 	bgfx::frame();
+@@ -295,6 +302,12 @@ void Renderer::ConfigureView(graphics::RenderPass viewId, glm::u16vec2 resolutio
+ void Renderer::Reset(glm::u16vec2 resolution) const noexcept
+ {
+ 	bgfx::reset(resolution.x, resolution.y, _bgfxReset);
++	if (Locator::config::value().playground)
++	{
++		const auto renderResolution = Locator::config::value().renderResolution;
++		_pixelFrameBuffer = std::make_unique<FrameBuffer>("Pixel Playground", renderResolution.x, renderResolution.y,
++		                                                  TextureFormat::RGBA8, TextureFormat::Depth24Stencil8);
++	}
+ }
+ 
+ graphics::ShaderManager& Renderer::GetShaderManager() const noexcept
+@@ -539,10 +552,33 @@ void Renderer::DrawScene(const DrawSceneDesc& drawDesc) const noexcept
+ 	// Main Draw Pass
+ 	{
+ 		auto section = Locator::profiler::value().BeginScoped(Profiler::Stage::MainPass);
+-		DrawPass(drawDesc);
++		if (Locator::config::value().playground)
++		{
++			auto pixelDrawDesc = drawDesc;
++			pixelDrawDesc.frameBuffer = _pixelFrameBuffer.get();
++			DrawPass(pixelDrawDesc);
++			DrawPixelUpscale();
++		}
++		else
++		{
++			DrawPass(drawDesc);
++		}
+ 	}
+ }
+ 
++void Renderer::DrawPixelUpscale() const
++{
++	const auto viewId = static_cast<bgfx::ViewId>(RenderPass::PixelUpscale);
++	const auto* shader = _shaderManager->GetShader("PixelUpscale");
++	bgfx::setViewFrameBuffer(viewId, BGFX_INVALID_HANDLE);
++	bgfx::touch(viewId);
++	shader->SetTextureSampler("s_diffuse", 0, _pixelFrameBuffer->GetColorAttachment(),
++	                          BGFX_SAMPLER_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
++	_plane->GetVertexBuffer().Bind();
++	bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
++	bgfx::submit(viewId, toBgfx(shader->GetRawHandle()));
++}
++
+ void Renderer::DrawPass(const DrawSceneDesc& desc) const
+ {
+ 	const auto& meshManager = Locator::resources::value().GetMeshes();
+diff --git a/src/Graphics/Renderer.h b/src/Graphics/Renderer.h
+--- a/src/Graphics/Renderer.h
++++ b/src/Graphics/Renderer.h
+@@ -67,6 +67,7 @@ class Renderer final: public RendererInterface
+ 
+ private:
+ 	void DrawFootprintPass(const DrawSceneDesc& drawDesc) const;
++	void DrawPixelUpscale() const;
+ 	void DrawSubMesh(const L3DMesh& mesh, const L3DSubMesh& subMesh, const L3DMeshSubmitDesc& desc, bool preserveState) const;
+ 	void DrawPass(const DrawSceneDesc& desc) const;
+ 
+@@ -76,6 +77,7 @@ class Renderer final: public RendererInterface
+ 	bool _bgfxDebug = false;
+ 	bool _bgfxProfile = false;
+ 	std::unique_ptr<Mesh> _plane;
++	mutable std::unique_ptr<FrameBuffer> _pixelFrameBuffer;
+ };
+ } // namespace graphics
+ } // namespace openblack
+diff --git a/src/Graphics/ShaderManager.cpp b/src/Graphics/ShaderManager.cpp
+--- a/src/Graphics/ShaderManager.cpp
++++ b/src/Graphics/ShaderManager.cpp
+@@ -73,6 +73,11 @@
+ #define SHADER_NAME fs_water
+ #include "ShaderIncluder.h"
+ 
++#define SHADER_NAME vs_pixel_upscale
++#include "ShaderIncluder.h"
++#define SHADER_NAME fs_pixel_upscale
++#include "ShaderIncluder.h"
++
+ #define SHADER_NAME vs_sprite
+ #include "ShaderIncluder.h"
+ #define SHADER_NAME fs_sprite
+@@ -102,7 +107,7 @@ struct ShaderDefinition
+ 	const std::string_view fragmentShaderName;
+ };
+ 
+-const std::array<bgfx::EmbeddedShader, 20> k_EmbeddedShaders = {{
++const std::array<bgfx::EmbeddedShader, 22> k_EmbeddedShaders = {{
+     BGFX_EMBEDDED_SHADER(vs_line),
+     BGFX_EMBEDDED_SHADER(vs_line_instanced), //
+     BGFX_EMBEDDED_SHADER(fs_line),           //
+@@ -115,6 +120,8 @@ const std::array<bgfx::EmbeddedShader, 20> k_EmbeddedShaders = {{
+     BGFX_EMBEDDED_SHADER(fs_terrain), //
+     BGFX_EMBEDDED_SHADER(vs_water),
+     BGFX_EMBEDDED_SHADER(fs_water), //
++    BGFX_EMBEDDED_SHADER(vs_pixel_upscale),
++    BGFX_EMBEDDED_SHADER(fs_pixel_upscale), //
+     BGFX_EMBEDDED_SHADER(vs_sprite),
+     BGFX_EMBEDDED_SHADER(fs_sprite), //
+     BGFX_EMBEDDED_SHADER(vs_footprint_instanced),
+@@ -134,6 +141,7 @@ constexpr std::array k_Shaders {
+     ShaderDefinition {"ObjectHeightMapInstanced", "vs_object_hm_instanced", "fs_object"},
+     ShaderDefinition {"Sky", "vs_object", "fs_sky"},
+     ShaderDefinition {"Water", "vs_water", "fs_water"},
++    ShaderDefinition {"PixelUpscale", "vs_pixel_upscale", "fs_pixel_upscale"},
+     ShaderDefinition {"Sprite", "vs_sprite", "fs_sprite"},
+     ShaderDefinition {"FootprintInstanced", "vs_footprint_instanced", "fs_footprint"},
+     ShaderDefinition {"Vegetation", "vs_vegetation", "fs_vegetation"},
+diff --git a/src/Graphics/ShaderProgram.cpp b/src/Graphics/ShaderProgram.cpp
+--- a/src/Graphics/ShaderProgram.cpp
++++ b/src/Graphics/ShaderProgram.cpp
+@@ -58,12 +58,13 @@ ShaderProgram::~ShaderProgram()
+ 	}
+ }
+ 
+-void ShaderProgram::SetTextureSampler(const char* samplerName, uint8_t bindPoint, const Texture2D& texture) const
++void ShaderProgram::SetTextureSampler(const char* samplerName, uint8_t bindPoint, const Texture2D& texture,
++                                      uint32_t flags) const
+ {
+ 	auto uniform = _uniforms.find(samplerName);
+ 	if (uniform != _uniforms.cend())
+ 	{
+-		bgfx::setTexture(bindPoint, toBgfx(uniform->second), toBgfx(texture.GetNativeHandle()));
++		bgfx::setTexture(bindPoint, toBgfx(uniform->second), toBgfx(texture.GetNativeHandle()), flags);
+ 	}
+ 	else
+ 	{
+diff --git a/src/Graphics/ShaderProgram.h b/src/Graphics/ShaderProgram.h
+--- a/src/Graphics/ShaderProgram.h
++++ b/src/Graphics/ShaderProgram.h
+@@ -34,6 +34,7 @@ class ShaderProgram
+ 	ShaderProgram(const std::string& name, ShaderHandle vertexShader, ShaderHandle fragmentShader);
+ 	~ShaderProgram();
+ 
+-	void SetTextureSampler(const char* samplerName, uint8_t bindPoint, const Texture2D& texture) const;
++	void SetTextureSampler(const char* samplerName, uint8_t bindPoint, const Texture2D& texture,
++	                       uint32_t flags = UINT32_MAX) const;
+ 	void SetTextureSampler(const char* samplerName, uint8_t bindPoint, const graphics::TextureHandle& texture) const;
+ 	void SetUniformValue(const char* uniformName, const void* value) const;
+diff --git a/src/main.cpp b/src/main.cpp
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -50,6 +50,7 @@ bool parseOptions(int argc, char** argv, openblack::Arguments& args, int& return
+ 		("H,height", "Window resolution in the y axis.", cxxopts::value<uint16_t>()->default_value("1024"))
+ 		("u,ui-scale", "Scaling of the GUI", cxxopts::value<float>()->default_value("1.0"))
+ 		("playground", "Load only the landscape, sky, and simplified water.")
++		("pixel-scale", "Playground window-to-render pixel scale.", cxxopts::value<uint16_t>()->default_value("2"))
+ 		("s,start-level", "Level that is loaded at start-up", cxxopts::value<std::string>()->default_value("Land1.txt"))
+ 		("V,vsync", "Enable Vertical Sync.")
+ 		("m,window-mode", "Which mode to run window.", cxxopts::value<std::string>()->default_value("windowed"))
+@@ -177,6 +178,7 @@ bool parseOptions(int argc, char** argv, openblack::Arguments& args, int& return
+ 		args.windowHeight = result["height"].as<uint16_t>();
+ 		args.guiScale = result["ui-scale"].as<float>();
+ 		args.playground = result["playground"].as<bool>();
++		args.pixelScale = result["pixel-scale"].as<uint16_t>();
+ 		args.vsync = result["vsync"].as<bool>();
+ 		args.displayMode = displayMode;
+ 		args.graphicsBackend = graphicsBackend;

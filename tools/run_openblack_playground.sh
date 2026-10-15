@@ -23,6 +23,7 @@ if [[ ! -d "$game_dir/Data" || ! -d "$game_dir/Scripts" ]]; then
     exit 2
 fi
 
-exec "$binary" --playground -g "$game_dir" \
+exec nice -n "${OPENBLACK_NICE:-5}" "$binary" --playground -g "$game_dir" \
     -W "${OPENBLACK_WIDTH:-640}" -H "${OPENBLACK_HEIGHT:-360}" \
+    --pixel-scale "${OPENBLACK_PIXEL_SCALE:-2}" \
     -u "${OPENBLACK_UI_SCALE:-0.75}" -V -l stdout -L all=info "$@"
