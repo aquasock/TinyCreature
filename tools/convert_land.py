@@ -50,8 +50,16 @@ NOISE_BYTES = 0x10000
 CELLS_PER_BLOCK = 16
 # The palette is 256 entries and the program owns the first nineteen: 0 is
 # never drawn by the land, 1 to 8 are the sky's ramp, 9 to 16 the sea's, and
-# 17 and 18 are the cursor's two colours. The land takes the rest.
-TERRAIN_COLOURS = 237
+# 17 and 18 are the cursor's two colours. The land takes the rest -- and it
+# takes 192 of the 237 it could, because the entries above 211 are the pool the
+# tile art this project is turning to must come from, and the land gives them
+# up cheaply. Fitting the island's 817 vertex colours to 237, 224, 192, 160,
+# 128, 96, 64 and 48 entries measures a weighted mean error of 2.04, 2.17,
+# 2.85, 6.19, 7.82, 10.01, 13.13 and 14.37 out of 255, with a worst vertex of
+# 25.3, 25.3, 30.3, 43.7, 60.4, 63.0, 79.9 and 84.4: the first forty-five
+# entries go for about one per cent of colour, and the next thirty-two cost
+# more than those forty-five did. --colours moves it, and took that table.
+TERRAIN_COLOURS = 192
 FIRST_COLOUR = 19
 WATER = 0x10 | 0x40  # hasWater, fullWater
 SPLIT = 0x80
@@ -140,7 +148,27 @@ def median_cut(weighted, count):
     return palette, index
 
 
-def convert(data):
+def fit_error(usage, palette, index):
+    """What the fit costs, in RGB: the weighted mean error and the worst one.
+
+    This is the number the palette's size is chosen by. The renderer takes a
+    vertex's colour as its palette entry and shades between those, so an entry
+    further from the colour it stands for is a gradient that leans the wrong
+    way, and the land has no dithering to hide it with.
+    """
+    total, weight, worst = 0, 0, 0
+    for colour, w in usage.items():
+        p = palette[index[colour]]
+        d2 = sum((colour[ch] - p[ch]) ** 2 for ch in range(3))
+        total += d2 * w
+        weight += w
+        if d2 > worst:
+            worst = d2
+    mean = (total / weight) ** 0.5 if weight else 0.0
+    return mean, worst ** 0.5
+
+
+def convert(data, terrain_colours=TERRAIN_COLOURS):
     lut, blocks, countries, materials, noise, bump = read_lnd(data)
     by_index = {}
     for i, (block_x, block_z, cells) in enumerate(blocks):
@@ -231,8 +259,9 @@ def convert(data):
                 usage[colour] = usage.get(colour, 0) + 1
     for colour in rounded:
         usage.setdefault(colour, 1)
-    palette, index = median_cut(usage, TERRAIN_COLOURS)
+    palette, index = median_cut(usage, terrain_colours)
     entry = bytes(FIRST_COLOUR + index[colour] for colour in rounded)
+    fit_mean, fit_worst = fit_error(usage, palette, index)
 
     cell_bytes = bytearray()
     for t in triangles:
@@ -255,6 +284,7 @@ def convert(data):
         "blocks": len(blocks), "cells": f"{cells_x}x{cells_z}",
         "origin": f"{origin_x},{origin_z}", "triangles": drawn,
         "colours": len(usage), "palette": len(palette),
+        "fit": f"{fit_mean:.2f}mean/{fit_worst:.1f}worst",
         "bytes": len(header) + len(body),
     }
     return header + body, summary
@@ -264,11 +294,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("lnd")
     parser.add_argument("out")
+    parser.add_argument("--colours", type=int, default=TERRAIN_COLOURS,
+                        help="palette entries fitted to the land (default "
+                             f"{TERRAIN_COLOURS}, the ones the program does not own)")
     args = parser.parse_args()
     with open(args.lnd, "rb") as f:
         data = f.read()
     try:
-        out, summary = convert(data)
+        out, summary = convert(data, args.colours)
     except (LandError, struct.error, IndexError) as error:
         print(f"{args.lnd}: {error}", file=sys.stderr)
         return 1

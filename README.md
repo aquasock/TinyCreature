@@ -148,7 +148,16 @@ claims about a tenth of the pixels Land 2 draws, because the land's palest,
 least saturated colours are nearer a grey than to the land's own entries,
 while a saturated one claims none -- so with the ramp admitted and the sprite
 absent all six scripted lands still draw the frame CRCs they drew before it
-existed. The sprite is drawn the way the cursor is, a run of one colour a row
+existed. The land's own entries are 192 rather than the 237 it could take,
+because the entries above 211 are the pool the tile art this project is turning
+to has to be fitted into and the island gives them up cheaply: fitting its 817
+vertex colours to 237, 224, 192, 160, 128, 96, 64 and 48 entries costs a
+weighted mean error of 2.04, 2.17, 2.85, 6.19, 7.82, 10.01, 13.13 and 14.37 out
+of 255, so the first forty-five entries go for about one per cent of colour and
+the next thirty-two cost more than those did. That is Land 1's curve and not
+the others': at 192 the remaining five fit to between 1.93 and 17.40, so a
+different world would want its own decision about how much of the pool it
+takes. The sprite is drawn the way the cursor is, a run of one colour a row
 as a rectangle, and from inside the cell walk at the cell it stands on, so
 nearer land paints over it and farther land stays behind. Its height is six
 cells of world and it obeys the camera, which makes it about fifteen pixels at

@@ -991,3 +991,34 @@ The software pass is measured out, so the frame's remaining levers are the ones 
 - User Test: NOT RUN
 
 ---
+
+## 31 COMMIT Unreleased 2026-10-15T16:47:31-07:00
+
+#### Coming From:
+
+Unreleased eda539a
+
+#### Purpose:
+
+Free the top of the palette for the tile art this project is turning to, by fitting the island's colours to fewer entries and measuring what each one costs.
+
+#### Outcome:
+
+The user pivoted the project's content away from Black & White while keeping it in spirit: the art this engine will carry comes from Dungeon Crawl Stone Soup and from the DFgraphics tile sets, Land 1 stays the world for now, and `.ai/core.md` is deliberately left alone until he says otherwise. Two consequences were measured before any work. The whole DCSS graphics set is 5,944 PNGs and 4.1 MB, an average of 728 bytes a tile, so the gigabyte DDR3 that `PSX-005` records as the capacity fallback is not needed and the DDR question is closed: the scarce resource this pivot creates is the palette, 256 entries against 5,944 tiles' worth of colour. And the licence position was checked rather than assumed: every tileset in the DFgraphics organisation has no licence file but the seventeenth, and the DF wiki's tileset repository shows at least one of them stating terms as Creative Commons Attribution 4.0, so the terms are per tileset and live outside the repositories; this project already has the right pattern for that, which is the one the game's own landscape uses, converting locally and never committing the art, with the authors' names in `THIRD_PARTY.md`. The work itself is the palette. `tools/convert_land.py` already fitted the island's vertex colours to `TERRAIN_COLOURS` by a weighted median cut; it now takes `--colours` and reports what the fit costs, the weighted mean error and the worst vertex in RGB, which is the number the size is chosen by because a vertex's colour is its palette entry and the land has no dithering to hide the difference. Fitting Land 1's 817 distinct vertex colours to 237, 224, 192, 160, 128, 96, 64 and 48 entries measures 2.04, 2.17, 2.85, 6.19, 7.82, 10.01, 13.13 and 14.37 mean with 25.3, 25.3, 30.3, 43.7, 60.4, 63.0, 79.9 and 84.4 worst, so the first forty-five entries cost about one per cent of colour and the next thirty-two cost more than those forty-five did; the default is now 192, which frees entries 211 to 255 and, with the seven the emissary's ramp holds, about fifty-two for tile art. The verification is that the change moves colour and nothing else. All six scripted lands draw the same triangles and pixels they drew at 237 entries -- Land 1 20,445 and 33,158, Land 2 23,649 and 25,273, Land 3 16,775 and 32,942, Land 4 26,809 and 34,882, Land 5 30,840 and 24,937, Land T 12,389 and 21,631 -- and on the board the frame takes the same time, `DRAW=29669us` against 29662, still exactly three vertical blanks with `VBLMIN` and `VBLMAX` both 3, so the orbit is still twenty frames a second and the palette cost nothing to draw. What moved, as it must, is every colour: Land 1's file CRC from `205046bf` to `44deeb37` and its frame CRC from `361ce46d` to `07350d52`, with the host twin matching the board. Every CRC pinned in entries 23 to 30 is therefore historical and this entry is where the record of that starts. One thing the sweep says about the other five worlds and is worth keeping: at 192 entries their fits are 2.85 for Land 1, 17.40 for Land 2, 9.01 for Land 3, 4.41 for Land 4, 8.83 for Land 5 and 1.93 for Land T, so 192 suits the island being used and costs the others visibly, and a different world would want its own decision about how much of the pool it takes rather than the same default. The build for the user's hands was deployed with a 200,000-frame budget; he has not judged the terrain's colour yet, which is why the user test is not run rather than passed. The core was not rebuilt and `fpga/raster.sv` is untouched, so no seed sweep was needed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that this cycle's only `.ai` change is this entry, checked that the reference's fast index and its records list the same eleven ids in the same order with none retired, validated this entry against the template, ordering, prose, Status, numbering and 100-entry rules, and confirmed that the project-control change agrees with the workflow and rewrites no settled history.
+
+#### Next Steps:
+
+The entries are free, so the fabric change the pivot needs is next: a textured quad command, with a tile store in BSRAM loaded once as the palette and the shading table already are, a constant-increment UV stepper because the cards are screen-aligned, and a texture id in the command -- which is what turns a hundred artefacts on the island from nineteen into a crowd, and is also what a wobble later needs. Before it, the tile converter has to exist: the same shape as the land's, quantising 32 by 32 art into the shared palette and writing indexed tiles, with the DFgraphics credits in `THIRD_PARTY.md` and the art itself never committed. The user is still deciding whether and how to use the DFgraphics sets, so the converter should be written to take any tile directory rather than to assume a source. Open from before and unchanged: the cell-shaped command and the display list, both priced and both declined for now because the frame fits its hold with 14 ms to spare and neither is worth a rebuild for speed alone; the palette's other half, which is how much of the pool a world that is not Land 1 should take; the keyboard, gated on TinyTang gaining keyboard forwarding from the Tiny89 work; flying to a clicked point, which has an implemented and checked pick and wants the original's animation; the pipe guard in TinyTang, `pointer_frame()` holding the transmit lock while a host owns the link; pinning a CRC per recorded input sequence in a tool, which matters more now that entry 30 and this one have moved every pinned value; the capture card, which returns pure black to this machine in every format it offers; the Bullet world removal from the PC playground (entry 6); and GAME-001, which still describes the 64 MiB route as J9's second chip select rather than the J10 bank.
+
+#### Files Modified:
+
+- README.md
+- tools/convert_land.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
