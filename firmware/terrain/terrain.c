@@ -44,6 +44,95 @@ static struct vertex *vertices;
 static uint8_t *block_low, *block_high, *block_shown;
 static uint32_t verts_x, blocks_x, blocks_z, generation;
 static int32_t cam_x, cam_y, cam_z, sin_yaw, cos_yaw, sin_pitch, cos_pitch;
+// The cursor: a hand drawn in two colours, its outline the deepest sea and
+// its fill the palest sky, which are the program's own colours and so are the
+// same on every land. It is what the mouse moves and what a left drag takes
+// hold of the land with, so it is drawn last, over everything. Each row of it
+// is a few runs of one colour, and a run is two triangles: the CPU cannot
+// write the rasterizer's pixels, only send it triangles.
+#define TC_HAND_W 13
+#define TC_HAND_H 15
+#define TC_CURSOR_FILL    (TC_SKY_COLOUR + TC_RAMP - 1)
+#define TC_CURSOR_OUTLINE (TC_SEA_COLOUR + TC_RAMP - 1)
+
+// The outline is derived rather than drawn, so the shape below is only the
+// hand: the tip of the pointing finger is at its top left, which is also the
+// cursor's hotspot.
+static const char *const hand_shape[TC_HAND_H] = {
+	"  ##         ",
+	"  ##         ",
+	"  ##         ",
+	"  ##         ",
+	"  ##         ",
+	"  ## ## ##   ",
+	"  ## ## ##   ",
+	"  ## ## ##   ",
+	"  ########   ",
+	"  ########   ",
+	"#### ######  ",
+	"###########  ",
+	"  ########   ",
+	"   ######    ",
+	"   #####     ",
+};
+
+struct hand_run {
+	int16_t y, x, length;
+	uint8_t colour;
+};
+
+static struct hand_run hand_runs[128];
+static uint32_t hand_runs_used;
+static int32_t cursor_x, cursor_y;   // Q4 screen pixels, at the fingertip
+
+static void hand_build(void)
+{
+	uint8_t grid[TC_HAND_H][TC_HAND_W];
+
+	for (int32_t y = 0; y < TC_HAND_H; y++)
+		for (int32_t x = 0; x < TC_HAND_W; x++) {
+			if (hand_shape[y][x] == '#') {
+				grid[y][x] = TC_CURSOR_FILL;
+				continue;
+			}
+			// One ring out from the hand is its outline.
+			grid[y][x] = 0;
+			for (int32_t dy = -1; dy <= 1 && !grid[y][x]; dy++)
+				for (int32_t dx = -1; dx <= 1; dx++) {
+					int32_t ny = y + dy, nx = x + dx;
+					if (ny < 0 || ny >= TC_HAND_H ||
+					    nx < 0 || nx >= TC_HAND_W)
+						continue;
+					if (hand_shape[ny][nx] == '#') {
+						grid[y][x] = TC_CURSOR_OUTLINE;
+						break;
+					}
+				}
+		}
+
+	hand_runs_used = 0;
+	for (int32_t y = 0; y < TC_HAND_H; y++)
+		for (int32_t x = 0; x < TC_HAND_W;) {
+			uint8_t colour = grid[y][x];
+			if (!colour) {
+				x++;
+				continue;
+			}
+			int32_t start = x;
+			while (x < TC_HAND_W && grid[y][x] == colour)
+				x++;
+			if (hand_runs_used <
+			    sizeof hand_runs / sizeof hand_runs[0]) {
+				hand_runs[hand_runs_used].y = (int16_t)y;
+				hand_runs[hand_runs_used].x = (int16_t)start;
+				hand_runs[hand_runs_used].length =
+					(int16_t)(x - start);
+				hand_runs[hand_runs_used].colour = colour;
+				hand_runs_used++;
+			}
+		}
+}
+
 static const struct tc_target *out;
 static struct tc_stats *counts;
 // The camera the mouse drives, in openblack's terms (core-reference OB-005):
@@ -190,6 +279,10 @@ void tc_init(const struct tc_land *l, void *work)
 	cam_focus_z = (int32_t)l->cells_z * CELL / 2;
 	cam_focus_y = LIFT;
 	cam_driven = 0;
+	// The cursor's shape, and where it starts: the middle of the screen.
+	hand_build();
+	cursor_x = TC_WIDTH / 2 * 16;
+	cursor_y = TC_HEIGHT / 2 * 16;
 	block_low = (uint8_t *)(vertices + count);
 	block_high = block_low + blocks_x * blocks_z;
 	block_shown = block_high + blocks_x * blocks_z;
@@ -597,6 +690,19 @@ void tc_mouse(uint8_t buttons, int32_t dx, int32_t dy, int32_t wheel)
 	if (!cam_driven)
 		cam_driven = 1;
 
+	/* The cursor follows the hand whatever the buttons are doing, so that a
+	 * drag keeps hold of the piece of land it took. */
+	cursor_x += dx * 16;
+	cursor_y += dy * 16;
+	if (cursor_x < 0)
+		cursor_x = 0;
+	if (cursor_y < 0)
+		cursor_y = 0;
+	if (cursor_x > (TC_WIDTH - 1) * 16)
+		cursor_x = (TC_WIDTH - 1) * 16;
+	if (cursor_y > (TC_HEIGHT - 1) * 16)
+		cursor_y = (TC_HEIGHT - 1) * 16;
+
 	if (buttons & TC_MOUSE_MIDDLE) {
 		/* Turning: the angle moves with the drag and the tilt against it,
 		 * which is what makes dragging down look further down. */
@@ -640,6 +746,27 @@ void tc_mouse(uint8_t buttons, int32_t dx, int32_t dy, int32_t wheel)
 			cam_dist = (int32_t)((land->cells_x > land->cells_z ?
 					      land->cells_x : land->cells_z) * CELL * 2);
 	}
+}
+
+// One run of the cursor as the two triangles a rectangle needs, wound the way
+// the rasterizer's edge functions want: the interior has to lie to the left of
+// each directed edge, which on a screen whose y runs downwards is down the
+// left side, along the bottom, and back along the diagonal.
+static void hand_rect(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+		      uint8_t colour)
+{
+	int32_t x[3], y[3];
+
+	x[0] = x0; y[0] = y0;
+	x[1] = x0; y[1] = y1;
+	x[2] = x1; y[2] = y1;
+	out->triangle(out->ctx, x, y, colour);
+	counts->triangles++;
+	x[0] = x0; y[0] = y0;
+	x[1] = x1; y[1] = y1;
+	x[2] = x1; y[2] = y0;
+	out->triangle(out->ctx, x, y, colour);
+	counts->triangles++;
 }
 
 void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
@@ -718,4 +845,14 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 				draw_cell(gx, gz);
 		}
 	}
+
+	// The cursor goes last, so that it lies over the land it is holding.
+	if (cam_driven)
+		for (uint32_t i = 0; i < hand_runs_used; i++) {
+			const struct hand_run *run = &hand_runs[i];
+			int32_t x0 = cursor_x + run->x * 16;
+			int32_t y0 = cursor_y + run->y * 16;
+			hand_rect(x0, y0, x0 + run->length * 16, y0 + 16,
+				  run->colour);
+		}
 }

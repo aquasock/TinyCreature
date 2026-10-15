@@ -102,8 +102,12 @@ constants in `firmware/terrain/terrain.h` are the whole feel --
 `TC_TURN_PER_COUNT`, `TC_PITCH_PER_COUNT`, `TC_ZOOM_PER_COUNT` and
 `TC_DRAG_DIVISOR` -- and `tools/run_tang32_feel.sh` builds for the mouse, loads
 it and hands the board's link back to the mouse in one command, about forty
-seconds a change, with no core rebuild and no TinyTang flash. Flying to a
-clicked point is not implemented; it would want a screen-to-land raycast.
+seconds a change, with no core rebuild and no TinyTang flash. A hand is drawn
+where the pointer is, this project's own shape and not the game's, filled in
+the palest sky and outlined in the deepest sea -- the program's own two
+colours, the only pair that suits every land -- so that a left drag has
+something on screen to hold the land with. Flying to a clicked point is not
+implemented; it would want a screen-to-land raycast.
 
 The run converts the land, prints the PC's totals, loads the program and the
 land file, and fails unless the board reports `TinyCreature TERRAIN OK` with
