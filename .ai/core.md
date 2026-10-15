@@ -1,10 +1,10 @@
-# TinyNES
+# TinyCreature
 
 ---
 
 ## Purpose
 
-TinyNES is a port of the fceumm libretro core to TinyTang running on the AE350.
+TinyCreature is a reimplementation of the Black and White game engine for the Tang 138k.
 
 ---
 
@@ -34,7 +34,7 @@ Read this core.md file first. Treat core.md is the primary project-level source 
 
 ## Build Environment
 
-- The GitHub repository for this project is: https://github.com/aquasock/TinyNES.git
+- The GitHub repository for this project is: https://github.com/aquasock/TinyCreature.git
 
 - Open-flow.
 
