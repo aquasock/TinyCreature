@@ -205,6 +205,22 @@ by only 2.5%, while taking the everyday all-front triangle straight from the
 record, without the clip machinery, and building the program at `-O3` took
 the mean from 37.9 ms to 28.2 ms.
 
+The frame loop now holds every frame for the same three vertical blanks, so the
+orbit runs at a steady 20 frames a second instead of flickering between 30 and
+20. The reason is the blank itself: the display shows a frame only on a blank
+boundary, so a draw costing 29.5 ms against a 16.7 ms blank lands near one and
+takes the next blank on some frames and the one after on others, which the eye
+reads as the motion speeding up and slowing down. Held at three, the shown
+period is 49,978 us, VBLMIN and VBLMAX are both 3 over all 600 frames, and the
+frame CRC is unchanged at `5b022d0d`: the hold alters when a frame is shown and
+not one pixel of it. The worst frame the renderer draws, 35.3 ms, has 14.7 ms
+of margin inside the 50.0 ms hold. `TC_BLANKS_PER_FRAME` in `main.c` is the one
+number: `2` buys back 30 frames a second and the flicker with it, `4` a
+rock-steady 15. If a frame ever misses the hold the run prints
+`BAD TINYCREATURE CADENCE` rather than jittering on unannounced. The cost is
+that the mouse is read once a frame, so a report waits up to the hold to be
+acted on: a mean 38 ms before, a flat 50 now.
+
 ## openblack on a PC
 
 The landscape playground keeps each original world's dimensions, terrain,

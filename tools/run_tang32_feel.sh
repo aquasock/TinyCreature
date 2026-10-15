@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Build the terrain program for the board's mouse, load it, and hand the link
 # back so the mouse can drive it. One command a tuning change: edit the TC_*
-# constants in firmware/terrain/terrain.h, run this, and drive.
+# constants in firmware/terrain/terrain.h or the frame hold in
+# firmware/terrain/main.c, run this, and drive.
 #
 # The loader holds the board's link for as long as its port is open, and the
 # board cannot send input frames while it does (core-reference TANG-001), so

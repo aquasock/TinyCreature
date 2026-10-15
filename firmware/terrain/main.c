@@ -23,9 +23,15 @@
 // into a seed the program passes back, so the scan runs while the next frame
 // is drawn and only one register is read a frame. The last frame stays up. A
 // failed check prints BAD TINYCREATURE <name> and the program exits with 1.
-// VBLMAX is what a frame rate is judged by: the display shows a frame no
-// sooner than the blank after it is ready, so the shown rate is 60/VBLMAX
-// frames a second.
+// Each frame is then held for TC_BLANKS_PER_FRAME vertical blanks before the
+// next one starts, so the shown rate is 60/TC_BLANKS_PER_FRAME frames a
+// second, steady. The hold is there because the display shows a frame only on
+// a blank boundary: a frame whose cost lands near one takes the next blank on
+// some frames and the one after on others, so the shown rate flickers between
+// two rates and the motion appears to speed up and slow down. VBLMIN and
+// VBLMAX should then both equal TC_BLANKS_PER_FRAME; if VBLMAX is larger the
+// renderer missed a blank, and a frame that misses the hold outright prints
+// BAD TINYCREATURE CADENCE.
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,6 +65,18 @@
 #define RASTER_PAL     TN_REG(0x1802c)
 #define RASTER_LUT     TN_REG(0x18030)
 #define RASTER_ID_VALUE 0x54435231u /* "TCR1" */
+
+/* Vertical blanks each frame is held for. The display shows a frame only on a
+ * blank boundary, so a frame whose cost lands near one takes the next blank on
+ * some frames and the one after on others: this renderer's 29.5 ms draw against
+ * a 16.7 ms blank came out as three blanks on some frames and two on the rest,
+ * a shown rate flicking between twenty and thirty, which is the speed-up and
+ * slow-down the user saw. Three blanks is a steady twenty, and the worst frame
+ * this renderer draws, 35.3 ms, fits inside it with room to spare. Raise it to
+ * slow the cadence down, lower it to speed it up and let the flicker back in;
+ * the cost of raising it is that the mouse is read once a frame, so a report
+ * waits that long to be acted on. */
+#define TC_BLANKS_PER_FRAME 3
 #define RASTER_SHOW   0x1u
 #define RASTER_TARGET 0x2u
 #define RASTER_BUSY   0x1u
@@ -394,6 +412,14 @@ int main(void)
 		while ((TN_VIDEO_STATUS & (TN_VIDEO_SHOWING | TN_VIDEO_BUFFER)) != want)
 			if (tn_cycles64() - wait > TN_CORE_HZ / 10u)
 				fail("FLIP");
+		/* Hold every frame to the same cadence. The display shows a frame on a
+		 * blank boundary, so a frame whose cost lands near one flickers between
+		 * sixty, thirty and twenty a second, which is what makes the motion
+		 * speed up and slow down. Three blanks is a steady twenty, and the worst
+		 * frame this renderer draws fits inside it. */
+		while (TN_VIDEO_FRAMES - blanks < TC_BLANKS_PER_FRAME)
+			if (tn_cycles64() - wait > TN_CORE_HZ / 10u)
+				fail("CADENCE");
 		uint32_t spent = TN_VIDEO_FRAMES - blanks;
 		vbl_min = spent < vbl_min ? spent : vbl_min;
 		vbl_max = spent > vbl_max ? spent : vbl_max;
