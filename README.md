@@ -10,7 +10,8 @@ renderer built in the FPGA's fabric.
 with the game's files (below). It retains the complete world, renders it at 320
 by 180 in a retro pixel style, and has a 47.2 MiB headless startup peak. The
 first 32 MiB Tang image builds in the open flow, meets timing, and has passed on
-the board with its animated retro landscape visible over HDMI.
+the board, first with an animated test landscape and then drawing the game's
+real Land 1 terrain over HDMI from the AE350.
 
 ## Tang 32 MiB bring-up
 
@@ -45,6 +46,37 @@ clock.
 The later 64 MiB configuration will add the separate J10 SDRAM bus as a second
 32 MiB bank. The current memory map and controller remain the 32 MiB J9
 baseline so this first board gate does not depend on unverified hardware.
+
+## Terrain on the Tang
+
+The Tang32 core also runs a first terrain renderer, `firmware/terrain/`. The
+user's own Land 1 is converted on the PC by `tools/convert_land.py` into a
+188 KB file under `build/land/`. The converter reads the `.lnd` format as
+openblack does and gives each vertex the daylight colour openblack's terrain
+shader would give it, from the cell's materials, noise, bump map and
+luminosity. It averages each triangle's colour and fits the results to 239
+palette entries. The AE350 receives the file over the loader, orbits the
+island once over 600 frames, and draws flat-coloured triangles back to front
+into the 320 by 180 indexed framebuffers in integer arithmetic. Every
+triangle passes through a single `submit()` call, which is where a fabric
+rasterizer will take over. The same source builds for the PC as
+`terrain_host`, so the board's frame CRC can be checked against it.
+
+    bash tools/build_tang32.sh
+    bash tools/run_tang32.sh terrain        # or: two-wire terrain
+
+The run converts the land, prints the PC's totals, loads the program and the
+land file, and fails unless the board reports `TinyCreature TERRAIN OK` with
+the same land CRC, triangle and pixel means and frame CRC as the PC. Set
+`TINYCREATURE_LND` to draw another landscape. The converted file is the
+game's data and is never committed.
+
+The accepted board run drew all 600 frames identically to the PC, frame CRC
+`859df765` from land CRC `ed38589d`. It rasterized a mean of 19,218 triangles
+and filled 32,505 pixels per frame, took a mean 38.1 ms and at most 42.8 ms to
+draw a frame on the AE350's software path, and so showed one frame every three
+vertical blanks, 20 frames per second, with zero late line fetches. That
+draw time is the CPU baseline the fabric renderer has to beat.
 
 ## openblack on a PC
 

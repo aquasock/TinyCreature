@@ -77,6 +77,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | What is openblack, under what licence, and what does it need from a platform? | OB | OB-001 |
 | How does openblack render, and which shader programs would a fixed-function back end have to cover? | OB | OB-002 |
 | How complete is openblack on the real game, and what did a first run use? | OB | OB-003 |
+| How is a .lnd landscape laid out, and how does openblack colour a terrain vertex? | OB | OB-004 |
 | What did Black & White need to run? | GAME | GAME-001 |
 | Which open FPGA rasterizer implements an OpenGL-style fixed-function pipeline, and how fast is it? | GFX | GFX-001 |
 | Where are the board, AE350, SDRAM, HDMI and toolchain facts? | (TinyNES) | TinyNES DEV-008, DEV-011 to DEV-013, BRD-010, BRD-011, PSX-005, TOOL-018 |
@@ -91,6 +92,7 @@ One line per live record, in the order of section 5. Retired ids are in section 
 OB-001: "openblack (github.com/openblack/openblack) is a GPL-3.0 C++23 reimplementation of Black & White's engine, about 47,000 lines, that runs on the user's own extracted game files; v0.1.0 of 2024-09-04 is its only release, read here at a243c6b; it depends on SDL2, bgfx, Bullet, OpenAL, EnTT, imgui, spdlog, glm, stb, minizip and cxxopts"
 OB-002: "openblack draws everything through bgfx with 10 game shader programs (terrain, water, sky, object, object instanced, vegetation, sprite, line, footprint) plus imgui's; its terrain fragment shader takes up to nine texture samples a pixel and its water reflects a second rendering of the scene"
 OB-003: "openblack a243c6b2 built on this PC and run on the user's patched Black & White draws Land 1's landscape correctly with no villagers or creature; a repeatable three-run profile measures about 361 MiB peak RSS with bgfx Noop and 532 MiB with Vulkan, so the current engine does not fit in 64 MiB"
+OB-004: "openblack a243c6b2 reads a .lnd as a 1052-byte header with a 32 by 32 block lookup table, low-resolution textures, 2520-byte blocks of 17 by 17 eight-byte cells, 3076-byte countries, 0x20002-byte 256 by 256 B5G5R5A1 materials, then 64 KiB noise and bump maps; a cell outside every block is all zero but fullWater; a vertex's materials come from its country at (altitude + noise) mod 256"
 GAME-001: "Black & White (2001) for Windows needed at least a 350 MHz Pentium II or K6-2, 64 MB of RAM, an 8 MB Direct3D (DirectX 7) card and 500 to 600 MB of disk; the Mac version a 333 MHz G3, 128 MB and an 8 MB OpenGL 1.2 card"
 GFX-001: "Rasterix (github.com/ToNi3141/Rasterix) is a Verilog FPGA rasterizer with a mostly OpenGL 1.3 fixed-function pixel pipeline, up to two texture units and register combiners, vertex work in software, reported at 100 Mpixel/s and 200 Mtexel/s at 100 MHz; its licence has not been read"
 ```
@@ -139,6 +141,18 @@ GFX-001: "Rasterix (github.com/ToNi3141/Rasterix) is a Verilog FPGA rasterizer w
     - "This project's tools/profile_openblack.sh and generated build/profile-openblack/20261014T222244-0700/summary.tsv, steady-cpu.tsv and realtime-cpu.tsv (generated results not committed)"
     - "openblack a243c6b2: src/LHScriptX/FeatureScriptCommands.cpp (the not-implemented messages)"
   verification: "Observed on 2026-10-14 (core-log entry 2) on this PC with the user watching. Revised 2026-10-14 (core-log entry 3): tools/profile_openblack.sh completed all 15 cases against binary SHA-256 45436b81416408ae7f3b5c7563f62ba27c9d982f0927d9be1d35d5a7b45b18b2; generated results remain under the git-ignored build/profile-openblack/. The Vulkan identification was corrected from OpenGL by re-reading src/main.cpp and src/Graphics/Renderer.cpp at the pinned commit."
+
+- record_id: OB-004
+  kind: EXTERNAL
+  topic_id: OB
+  title: "openblack's .lnd layout and terrain vertex colour"
+  status: VERIFIED
+  verified_date: 2026-10-15
+  statement: "LNDFile::ReadFile reads, in order, a 1052-byte LNDHeader (blockCount, a 0x400-byte lookUpTable, materialCount, countryCount, blockSize 2520, materialSize 0x20002, countrySize 3076, lowResolutionCount), lowResolutionCount textures each of a 20-byte header whose size field counts its own four bytes plus the texels, blockCount - 1 LNDBlocks, countryCount LNDCountries, materialCount LNDMaterials and 0x20000 bytes of noise then bump map, each 256 by 256 R8. An LNDBlock starts with 17 by 17 LNDCells (r, g, b, luminosity, altitude, saveColor, a properties byte of country in bits 0 to 3, hasWater 4, coastLine 5, fullWater 6, split 7, and sound flags) with blockX and blockZ at byte offsets 2324 and 2328. An LNDCountry is a type and 256 LNDMapMaterials of two material indices and a coefficient. LandIsland::GetCell finds cell (x, z) through lookUpTable[(x >> 4) << 5 | (z >> 4)], a 1-based block index, and cell (x & 15) * 17 + (z & 15), only the first 16 rows and columns of a block being used; outside every block, or beyond 511, it returns k_EmptyCell, all zero but fullWater. GetNoise takes a u8vec2, so the noise index (x * 256 + z) wraps at 256 cells. LandBlock::BuildVertexList places a vertex at 10 units a cell and 0.67 units an altitude step, takes its materials from country.materials[(altitude + noise) % 256], splits each cell into the triangles TL-TR-BR and TL-BL-BR, or BL-TL-TR and BL-BR-TR when split is set, and gives a vertex water alpha 0 for hasWater or fullWater and 0.5 for coastLine. fs_terrain.sc mixes each corner's two materials by its coefficient as a normalised u8, weights the three corners barycentrically, multiplies by mix(1, 2 * bump, bumpMapStrength) and by mix(0.25, clamp(2 * luminosity, 0.5, 1), skyType / 2), and discards a fragment whose interpolated alpha is 0."
+  consequence: "tools/convert_land.py reads Land files by this layout and colours each vertex by the daylight case (skyType 2, bumpMapStrength 1) with each material reduced to its mean colour and the bump map to its mean, so the Tang's terrain colour approximates openblack's rather than reproducing its per-pixel texturing; a triangle with three water vertices is not drawn, as openblack discards it. Treating cells outside the blocks as dry land instead of fullWater draws slivers along the island's outer block edges."
+  sources:
+    - "openblack a243c6b2: components/lnd/include/LNDFile.h, components/lnd/src/LNDFile.cpp (LNDFile::ReadFile), src/3D/Implementations/LandIsland.cpp (GetCell, GetNoise, EmptyCell, k_HeightUnit, k_CellSize), src/3D/LandBlock.cpp (BuildVertexList, LandVertex), assets/shaders/fs_terrain.sc, assets/shaders/vs_terrain.sc"
+  verification: "Read on 2026-10-15 (core-log entry 8). tools/convert_land.py parsed the user's Land1.lnd by this layout, every one of its 100 blocks' blockX and blockZ agreeing with the lookup table, and the Tang drew the result, which the user accepted as Land 1; the empty-cell rule was confirmed when the first conversion, which treated those cells as dry, drew the slivers described above."
 
 - record_id: GAME-001
   kind: EXTERNAL
@@ -197,7 +211,7 @@ GFX-001: "Rasterix (github.com/ToNi3141/Rasterix) is a Verilog FPGA rasterizer w
 - A `core-syntax.md` audit is required whenever this file changes, per `.ai/core.md`.
 
 ```yaml
-last_reviewed: 2026-10-14
+last_reviewed: 2026-10-15
 ```
 
 ---

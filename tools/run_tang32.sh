@@ -1,15 +1,59 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Load the Tang32 core and run its ten-second landscape/video integrity test.
+# Load the Tang32 core and run one of its programs:
+#   video    the ten-second landscape/video integrity test (the default)
+#   terrain  Land 1 from the user's own game, converted here, drawn on the
+#            board and checked frame for frame against terrain_host
+# TINYCREATURE_LND picks another .lnd for terrain.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source_dir="${TINYCREATURE_TANG_SOURCE:-$root/build/tang32-src}"
 out="${TINYCREATURE_TANG_BUILD:-$root/build/tang32}"
-mode="${1:-auto}"
+game="$root/build/wineprefix/drive_c/Program Files (x86)/Lionhead Studios Ltd/Black & White"
+mode=auto
+program=video
+for arg in "$@"; do
+    case "$arg" in
+    auto|one-wire|two-wire) mode="$arg" ;;
+    video|terrain) program="$arg" ;;
+    *)
+        echo "usage: $0 [auto|one-wire|two-wire] [video|terrain]" >&2
+        exit 2
+        ;;
+    esac
+done
 
-[[ -f "$out/ae350_soc.fs" && -f "$out/ae350_soc.bin" &&
-   -f "$out/app/video_test.elf" ]] || {
+case "$program" in
+video)
+    elf="$out/app/video_test.elf"
+    expect="TinyCreature TANG32 OK"
+    file_args=()
+    run_timeout=30
+    ;;
+terrain)
+    elf="$out/terrain/terrain.elf"
+    expect="TinyCreature TERRAIN OK"
+    lnd="${TINYCREATURE_LND:-$game/Data/Landscape/Land1.lnd}"
+    [[ -f "$lnd" ]] || {
+        echo "Land file missing: $lnd (set TINYCREATURE_LND)" >&2
+        exit 2
+    }
+    [[ -x "$out/terrain/host/terrain_host" ]] || {
+        echo "terrain_host is missing; run tools/build_tang32.sh" >&2
+        exit 2
+    }
+    land="$root/build/land/$(basename "${lnd%.*}").tcl"
+    mkdir -p "$(dirname "$land")"
+    python3 -I "$root/tools/convert_land.py" "$lnd" "$land"
+    host_line=$("$out/terrain/host/terrain_host" "$land")
+    echo "$host_line"
+    file_args=(--file "$land")
+    run_timeout=120
+    ;;
+esac
+
+[[ -f "$out/ae350_soc.fs" && -f "$out/ae350_soc.bin" && -f "$elf" ]] || {
     echo "Tang32 artifacts are missing; run tools/build_tang32.sh" >&2
     exit 2
 }
@@ -24,12 +68,13 @@ if [[ "$mode" == auto ]]; then
     fi
 fi
 
+log="$out/run-$program.log"
 case "$mode" in
 one-wire)
     openFPGALoader -b tangmega138k "$out/ae350_soc.fs"
-    python3 "$source_dir/tools/load_ae350.py" "$out/app/video_test.elf" \
+    python3 "$source_dir/tools/load_ae350.py" "$elf" "${file_args[@]}" \
         --port "${TINYCREATURE_TANG_UART:-/dev/ttyUSB1}" \
-        --run-timeout 30 --expect "TinyCreature TANG32 OK"
+        --run-timeout "$run_timeout" --expect "$expect" | tee "$log"
     ;;
 two-wire)
     tinytang="${TINYTANG_DIR:-$(dirname "$root")/TinyTang}"
@@ -45,12 +90,22 @@ two-wire)
         "$out/ae350_soc.bin" "$remote"
     python3 "$tinytang/tools/tinytang_run.py" --port "$port" --wait 120 --seconds 1 \
         "tangload $remote" "echo tinycreature: core-loaded"
-    python3 "$source_dir/tools/load_ae350.py" "$out/app/video_test.elf" \
-        --tinytang --port "$port" --run-timeout 30 \
-        --expect "TinyCreature TANG32 OK"
-    ;;
-*)
-    echo "usage: $0 [auto|one-wire|two-wire]" >&2
-    exit 2
+    python3 "$source_dir/tools/load_ae350.py" "$elf" "${file_args[@]}" \
+        --tinytang --port "$port" --run-timeout "$run_timeout" \
+        --expect "$expect" | tee "$log"
     ;;
 esac
+
+if [[ "$program" == terrain ]]; then
+    # The board must draw what this PC drew from the same file.
+    field() { tr ' ' '\n' <<<"$1" | sed -n "s/^$2=//p"; }
+    board_line=$(grep -a "^$expect" "$log")
+    for name in LAND FRAMES TRIS PIXELS CRC; do
+        if [[ "$(field "$board_line" "$name")" != "$(field "$host_line" "$name")" ]]; then
+            echo "FAIL: board $name=$(field "$board_line" "$name")," \
+                 "host $name=$(field "$host_line" "$name")"
+            exit 1
+        fi
+    done
+    echo "terrain: board frames match terrain_host"
+fi

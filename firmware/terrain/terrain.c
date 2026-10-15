@@ -1,0 +1,452 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The terrain renderer in terrain.h. World units are openblack's (a cell is
+// 10 units, an altitude step 0.67) held in Q4; angles are 1/65536 of a turn;
+// sines are Q14. The camera orbits the island at a fixed pitch. Each frame
+// clears to a sky and sea split at the horizon, culls the 16x16-cell blocks
+// against the view, then walks the cells back to front, the rows farthest
+// from the camera's row first and in each row the columns farthest from its
+// column first, which on a height field leaves the nearer cell on top. Each
+// drawn triangle goes through one call, submit(), which culls back faces,
+// clips at the near plane and fills scanlines; that is the boundary a
+// fabric rasterizer will take over.
+#include "terrain.h"
+
+#include <string.h>
+
+#define CELL      160   // a cell, 10 units, in Q4
+#define NEAR      128   // the near plane, 8 units, in Q4
+#define FOCAL     256   // pixels per unit of x / z: about 64 degrees across
+#define PITCH     2731  // 15 degrees down
+#define TAN_PITCH 4390  // tan(15 degrees), Q14
+#define LIFT      1920  // 120 units above the line to the centre
+#define BLOCK     16    // cells a side in a block
+
+struct vertex {
+	int32_t x, y, z;   // camera space, Q4
+	int32_t sx, sy;    // screen, Q4, when z >= NEAR
+	uint32_t stamp;    // the frame these belong to
+};
+
+static const struct tc_land *land;
+static struct vertex *vertices;
+static uint8_t *block_low, *block_high, *block_shown;
+static uint32_t verts_x, blocks_x, blocks_z, stamp;
+static int32_t cam_x, cam_y, cam_z, sin_yaw, cos_yaw, sin_pitch, cos_pitch;
+static uint8_t *frame_buffer;
+static uint32_t frame_stride;
+static struct tc_stats *counts;
+
+static uint32_t read32(const uint8_t *p)
+{
+	return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+static uint16_t read16(const uint8_t *p)
+{
+	return (uint16_t)(p[0] | p[1] << 8);
+}
+
+uint32_t tc_crc32(uint32_t crc, const uint8_t *data, size_t bytes)
+{
+	static uint32_t table[256];
+	if (!table[1])
+		for (uint32_t i = 0; i < 256; i++) {
+			uint32_t c = i;
+			for (int k = 0; k < 8; k++)
+				c = (c >> 1) ^ (0xedb88320u & -(c & 1));
+			table[i] = c;
+		}
+	crc = ~crc;
+	while (bytes--)
+		crc = table[(crc ^ *data++) & 0xff] ^ (crc >> 8);
+	return ~crc;
+}
+
+const char *tc_land_open(struct tc_land *out, const uint8_t *file, size_t bytes)
+{
+	if (bytes < 32 || memcmp(file, "TCL1", 4) != 0)
+		return "MAGIC";
+	if (read32(file + 4) != 1)
+		return "VERSION";
+	struct tc_land l = {
+		.cells_x = read16(file + 8), .cells_z = read16(file + 10),
+		.origin_x = read16(file + 12), .origin_z = read16(file + 14),
+		.colours = read16(file + 24), .first = read16(file + 26),
+	};
+	uint32_t body = read32(file + 16);
+	if (body != bytes - 32)
+		return "LENGTH";
+	if (tc_crc32(0, file + 32, body) != read32(file + 20))
+		return "CRC";
+	if (!l.cells_x || !l.cells_z || l.cells_x % BLOCK || l.cells_z % BLOCK)
+		return "GRID";
+	if (l.first != TC_LAND_COLOUR || l.first + l.colours > 256)
+		return "PALETTE";
+	size_t vertices = (size_t)(l.cells_x + 1) * (l.cells_z + 1);
+	size_t cells = (size_t)l.cells_x * l.cells_z;
+	if (body != 4u * l.colours + vertices + 3 * cells)
+		return "SIZE";
+	l.palette = (const uint32_t *)(file + 32);
+	l.altitude = file + 32 + 4 * l.colours;
+	l.cells = l.altitude + vertices;
+	*out = l;
+	return 0;
+}
+
+static uint32_t mix(uint32_t a, uint32_t b, unsigned i, unsigned n)
+{
+	uint32_t out = 0;
+	for (int shift = 0; shift < 24; shift += 8) {
+		int32_t x = (int32_t)(a >> shift & 0xff), y = (int32_t)(b >> shift & 0xff);
+		out |= (uint32_t)(x + (y - x) * (int32_t)i / (int32_t)n) << shift;
+	}
+	return out;
+}
+
+uint32_t tc_palette(const struct tc_land *l, unsigned index)
+{
+	if (index >= TC_SKY_COLOUR && index < TC_SKY_COLOUR + TC_RAMP)
+		return mix(0x2a5aa8, 0xb4cce0, index - TC_SKY_COLOUR, TC_RAMP - 1);
+	if (index >= TC_SEA_COLOUR && index < TC_SEA_COLOUR + TC_RAMP)
+		return mix(0x6aa0b4, 0x1c4a6a, index - TC_SEA_COLOUR, TC_RAMP - 1);
+	if (index >= l->first && index < l->first + l->colours)
+		return read32((const uint8_t *)&l->palette[index - l->first]);
+	return 0;
+}
+
+size_t tc_work_bytes(const struct tc_land *l)
+{
+	size_t blocks = (size_t)(l->cells_x / BLOCK) * (l->cells_z / BLOCK);
+	return (size_t)(l->cells_x + 1) * (l->cells_z + 1) * sizeof(struct vertex) +
+	       3 * blocks;
+}
+
+static int32_t height(uint32_t altitude)
+{
+	return (int32_t)(altitude * 2744u >> 8); // 0.67 units, Q4
+}
+
+void tc_init(const struct tc_land *l, void *work)
+{
+	land = l;
+	verts_x = l->cells_x + 1u;
+	blocks_x = l->cells_x / BLOCK;
+	blocks_z = l->cells_z / BLOCK;
+	uint32_t count = verts_x * (l->cells_z + 1u);
+	vertices = work;
+	for (uint32_t i = 0; i < count; i++)
+		vertices[i].stamp = 0;
+	stamp = 0;
+	block_low = (uint8_t *)(vertices + count);
+	block_high = block_low + blocks_x * blocks_z;
+	block_shown = block_high + blocks_x * blocks_z;
+	for (uint32_t bz = 0; bz < blocks_z; bz++)
+		for (uint32_t bx = 0; bx < blocks_x; bx++) {
+			uint8_t low = 255, high = 0, any = 0;
+			for (uint32_t z = bz * BLOCK; z <= (bz + 1) * BLOCK; z++)
+				for (uint32_t x = bx * BLOCK; x <= (bx + 1) * BLOCK; x++) {
+					uint8_t a = l->altitude[z * verts_x + x];
+					low = a < low ? a : low;
+					high = a > high ? a : high;
+					if (z < (bz + 1) * BLOCK && x < (bx + 1) * BLOCK)
+						any |= l->cells[3 * (z * l->cells_x + x)] & 6;
+				}
+			uint32_t b = bz * blocks_x + bx;
+			block_low[b] = low;
+			block_high[b] = high;
+			// An empty block stays culled for good.
+			block_shown[b] = any ? 1 : 0xff;
+		}
+}
+
+// sin(a), Q14, a in 1/65536 of a turn: a seventh-order odd polynomial on
+// each quarter, within 2e-4 of the true value.
+static int32_t isin(uint32_t a)
+{
+	a &= 0xffff;
+	uint32_t quarter = a >> 14;
+	int64_t x = a & 0x3fff;
+	if (quarter & 1)
+		x = 0x4000 - x;
+	int64_t x2 = x * x >> 14;
+	int64_t r = 77;
+	r = 1306 - (x2 * r >> 14);
+	r = 10584 - (x2 * r >> 14);
+	r = 25736 - (x2 * r >> 14);
+	int32_t s = (int32_t)(x * r >> 14);
+	if (s > 16384)
+		s = 16384;
+	return quarter & 2 ? -s : s;
+}
+
+static int32_t icos(uint32_t a)
+{
+	return isin(a + 0x4000);
+}
+
+static void to_camera(int32_t wx, int32_t wy, int32_t wz, int32_t *x,
+		      int32_t *y, int32_t *z)
+{
+	int64_t dx = wx - cam_x, dy = wy - cam_y, dz = wz - cam_z;
+	int64_t rz = (dx * sin_yaw + dz * cos_yaw) >> 14;
+	*x = (int32_t)((dx * cos_yaw - dz * sin_yaw) >> 14);
+	*y = (int32_t)((dy * cos_pitch + rz * sin_pitch) >> 14);
+	*z = (int32_t)((rz * cos_pitch - dy * sin_pitch) >> 14);
+}
+
+static void project(struct vertex *v)
+{
+	int64_t inv = (1 << 30) / v->z;
+	v->sx = TC_WIDTH * 8 + (int32_t)(v->x * inv >> 18);
+	v->sy = TC_HEIGHT * 8 - (int32_t)(v->y * inv >> 18);
+}
+
+static struct vertex *vertex(uint32_t gx, uint32_t gz)
+{
+	struct vertex *v = &vertices[gz * verts_x + gx];
+	if (v->stamp != stamp) {
+		to_camera((int32_t)gx * CELL, height(land->altitude[gz * verts_x + gx]),
+			  (int32_t)gz * CELL, &v->x, &v->y, &v->z);
+		if (v->z >= NEAR)
+			project(v);
+		v->stamp = stamp;
+	}
+	return v;
+}
+
+// An edge's x, Q4 with 16 more fraction bits, at row centres from its top
+// vertex (xa, ya) down to (xb, yb): the same edge gives the same x in both
+// triangles that share it.
+struct edge {
+	int64_t x, step;
+};
+
+static void edge_start(struct edge *e, int32_t xa, int32_t ya, int32_t xb,
+		       int32_t yb, int32_t row)
+{
+	int32_t dx = xb - xa, dy = yb - ya;
+	int64_t slope;
+	if (dy <= 0)
+		slope = 0;
+	else if (dx > -32768 && dx < 32768)
+		slope = (int32_t)((uint32_t)dx << 16) / dy;
+	else
+		slope = (int64_t)dx * 65536 / dy;
+	e->x = (int64_t)xa * 65536 + slope * (row * 16 + 8 - ya);
+	e->step = slope * 16;
+}
+
+static void span(uint8_t *row, int64_t a, int64_t b, uint8_t colour)
+{
+	if (a > b) {
+		int64_t t = a;
+		a = b;
+		b = t;
+	}
+	// Pixel i is covered when its centre, 16 i + 8, is in [a, b).
+	int64_t first = ((a >> 16) + 7) >> 4, end = ((b >> 16) + 7) >> 4;
+	if (first < 0)
+		first = 0;
+	if (end > TC_WIDTH)
+		end = TC_WIDTH;
+	if (end > first) {
+		memset(row + first, colour, (size_t)(end - first));
+		counts->pixels += (uint32_t)(end - first);
+	}
+}
+
+// Fill a screen triangle, Q4 corners, with pixel centres inside it.
+static void fill(const int32_t *x, const int32_t *y, uint8_t colour)
+{
+	int i0 = 0, i1 = 1, i2 = 2, t;
+#define ORDER(a, b) \
+	if (y[a] > y[b] || (y[a] == y[b] && x[a] > x[b])) { t = a; a = b; b = t; }
+	ORDER(i0, i1);
+	ORDER(i1, i2);
+	ORDER(i0, i1);
+#undef ORDER
+	int32_t lo_x = x[0], hi_x = x[0];
+	for (int k = 1; k < 3; k++) {
+		lo_x = x[k] < lo_x ? x[k] : lo_x;
+		hi_x = x[k] > hi_x ? x[k] : hi_x;
+	}
+	if (hi_x < 0 || lo_x >= TC_WIDTH * 16)
+		return;
+	int32_t top = (y[i0] - 8 + 15) >> 4, mid = (y[i1] - 8 + 15) >> 4;
+	int32_t end = (y[i2] - 8 + 15) >> 4;
+	if (end <= 0 || top >= TC_HEIGHT || end <= top)
+		return;
+	counts->triangles++;
+	int32_t first = top < 0 ? 0 : top;
+	struct edge l, s;
+	edge_start(&l, x[i0], y[i0], x[i2], y[i2], first);
+	if (first < mid)
+		edge_start(&s, x[i0], y[i0], x[i1], y[i1], first);
+	else
+		edge_start(&s, x[i1], y[i1], x[i2], y[i2], first);
+	if (end > TC_HEIGHT)
+		end = TC_HEIGHT;
+	for (int32_t r = first; r < end; r++) {
+		if (r == mid && r > first)
+			edge_start(&s, x[i1], y[i1], x[i2], y[i2], r);
+		span(frame_buffer + (uint32_t)r * frame_stride, l.x, s.x, colour);
+		l.x += l.step;
+		s.x += s.step;
+	}
+}
+
+// Draw one triangle facing up, its corners counter-clockwise seen from
+// above: cull it if its back faces the camera, clip it at the near plane.
+static void submit(const struct vertex *a, const struct vertex *b,
+		   const struct vertex *c, uint8_t colour)
+{
+	const struct vertex *in[3] = {a, b, c};
+	int behind = (a->z < NEAR) + (b->z < NEAR) + (c->z < NEAR);
+	if (behind == 3)
+		return;
+	struct vertex out[4];
+	int n = 0;
+	if (!behind) {
+		for (int i = 0; i < 3; i++)
+			out[n++] = *in[i];
+	} else {
+		for (int i = 0; i < 3; i++) {
+			const struct vertex *p = in[i], *q = in[(i + 1) % 3];
+			if (p->z >= NEAR)
+				out[n++] = *p;
+			if ((p->z >= NEAR) != (q->z >= NEAR)) {
+				int64_t num = NEAR - p->z, den = q->z - p->z;
+				struct vertex *v = &out[n++];
+				v->x = p->x + (int32_t)((q->x - p->x) * num / den);
+				v->y = p->y + (int32_t)((q->y - p->y) * num / den);
+				v->z = NEAR;
+				project(v);
+			}
+		}
+	}
+	for (int k = 1; k + 1 < n; k++) {
+		int32_t x[3] = {out[0].sx, out[k].sx, out[k + 1].sx};
+		int32_t y[3] = {out[0].sy, out[k].sy, out[k + 1].sy};
+		int64_t cross = (int64_t)(x[1] - x[0]) * (y[2] - y[0]) -
+				(int64_t)(y[1] - y[0]) * (x[2] - x[0]);
+		if (cross < 0)
+			fill(x, y, colour);
+	}
+}
+
+static int outside(int32_t x, int32_t y, int32_t z)
+{
+	int64_t z5 = (int64_t)z * 5, z45 = (int64_t)z * 45;
+	return (z < NEAR) | ((int64_t)x * 8 < -z5) << 1 | ((int64_t)x * 8 > z5) << 2 |
+	       ((int64_t)y * 128 > z45) << 3 | ((int64_t)y * 128 < -z45) << 4;
+}
+
+static void cull_blocks(void)
+{
+	for (uint32_t bz = 0; bz < blocks_z; bz++)
+		for (uint32_t bx = 0; bx < blocks_x; bx++) {
+			uint32_t b = bz * blocks_x + bx;
+			if (block_shown[b] == 0xff)
+				continue;
+			int all = 0x1f;
+			for (int k = 0; k < 8 && all; k++) {
+				int32_t x, y, z;
+				to_camera((int32_t)(bx + (k & 1)) * BLOCK * CELL,
+					  height(k & 2 ? block_high[b] : block_low[b]),
+					  (int32_t)(bz + (k >> 2 & 1)) * BLOCK * CELL,
+					  &x, &y, &z);
+				all &= outside(x, y, z);
+			}
+			block_shown[b] = all ? 0 : 1;
+		}
+}
+
+static int32_t floor_div(int32_t a, int32_t b)
+{
+	return a >= 0 ? a / b : -((-a + b - 1) / b);
+}
+
+static void draw_cell(uint32_t gx, uint32_t gz)
+{
+	const uint8_t *cell = &land->cells[3 * (gz * land->cells_x + gx)];
+	uint8_t flags = cell[0];
+	if (!(flags & 6))
+		return;
+	struct vertex *tl = vertex(gx, gz), *tr = vertex(gx + 1, gz);
+	struct vertex *bl = vertex(gx, gz + 1), *br = vertex(gx + 1, gz + 1);
+	int32_t px = cam_x - (int32_t)gx * CELL, pz = cam_z - (int32_t)gz * CELL;
+	const struct vertex *t[2][3];
+	int far;
+	if (flags & 1) {
+		t[0][0] = bl, t[0][1] = tl, t[0][2] = tr;
+		t[1][0] = bl, t[1][1] = tr, t[1][2] = br;
+		far = px + pz > CELL ? 0 : 1;
+	} else {
+		t[0][0] = tl, t[0][1] = tr, t[0][2] = br;
+		t[1][0] = tl, t[1][1] = br, t[1][2] = bl;
+		far = px < pz ? 0 : 1;
+	}
+	for (int k = 0; k < 2; k++) {
+		int i = k ? 1 - far : far;
+		if (flags & (2 << i))
+			submit(t[i][0], t[i][1], t[i][2], cell[1 + i]);
+	}
+}
+
+// The next of lo..hi, whichever is farther from c, toward c.
+static uint32_t farther(int32_t *lo, int32_t *hi, int32_t c)
+{
+	int32_t a = c - *lo, b = *hi - c;
+	if ((a < 0 ? -a : a) >= (b < 0 ? -b : b))
+		return (uint32_t)(*lo)++;
+	return (uint32_t)(*hi)--;
+}
+
+void tc_draw(uint8_t *fb, uint32_t stride, uint32_t frame, uint32_t frames,
+	     struct tc_stats *stats)
+{
+	frame_buffer = fb;
+	frame_stride = stride;
+	counts = stats;
+	stats->triangles = stats->pixels = 0;
+	stamp++;
+
+	// One orbit, swinging in to 40% and back out twice on the way round.
+	uint32_t turn = (uint32_t)((uint64_t)frame * 65536 / frames);
+	int32_t size = (land->cells_x > land->cells_z ? land->cells_x : land->cells_z) * CELL;
+	int32_t reach = size * 4 / 5;
+	int32_t radius = (int32_t)(reach * (7 * 16384 + 3 * (int64_t)icos(2 * turn)) / (10 * 16384));
+	cam_x = land->cells_x * CELL / 2 + (int32_t)((int64_t)radius * isin(turn) >> 14);
+	cam_z = land->cells_z * CELL / 2 + (int32_t)((int64_t)radius * icos(turn) >> 14);
+	cam_y = (int32_t)((int64_t)radius * TAN_PITCH >> 14) + LIFT;
+	sin_yaw = isin(turn + 0x8000);
+	cos_yaw = icos(turn + 0x8000);
+	sin_pitch = isin(PITCH);
+	cos_pitch = icos(PITCH);
+
+	// The sky above the horizon, the sea below it.
+	int32_t horizon = TC_HEIGHT / 2 - FOCAL * sin_pitch / cos_pitch;
+	for (int32_t r = 0; r < TC_HEIGHT; r++) {
+		uint32_t c;
+		if (r < horizon)
+			c = TC_SKY_COLOUR + (uint32_t)(r * TC_RAMP / horizon);
+		else
+			c = TC_SEA_COLOUR +
+			    (uint32_t)((r - horizon) * TC_RAMP / (TC_HEIGHT - horizon));
+		memset(fb + (uint32_t)r * stride, (int)c, TC_WIDTH);
+	}
+
+	cull_blocks();
+	int32_t cx = floor_div(cam_x, CELL), cz = floor_div(cam_z, CELL);
+	int32_t z_lo = 0, z_hi = land->cells_z - 1;
+	while (z_lo <= z_hi) {
+		uint32_t gz = farther(&z_lo, &z_hi, cz);
+		int32_t x_lo = 0, x_hi = land->cells_x - 1;
+		while (x_lo <= x_hi) {
+			uint32_t gx = farther(&x_lo, &x_hi, cx);
+			if (block_shown[gz / BLOCK * blocks_x + gx / BLOCK] == 1)
+				draw_cell(gx, gz);
+		}
+	}
+}
