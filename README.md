@@ -6,12 +6,35 @@ Console 138K, as a core for TinyTang: the game's engine from
 reimplementation, running on the FPGA's AE350 RISC-V processor, with a 3D
 renderer built in the FPGA's fabric.
 
-**Status: openblack builds and runs on a PC with the game's files** (below),
-and its first repeatable resource profile is complete. The unmodified engine
-needs about 361 MiB even with bgfx's Noop renderer, so it cannot be moved
-directly into 64 MiB. Nothing runs on the Tang yet.
+**Status: a stripped openblack landscape playground builds and runs on a PC**
+with the game's files (below). It retains the complete world at 640 by 360 and
+uses about 158 MiB of private memory. Nothing runs on the Tang yet.
 
 ## openblack on a PC
+
+The landscape playground keeps each original world's dimensions, terrain,
+materials, sky, water and camera coordinates. It skips the quest scripts,
+audio, entities, vegetation, sprites and footpaths, and replaces the 1024 by
+1024 reflection and full-island footprint buffers with one-pixel placeholders.
+Its launcher defaults to 640 by 360.
+
+```sh
+tools/build_openblack_playground.sh
+tools/run_openblack_playground.sh "<install>/Black & White"
+```
+
+The second command finds the repository's local Wine install automatically
+when no path is given. Use the arrow keys to move, the mouse wheel to zoom,
+the middle mouse button to rotate, and Escape to exit. Another landscape can
+be selected with an openblack option, for example `-s Land2.txt` after the
+install path.
+
+After three minutes on Land 1, the Vulkan playground measured 228.29 MiB RSS,
+181.91 MiB PSS and 157.95 MiB private memory with eight threads. Compared with
+the full Vulkan profile below, it removed 305.38 MiB, or 65.9%, of private
+memory. This is still about 2.5 times the fitted 64 MiB SDRAM capacity.
+
+The unmodified PC build remains useful as the reference:
 
 ```sh
 tools/fetch_openblack.sh      # openblack at a pinned commit, with its vcpkg

@@ -1,0 +1,233 @@
+diff --git a/src/3D/Implementations/LandIsland.cpp b/src/3D/Implementations/LandIsland.cpp
+--- a/src/3D/Implementations/LandIsland.cpp
++++ b/src/3D/Implementations/LandIsland.cpp
+@@ -104,7 +104,9 @@ void LandIsland::LoadFromFile(const std::filesystem::path& path)
+ 	                   Wrapping::ClampEdge, Filter::Linear,
+ 	                   bgfx::makeRef(heightMapData.data(), static_cast<uint32_t>(heightMapData.size())));
+ 
+-	const auto res = indexSize * glm::u16vec2(lnd::LNDMaterial::k_Width, lnd::LNDMaterial::k_Height);
++	const auto res = Locator::config::value().playground
++	                     ? glm::u16vec2(1, 1)
++	                     : indexSize * glm::u16vec2(lnd::LNDMaterial::k_Width, lnd::LNDMaterial::k_Height);
+ 	_footprintFrameBuffer = std::make_unique<FrameBuffer>("Footprints", res.x, res.y, graphics::TextureFormat::RGBA8);
+ 
+ 	_proj = glm::ortho(_extentMin.x, _extentMax.x, _extentMin.y, _extentMax.y);
+diff --git a/src/3D/Implementations/Ocean.cpp b/src/3D/Implementations/Ocean.cpp
+--- a/src/3D/Implementations/Ocean.cpp
++++ b/src/3D/Implementations/Ocean.cpp
+@@ -14,19 +14,22 @@
+ #include <bgfx/bgfx.h>
+ #include <glm/vec2.hpp>
+ 
++#include "EngineConfig.h"
+ #include "Graphics/FrameBuffer.h"
+ #include "Graphics/IndexBuffer.h"
+ #include "Graphics/Mesh.h"
+ #include "Graphics/Texture2D.h"
+ #include "Graphics/VertexBuffer.h"
++#include "Locator.h"
+ 
+ using namespace openblack;
+ using namespace openblack::graphics;
+ 
+ Ocean::Ocean() noexcept
+ {
++	const uint16_t reflectionSize = Locator::config::value().playground ? 1 : 1024;
+ 	_reflectionFrameBuffer =
+-	    std::make_unique<FrameBuffer>("Reflection", static_cast<uint16_t>(1024), static_cast<uint16_t>(1024),
++	    std::make_unique<FrameBuffer>("Reflection", reflectionSize, reflectionSize,
+ 	                                  graphics::TextureFormat::RGBA8, graphics::TextureFormat::Depth24Stencil8);
+ 	CreateMesh();
+ }
+diff --git a/src/EngineConfig.h b/src/EngineConfig.h
+--- a/src/EngineConfig.h
++++ b/src/EngineConfig.h
+@@ -34,6 +34,7 @@ static const std::map<std::string_view, GraphicsBackend> k_GraphicsBackendString
+ 
+ struct EngineConfig
+ {
++	bool playground {false};
+ 	bool wireframe {false};
+ 	bool showVillagerNames {false};
+ 	bool debugVillagerNames {false};
+diff --git a/src/Game.cpp b/src/Game.cpp
+--- a/src/Game.cpp
++++ b/src/Game.cpp
+@@ -106,6 +106,13 @@ Game::Game(Arguments&& args) noexcept
+ 	sInstance = this;
+ 
+ 	auto& config = Locator::config::emplace();
++	config.playground = args.playground;
++	if (config.playground)
++	{
++		config.drawEntities = false;
++		config.drawVegetation = false;
++		config.drawSprites = false;
++	}
+ 	config.numFramesToSimulate = args.numFramesToSimulate;
+ 	config.numFramesToSimulate = args.numFramesToSimulate;
+ 	config.numFramesToSimulate = args.numFramesToSimulate;
+@@ -517,6 +524,17 @@ bool Game::Initialize() noexcept
+ 	auto& soundManager = resources.GetSounds();
+ 	auto& glowManager = resources.GetGlows();
+ 
++	if (config.playground)
++	{
++		for (const auto* filename : {"Sky.raw", "Skya.raw", "smallbumpa.raw", "misc0a.raw"})
++		{
++			const auto path = fileSystem.GetPath<Path::Textures>() / filename;
++			textureManager.Load(fmt::format("raw/{}", path.stem().string()),
++			                    resources::Texture2DLoader::FromDiskTag {}, path);
++		}
++		return true;
++	}
++
+ 	fileSystem.Iterate(
+ 	    fileSystem.GetPath<Path::Citadel>() / "OutsideMeshes", false, [&meshManager](const std::filesystem::path& f) {
+ 		    if (f.extension() == ".zzz")
+@@ -799,7 +817,11 @@ bool Game::Run() noexcept
+ 	auto& fileSystem = Locator::filesystem::value();
+ 
+ 	auto challengePath = fileSystem.GetPath<filesystem::Path::Quests>() / "challenge.chl";
+-	if (fileSystem.Exists(challengePath))
++	if (config.playground)
++	{
++		SPDLOG_LOGGER_INFO(spdlog::get("game"), "Playground mode: skipping challenge scripts.");
++	}
++	else if (fileSystem.Exists(challengePath))
+ 	{
+ 		auto& chlapi = Locator::chlapi::value();
+ 		auto& lhvm = Locator::vm::value();
+@@ -831,6 +853,7 @@ bool Game::Run() noexcept
+ 		Locator::rendererInterface::value().ConfigureView(graphics::RenderPass::Main, size, 0x274659ff);
+ 	}
+ 
++	if (!config.playground)
+ 	{
+ 		uint16_t width;
+ 		uint16_t height;
+@@ -838,7 +861,7 @@ bool Game::Run() noexcept
+ 		Locator::rendererInterface::value().ConfigureView(graphics::RenderPass::Reflection, {width, height}, 0x274659ff);
+ 	}
+ 
+-	if (config.drawIsland)
++	if (config.drawIsland && !config.playground)
+ 	{
+ 		uint16_t width;
+ 		uint16_t height;
+@@ -948,7 +971,11 @@ bool Game::LoadMap(const std::filesystem::path& path) noexcept
+ 	const auto stem = string_utils::LowerCase(path.stem().generic_string());
+ 	const auto fotPath = fileSystem.GetPath<filesystem::Path::Landscape>() / fmt::format("{}.fot", stem);
+ 
+-	if (fileSystem.Exists(fotPath))
++	if (config.playground)
++	{
++		SPDLOG_LOGGER_INFO(spdlog::get("game"), "Playground mode: skipping footpaths.");
++	}
++	else if (fileSystem.Exists(fotPath))
+ 	{
+ 		FotFile fotFile(*this);
+ 		fotFile.Load(fotPath);
+diff --git a/src/Game.h b/src/Game.h
+--- a/src/Game.h
++++ b/src/Game.h
+@@ -59,6 +59,7 @@ struct Arguments
+ 	GraphicsBackend graphicsBackend;
+ 	std::string gamePath;
+ 	float guiScale;
++	bool playground {false};
+ 	uint32_t numFramesToSimulate;
+ 	std::string logFile;
+ 	std::array<spdlog::level::level_enum, k_LoggingSubsystemStrs.size()> logLevels;
+diff --git a/src/Graphics/Renderer.cpp b/src/Graphics/Renderer.cpp
+--- a/src/Graphics/Renderer.cpp
++++ b/src/Graphics/Renderer.cpp
+@@ -514,11 +514,14 @@ void Renderer::DrawFootprintPass(const DrawSceneDesc& drawDesc) const
+ void Renderer::DrawScene(const DrawSceneDesc& drawDesc) const noexcept
+ {
+ 	// TODO(bwrsandman): Footprint framebuffer doesn't need to be updated each frame
+-	DrawFootprintPass(drawDesc);
++	if (!Locator::config::value().playground)
++	{
++		DrawFootprintPass(drawDesc);
++	}
+ 	// Reflection Pass
+ 	{
+ 		auto section = Locator::profiler::value().BeginScoped(Profiler::Stage::ReflectionPass);
+-		if (drawDesc.drawWater)
++		if (drawDesc.drawWater && !Locator::config::value().playground)
+ 		{
+ 			DrawSceneDesc drawPassDesc = drawDesc;
+ 
+diff --git a/src/LHScriptX/Script.cpp b/src/LHScriptX/Script.cpp
+--- a/src/LHScriptX/Script.cpp
++++ b/src/LHScriptX/Script.cpp
+@@ -15,6 +15,7 @@
+ #include <glm/vec2.hpp>
+ 
+ #include "3D/LandIslandInterface.h"
++#include "EngineConfig.h"
+ #include "FeatureScriptCommands.h"
+ #include "Lexer.h"
+ #include "Locator.h"
+@@ -141,6 +142,11 @@ ScriptCommandParameter GetParameter(Token& argument)
+ 
+ void Script::RunCommand(const std::string& identifier, const std::vector<Token>& args)
+ {
++	if (Locator::config::value().playground && identifier != "LOAD_LANDSCAPE" && identifier != "START_CAMERA_POS")
++	{
++		return;
++	}
++
+ 	const ScriptCommandSignature* commandSignature = nullptr;
+ 
+ 	for (const auto& signature : FeatureScriptCommands::k_Signatures)
+diff --git a/src/Locator.cpp b/src/Locator.cpp
+--- a/src/Locator.cpp
++++ b/src/Locator.cpp
+@@ -103,14 +103,21 @@ bool openblack::InitializeEngine(GraphicsBackend backend, bool vsync) noexcept
+ 	Locator::filesystem::emplace<DefaultFileSystem>();
+ #endif
+ 	Locator::rng::emplace<RandomNumberManagerProduction>();
+-	try
++	if (Locator::config::value().playground)
+ 	{
+-		Locator::audio::emplace<AudioManager>();
++		Locator::audio::emplace<AudioManagerNoOp>();
+ 	}
+-	catch (std::runtime_error& error)
++	else
+ 	{
+-		SPDLOG_LOGGER_ERROR(spdlog::get("audio"), "Falling back to no-op audio: {}", error.what());
+-		Locator::audio::emplace<AudioManagerNoOp>();
++		try
++		{
++			Locator::audio::emplace<AudioManager>();
++		}
++		catch (std::runtime_error& error)
++		{
++			SPDLOG_LOGGER_ERROR(spdlog::get("audio"), "Falling back to no-op audio: {}", error.what());
++			Locator::audio::emplace<AudioManagerNoOp>();
++		}
+ 	}
+ 
+ 	Locator::chlapi::emplace<CHLApi>();
+diff --git a/src/main.cpp b/src/main.cpp
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -49,6 +49,7 @@ bool parseOptions(int argc, char** argv, openblack::Arguments& args, int& return
+ 		("W,width", "Window resolution in the x axis.", cxxopts::value<uint16_t>()->default_value("1280"))
+ 		("H,height", "Window resolution in the y axis.", cxxopts::value<uint16_t>()->default_value("1024"))
+ 		("u,ui-scale", "Scaling of the GUI", cxxopts::value<float>()->default_value("1.0"))
++		("playground", "Load only the landscape, sky, and simplified water.")
+ 		("s,start-level", "Level that is loaded at start-up", cxxopts::value<std::string>()->default_value("Land1.txt"))
+ 		("V,vsync", "Enable Vertical Sync.")
+ 		("m,window-mode", "Which mode to run window.", cxxopts::value<std::string>()->default_value("windowed"))
+@@ -176,6 +177,7 @@ bool parseOptions(int argc, char** argv, openblack::Arguments& args, int& return
+ 		args.windowWidth = result["width"].as<uint16_t>();
+ 		args.windowHeight = result["height"].as<uint16_t>();
+ 		args.guiScale = result["ui-scale"].as<float>();
++		args.playground = result["playground"].as<bool>();
+ 		args.vsync = result["vsync"].as<bool>();
+ 		args.displayMode = displayMode;
+ 		args.graphicsBackend = graphicsBackend;
