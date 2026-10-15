@@ -12,6 +12,7 @@ build_dir="$root/build/openblack-playground"
 patch_files=(
     "$root/patches/openblack-playground.patch"
     "$root/patches/openblack-playground-retro.patch"
+    "$root/patches/openblack-playground-memory.patch"
 )
 
 "$root/tools/fetch_openblack.sh"

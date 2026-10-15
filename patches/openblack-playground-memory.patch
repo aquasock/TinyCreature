@@ -1,0 +1,62 @@
+diff --git a/src/ECS/MapProduction.h b/src/ECS/MapProduction.h
+--- a/src/ECS/MapProduction.h
++++ b/src/ECS/MapProduction.h
+@@ -35,4 +35,32 @@ private:
+ 	std::array<std::unordered_set<entt::entity>, k_GridSize.x * k_GridSize.y> _mobileGrid;
+ };
+ 
++class MapPlayground final: public MapInterface
++{
++	[[nodiscard]] const std::unordered_set<entt::entity>& GetFixedInGridCell(const CellId&) const override
++	{
++		return _empty;
++	}
++	[[nodiscard]] const std::unordered_set<entt::entity>& GetFixedInGridCell(const glm::vec3&) const override
++	{
++		return _empty;
++	}
++	[[nodiscard]] const std::unordered_set<entt::entity>& GetMobileInGridCell(const CellId&) const override
++	{
++		return _empty;
++	}
++	[[nodiscard]] const std::unordered_set<entt::entity>& GetMobileInGridCell(const glm::vec3&) const override
++	{
++		return _empty;
++	}
++
++	void Rebuild() override {}
++
++private:
++	void Clear() override {}
++	void Build() override {}
++
++	std::unordered_set<entt::entity> _empty;
++};
++
+ } // namespace openblack::ecs
+diff --git a/src/Locator.cpp b/src/Locator.cpp
+--- a/src/Locator.cpp
++++ b/src/Locator.cpp
+@@ -57,5 +57,6 @@ using openblack::UnloadedIsland;
+ using openblack::chlapi::CHLApi;
+ using openblack::debug::gui::DebugGuiInterface;
++using openblack::ecs::MapPlayground;
+ using openblack::ecs::MapProduction;
+ using openblack::ecs::Registry;
+ using openblack::ecs::systems::CameraBookmarkSystem;
+@@ -144,7 +145,14 @@ bool openblack::InitializeGame() noexcept
+ 
+ void openblack::InitializeLevel(const std::filesystem::path& path)
+ {
+-	Locator::entitiesMap::emplace<MapProduction>();
++	if (Locator::config::value().playground)
++	{
++		Locator::entitiesMap::emplace<MapPlayground>();
++	}
++	else
++	{
++		Locator::entitiesMap::emplace<MapProduction>();
++	}
+ 	Locator::dynamicsSystem::emplace<DynamicsSystem>();
+ 	Locator::livingActionSystem::emplace<LivingActionSystem>();
+ 	Locator::townSystem::emplace<TownSystem>();

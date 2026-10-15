@@ -8,7 +8,7 @@ renderer built in the FPGA's fabric.
 
 **Status: a stripped openblack landscape playground builds and runs on a PC**
 with the game's files (below). It retains the complete world, renders it at 320
-by 180 in a retro pixel style, and has a 75.7 MiB headless startup peak. Nothing
+by 180 in a retro pixel style, and has a 47.2 MiB headless startup peak. Nothing
 runs on the Tang yet.
 
 ## openblack on a PC
@@ -16,10 +16,12 @@ runs on the Tang yet.
 The landscape playground keeps each original world's dimensions, terrain,
 materials, sky, water and camera coordinates. It skips the quest scripts,
 audio, entities, vegetation, sprites, footpaths, terrain collision meshes and
-the debug GUI runtime. It replaces the 1024 by 1024 reflection and full-island
-footprint buffers with one-pixel placeholders. Its launcher renders at 320 by
-180, scales that image to a 640 by 360 window with nearest-neighbour sampling,
-and caps the playground at 30 frames per second with reduced process priority.
+the debug GUI runtime. Its entity spatial map is a no-op instead of two dense
+512 by 512 arrays because the playground has no entities. It replaces the 1024
+by 1024 reflection and full-island footprint buffers with one-pixel
+placeholders. Its launcher renders at 320 by 180, scales that image to a 640 by
+360 window with nearest-neighbour sampling, and caps the playground at 30
+frames per second with reduced process priority.
 
 ```sh
 tools/build_openblack_playground.sh
@@ -34,11 +36,13 @@ install path. `OPENBLACK_PIXEL_SCALE=1` restores native 640 by 360 rendering;
 the default value is 2.
 
 The accepted retro build completed a 300-frame Vulkan run in 10.72 seconds at
-the 30 FPS cap, used 9% CPU and peaked at 215.47 MiB RSS on this PC. Its Noop
-startup peak is 75.68 MiB, down from 85.70 MiB for the first stripped build and
-360.76 MiB for unmodified openblack. The FPGA renderer can replace the PC's
-Vulkan driver and video buffers, but the remaining CPU-side peak is still about
-11.7 MiB above the fitted 64 MiB SDRAM capacity.
+the 30 FPS cap and used 9% CPU. Replacing its unused 28 MiB entity map reduced
+three Noop startup runs to a 47.23 MiB mean peak, down from 75.68 MiB with the
+dense map and 360.76 MiB for unmodified openblack. The tested Vulkan process
+measured 190.74 MiB RSS, 133.55 MiB PSS and 114.36 MiB private memory on this PC;
+the FPGA renderer replaces that build's Vulkan driver and video buffers. The
+headless software measurement is now 16.8 MiB below the fitted 64 MiB SDRAM
+capacity, before adding the target renderer interface and firmware.
 
 The unmodified PC build remains useful as the reference:
 
@@ -100,9 +104,10 @@ choosing that redesign or the DDR3 controller.
 - Memory: the fitted J9 SDRAM module has two 32 MiB chips, but the existing
   controller can address only one because the second chip-select signal has
   not been identified. The stripped playground's measured headless startup
-  peak is 75.7 MiB, so the 64 MiB design still needs bounded terrain staging,
-  more compact runtime data, or access to the second chip. The module's 1 GiB
-  DDR3 remains a direct alternative, but it has no open-flow controller yet.
+  peak is 47.2 MiB, leaving 16.8 MiB for the target renderer interface and
+  firmware within the full 64 MiB module. Bounded terrain staging and compact
+  runtime data remain necessary to protect that margin. The module's 1 GiB DDR3
+  remains a direct alternative, but it has no open-flow controller yet.
 - A renderer: a fixed-function rasterizer in the FPGA, with vertex work on the
   AE350.
 - A way to bring hundreds of megabytes of game data from the card faster than
