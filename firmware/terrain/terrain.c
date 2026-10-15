@@ -47,7 +47,9 @@ static const uint16_t *shade_pal5;
 static const uint8_t *shade_lut;
 static uint8_t *block_low, *block_high, *block_shown;
 static uint32_t verts_x, blocks_x, blocks_z, generation;
+// Q4 world units
 static int32_t cam_x, cam_y, cam_z, sin_yaw, cos_yaw, sin_pitch, cos_pitch;
+static uint8_t last_buttons;   // what the mouse's buttons were last report
 // The cursor: a hand drawn in two colours, its outline the deepest sea and
 // its fill the palest sky, which are the program's own colours and so are the
 // same on every land. It is what the mouse moves and what a left drag takes
@@ -334,7 +336,21 @@ struct tc_shade tc_init(const struct tc_land *l, void *work)
 	cam_focus_x = (int32_t)l->cells_x * CELL / 2;
 	cam_focus_z = (int32_t)l->cells_z * CELL / 2;
 	cam_focus_y = LIFT;
+	// The camera those four describe, where the frame would put it. tc_draw
+	// computes these from them for every driven frame, but a run's first
+	// mouse report arrives before the first frame has been drawn, and the
+	// pick a middle press makes and the drag's own arithmetic both read them:
+	// without this the first report of a run works from a camera at the world
+	// origin with no rotation at all.
+	sin_yaw = isin((uint32_t)cam_turn);
+	cos_yaw = icos((uint32_t)cam_turn);
+	sin_pitch = isin((uint32_t)cam_pitch);
+	cos_pitch = icos((uint32_t)cam_pitch);
+	cam_x = cam_focus_x - (int32_t)((int64_t)(cam_dist * cos_pitch >> 14) * sin_yaw >> 14);
+	cam_z = cam_focus_z - (int32_t)((int64_t)(cam_dist * cos_pitch >> 14) * cos_yaw >> 14);
+	cam_y = cam_focus_y + (int32_t)((int64_t)cam_dist * sin_pitch >> 14);
 	cam_driven = 0;
+	last_buttons = 0;
 	// The cursor's shape, and where it starts: the middle of the screen.
 	hand_build();
 	cursor_x = TC_WIDTH / 2 * 16;
@@ -803,6 +819,45 @@ static int32_t ground(int32_t x, int32_t z)
 	return height(land->altitude[(uint32_t)gz * verts_x + (uint32_t)gx]);
 }
 
+// The land under a point on the screen, Q4: the camera and the projection
+// undone and marched against the height field the renderer draws. This is
+// what the middle button needs, because the original takes the piece of land
+// under the hand as the point it turns the camera about (core-reference
+// OB-005), and it is the same pick a double click would need to fly
+// somewhere. Returns 0 when the ray leaves the island without meeting it.
+static int land_pick(int32_t sx, int32_t sy, int32_t *px, int32_t *py, int32_t *pz)
+{
+	int32_t extent = (int32_t)(land->cells_x > land->cells_z ? land->cells_x
+								: land->cells_z) * CELL;
+	int32_t limit_x = (int32_t)land->cells_x * CELL;
+	int32_t limit_z = (int32_t)land->cells_z * CELL;
+	for (int32_t z = NEAR; z < extent * 3; z += 16) {
+		int32_t cx = (int32_t)(((int64_t)(sx - TC_WIDTH * 8) * z) >> 12);
+		int32_t cy = (int32_t)(((int64_t)(TC_HEIGHT * 8 - sy) * z) >> 12);
+		// Undo the two rotations to_camera applies, against them and in the
+		// reverse order, so the point is the one that projects here.
+		int32_t dy = (int32_t)(((int64_t)cy * cos_pitch -
+					(int64_t)z * sin_pitch) >> 14);
+		int32_t rz = (int32_t)(((int64_t)cy * sin_pitch +
+					(int64_t)z * cos_pitch) >> 14);
+		int32_t dx = (int32_t)(((int64_t)cx * cos_yaw +
+					(int64_t)rz * sin_yaw) >> 14);
+		int32_t dz = (int32_t)((-(int64_t)cx * sin_yaw +
+					(int64_t)rz * cos_yaw) >> 14);
+		int32_t x = cam_x + dx, y = cam_y + dy, wz = cam_z + dz;
+		if (x < 0 || x > limit_x || wz < 0 || wz > limit_z)
+			continue;
+		int32_t h = ground(x, wz);
+		if (y <= h) {
+			*px = x;
+			*py = h;
+			*pz = wz;
+			return 1;
+		}
+	}
+	return 0;
+}
+
 void tc_mouse(uint8_t buttons, int32_t dx, int32_t dy, int32_t wheel)
 {
 	/* The camera the scripted orbit left in the same variables, so that the
@@ -822,6 +877,51 @@ void tc_mouse(uint8_t buttons, int32_t dx, int32_t dy, int32_t wheel)
 		cursor_x = (TC_WIDTH - 1) * 16;
 	if (cursor_y > (TC_HEIGHT - 1) * 16)
 		cursor_y = (TC_HEIGHT - 1) * 16;
+
+	/* The middle button takes hold of the piece of land under the hand, the
+	 * way the original does: that point becomes what the camera looks at and
+	 * the point it turns about, at the distance it was from the camera when
+	 * the button went down, so the land under the hand holds still while
+	 * everything else swings around it (core-reference OB-005).
+	 *
+	 * The distance is the grabbed point's depth along the view, which is the
+	 * projection of the camera's own axis on the way to it: the camera keeps
+	 * its angle and only re-anchors, so what follows is an orbit of that
+	 * point and not of the old focus. A press that misses the island leaves
+	 * the button doing nothing at all, which is also the original's rule. */
+	if ((buttons & TC_MOUSE_MIDDLE) && !(last_buttons & TC_MOUSE_MIDDLE)) {
+		int32_t px, py, pz;
+		if (land_pick(cursor_x, cursor_y, &px, &py, &pz)) {
+			int32_t depth = (int32_t)(((int64_t)(px - cam_x) * (cos_pitch * sin_yaw >> 14) +
+						   (int64_t)(py - cam_y) * -sin_pitch +
+						   (int64_t)(pz - cam_z) * (cos_pitch * cos_yaw >> 14)) >> 14);
+			int32_t far = (int32_t)((land->cells_x > land->cells_z ? land->cells_x
+									      : land->cells_z) * CELL * 2);
+			if (depth < 160)
+				depth = 160;   /* ten units: the floor the original keeps */
+			if (depth > far)
+				depth = far;
+			cam_focus_x = px;
+			cam_focus_y = py;
+			cam_focus_z = pz;
+			cam_dist = depth;
+		}
+	}
+	last_buttons = buttons;
+
+	/* While the middle button is held the hand stays on the middle of the
+	 * screen, which is the finger holding the earth: the piece of land it
+	 * took is what the camera turns about, and the aim puts that point at
+	 * the middle of the screen, so the fingertip and the land it holds stay
+	 * in the same place while everything else swings. It snaps there as the
+	 * button goes down -- after the pick above, which uses where the hand
+	 * was -- and only follows the mouse again when the button comes up. The
+	 * original recentres the pointer on every frame of a rotation the same
+	 * way (core-reference OB-005). */
+	if (buttons & TC_MOUSE_MIDDLE) {
+		cursor_x = TC_WIDTH / 2 * 16;
+		cursor_y = TC_HEIGHT / 2 * 16;
+	}
 
 	if (buttons & TC_MOUSE_MIDDLE) {
 		/* Turning: the angle moves with the drag and the tilt against it,
@@ -856,9 +956,11 @@ void tc_mouse(uint8_t buttons, int32_t dx, int32_t dy, int32_t wheel)
 	}
 
 	if (wheel) {
-		/* Rolling towards the hand comes closer: the wheel is inverted from
-		 * the usual direction, as this user wants it. */
-		cam_dist += wheel * TC_ZOOM_PER_COUNT;
+		/* Rolling towards the hand pulls the camera back, which is the other
+		 * way round from the usual direction: this user asked for it when the
+		 * mouse first reached the board, had it turned round once to try the
+		 * usual way, and asked for this back. */
+		cam_dist -= wheel * TC_ZOOM_PER_COUNT;
 		if (cam_dist < 320)
 			cam_dist = 320;              /* twenty units: in the grass */
 		if (cam_dist > (int32_t)((land->cells_x > land->cells_z ?

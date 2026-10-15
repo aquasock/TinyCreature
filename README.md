@@ -100,7 +100,17 @@ whole run, so in-band input cannot arrive until the host lets go of the port.
 The camera the mouse drives is openblack's (core-reference OB-005): the middle
 button held and dragged turns and tilts it, the left button held and dragged
 slides the land along with the hand, and the wheel moves the camera in and
-out, which this user asked to be the other way round from the usual. Four
+out, which this user asked to be the other way round from the usual. A middle
+press takes hold of the piece of land under the hand: that point becomes what
+the camera looks at and the point it turns about, at the distance it was from
+the camera when the button went down, so the land under the finger holds still
+while everything else swings around it. The point is found by taking the
+camera and the projection back apart and marching the result against the
+height field the renderer draws, once per press, and a press that misses the
+island leaves the camera turning about the focus it had. While the middle
+button is held the hand is drawn at the middle of the screen, which is where
+the aim puts the land it took, and it follows the mouse again when the button
+comes up. Four
 constants in `firmware/terrain/terrain.h` are the whole feel --
 `TC_TURN_PER_COUNT`, `TC_PITCH_PER_COUNT`, `TC_ZOOM_PER_COUNT` and
 `TC_DRAG_DIVISOR` -- and `tools/run_tang32_feel.sh` builds for the mouse, loads
