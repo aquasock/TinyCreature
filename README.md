@@ -88,7 +88,11 @@ mouse sends the same six bytes to the AE350 as a frame in TinyTang's format,
 `0xAA len_hi len_lo type`, type 0x16, with the frame 0xffff meaning "apply it
 as it arrives". The UART stays in the loader mode it resets into because this
 core carries no desk link, so the AE350 receives every byte TinyTang sends.
-The board's own BLE mouse is not wired to this yet.
+The board's own Bluetooth mouse drives the camera this way, TinyTang sending
+the report from its desk task whether or not the desktop is drawn (TinyTang
+entry 79, core-reference TANG-001), and the user has driven it. One thing to
+know when a run is loaded from a PC: the loader holds the board's link for the
+whole run, so in-band input cannot arrive until the host lets go of the port.
 
 The run converts the land, prints the PC's totals, loads the program and the
 land file, and fails unless the board reports `TinyCreature TERRAIN OK` with

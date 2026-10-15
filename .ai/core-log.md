@@ -470,3 +470,33 @@ The board's own BLE mouse is what remains, and it is the phase this cycle prepar
 - User Test: PASS
 
 ---
+
+## 15 COMMIT Unreleased 2026-10-15T06:59:42-07:00
+
+#### Coming From:
+
+Unreleased e690f35
+
+#### Purpose:
+
+Put the board's own Bluetooth mouse behind the input path entry 14 built, so the island is driven by a hand on this board rather than by a host.
+
+#### Outcome:
+
+Entry 14 left the live path decoded and waiting; this cycle is the other repository's half of it, and no line of this project's program changed to make it work. TinyTang at `62fe6a7` (its entry 79) gained `FPGA_CMD_INPUT 0x16`, the first command that carries input into a core -- six bytes of the frame it belongs to, the buttons, and the mouse's dx, dy and wheel, with 0xffff meaning apply it as it arrives -- sent from its desk task in both branches, because the overlay is cleared while a program runs and the desk layer's poll only ran while it was drawn. The first interactive attempt drove nothing, and both causes are worth keeping. The mouse had not reconnected: `blemouse` reported "waiting" until it was woken, which is a thing the user saw before the agent did. And the host's loader held the link for the whole run, because `load_ae350.py` keeps TinyTang's `fpgapipe` open until the program exits and `fpgapipe` holds the transmit lock throughout: a program loaded and watched from the PC cannot receive in-band input until the host lets go, which is the same exclusivity that keeps the desktop off the screen while a cartridge loads. With the mouse connected and the pipe released the user drove the camera with it and reported it working perfectly, which is this cycle's test. The firmware was built with the Xuantie-900 GCC 10.2.0 and SDK 2.3.36 this machine already held, installed with TinyTang's own `tools/tinytang_flash.py` and a power cycle, after which `platform` reported `6145683-dirty.7381d83` against `0947b57-dirty.aafcfe8` before it. One defect is left open rather than tidied away: `pointer_frame()` guards on `tang_fpga_link_open()`, which brings the UART up and returns 0 but does not say whether the host's pipe owns the link, so while a pipe is open the call takes the transmit lock with `portMAX_DELAY` and stalls the desk task for that pipe's lifetime instead of returning. It recovers when the pipe closes, but a run held open from the host holds the desktop's task with it, and that is the next fix. `.ai/core-reference.md` gains topic TANG and record TANG-001 for the frame contract, which is another project's and which this program's decoder depends on, and the README no longer says the board's mouse is unwired. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged, checked that the reference's fast index and its records list the same ids in the same order, and validated this entry's six sections, sequential numbering, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+Fix the pipe guard in TinyTang and flash it once more: the state wants a query of its own, `s_pipe` being already tracked in `tang_fpga_uart.c`, so that the forwarder returns early instead of taking the lock while a host owns the link. The keyboard is deliberately not in this cycle, as the user asked: TinyTang types its reports into its own desktop rather than passing them on, so forwarding them is its own decision. What a mouse count means to this camera is `TC_TURN_PER_COUNT` and `TC_ZOOM_PER_COUNT` in firmware/terrain/terrain.h, and now that the user can feel them they are theirs to set. The recorded-input run remains the regression and the interactive run cannot be one, which is the case for pinning a CRC per recorded sequence in a tool, beside the stress harness that entries 10, 12, 13 and 14 all owe. The unused Bullet world removal from the PC playground (entry 6) and the J10 second SDRAM bank (entry 7) remain open, and GAME-001 still describes the 64 MiB route as J9's second chip select rather than the J10 bank.
+
+#### Files Modified:
+
+- README.md
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

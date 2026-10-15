@@ -74,6 +74,10 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 - topic_id: PROV
   name: "Provenance and attribution"
   description: "The licences and notices that follow from the code this project builds on or carries."
+
+- topic_id: TANG
+  name: "TinyTang's core link"
+  description: "The frame protocol the Tang Console's BL616 firmware speaks to a loaded core: what a core is sent, what it may send back, and how the two share the line."
 ```
 
 ---
@@ -91,6 +95,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | Which EXTS addresses reach the fabric, and what do bus and SDRAM accesses cost the A25? | AE | AE-001, AE-002 |
 | Does Yosys map multiplies to the GW5A's DSP blocks? | TOOL | TOOL-001 |
 | Where are the board, AE350, SDRAM, HDMI and toolchain facts? | (TinyNES) | TinyNES DEV-008, DEV-011 to DEV-013, BRD-010, BRD-011, PSX-005, TOOL-018 |
+| What does a loaded core receive from the board, and how is input delivered to it? | TANG | TANG-001 |
 
 ---
 
@@ -108,6 +113,7 @@ GFX-001: "Rasterix (github.com/ToNi3141/Rasterix) is a Verilog FPGA rasterizer w
 AE-001: "In the Tang32 core the AE350's EXTS port carries 0xe8018000 to 0xe801ffff to the fabric: the raster unit decoded there answers its ID and runs; 0xe8020000 and above are untested"
 AE-002: "Measured on the Tang32 core at 750 MHz: an uncached EXTS write costs about 120 A25 cycles back to back and a register read about 102, four posted writes amid other work about 23, and a cached store missing into the SDRAM about 78 a word, about 620 a 32-byte line; the terrain program's time is per-cell and per-triangle work, not its vertex records"
 TOOL-001: "Yosys 0.69+260's synth_gowin infers DSP multipliers only for -family gw1n and gw2a; for gw5a every multiply becomes LUT and carry logic"
+TANG-001: "Every message between the BL616 and a loaded core is 0xAA len_hi len_lo type, the length big-endian and counting the type byte; the only command that carries input into a core is 0x16, six bytes of the frame it belongs to, the buttons, and the mouse's dx, dy and wheel, with 0xffff meaning apply it as it arrives, and TinyTang sends one whenever its Bluetooth mouse moves, whether or not the desktop is on screen"
 ```
 
 ---
@@ -229,6 +235,19 @@ TOOL-001: "Yosys 0.69+260's synth_gowin infers DSP multipliers only for -family 
     - "Yosys 0.69+260 help synth_gowin; ~/oss-cad-suite/share/yosys/gowin/dsp_map.v"
     - "This project's build/tang32/nextpnr.log device utilisation (not committed)"
   verification: "Read and observed on 2026-10-15 (core-log entry 9): the Tang32 image with the raster unit reports 0 of each DSP cell type."
+
+- record_id: TANG-001
+  kind: EXTERNAL
+  topic_id: TANG
+  title: "The input frame: the board's mouse and buttons to a core"
+  status: VERIFIED
+  verified_date: 2026-10-15
+  statement: "TinyTang frames every message between the BL616 and a loaded core as 0xAA len_hi len_lo type, the length big-endian and counting the type byte; a length high byte of 8 or more is treated as noise, which is how a reader resynchronises (ports/bl616/fpga_frames.h). Commands to a core are 0x01 core ID, 0x04 and 0x05 the OSD cursor and text, 0x06 set-load, 0x07 ROM data, 0x08 overlay, 0x13, 0x14 and 0x15 the desktop layer's cursor, cells and control, and 0x16 input; responses from a core are 0x01 core ID, 0x03 joypad, 0x08 keyboard, and 0x20 an AE350 program's text (ports/bl616/tang_fpga_link.h). The input frame's payload is six bytes: the frame the report belongs to, little-endian, then the buttons and the mouse's dx, dy and wheel, the shape of a HID boot report, with 0xffff as the frame meaning apply it as it arrives. TinyTang sends one whenever its Bluetooth mouse has moved or a button changed, from tang_osd_desk.c's desk task in both of its branches, so it arrives whether or not the desktop is drawn. While the host's fpgapipe owns the line the transmit lock is held for the whole of that session and no frame can be sent. The desktop-layer commands are additive by design: a core that does not implement a frame type ignores it."
+  consequence: "firmware/terrain/main.c decodes exactly this and nothing else: type 0x16 with a six-byte payload, applied at the frame it names, or at once for 0xffff, with every other frame consumed so the stream stays in step; a run whose input is recorded carries the same six bytes in the land file's tail instead, which is what lets the board be checked against terrain_host. The exclusivity matters when a run is started from a PC: the loader holds the port for the whole run, so in-band input cannot arrive until the host lets go."
+  sources:
+    - "TinyTang at 62fe6a7: ports/bl616/tang_fpga_link.h, ports/bl616/tang_osd_desk.c, ports/bl616/fpga_frames.h, ports/bl616/tang_ble.c"
+    - "This project's firmware/terrain/main.c and tools/tang_input.py"
+  verification: "Read from TinyTang's sources on 2026-10-15 and confirmed on this board the same day (core-log entry 15): the board's paired Logitech mouse drove the terrain camera with no host attached."
 ```
 
 ---
