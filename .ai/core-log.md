@@ -370,3 +370,37 @@ Entry 10's next-step note named two targets and this was one; the other was alre
 - User Test: PASS
 
 ---
+
+## 12 COMMIT Unreleased 2026-10-15T05:53:40-07:00
+
+#### Coming From:
+
+Unreleased bd53b27
+
+#### Purpose:
+
+Stop spending a fifth of every frame reading the rasterizer's own buffer back over the bus, by having the rasterizer fold the frame into the run's CRC-32 itself.
+
+#### Outcome:
+
+A throwaway probe had put the frame checksum's read-back at 5,013 us a frame, an eighth of the 42 ms period and every cycle of it bus reads rather than drawing, so `fpga/raster.sv` now folds the target buffer into a CRC-32 in address order, seeded by the program with the state the run has reached and read back a frame later; the same scan counts the bytes that were not zero and `STATUS` bit 1 says one is running. The design reuses the port the CPU's read-back already used, so the line fetch keeps its priority and nothing at all was added to the frame; the scan is a byte a clock, eight reflected steps at once and so no table to initialise, which is 2.3 ms for a frame, and the program hides even that by reading the previous frame's result while the current one is drawn. The firmware now reads one register a frame instead of 14,400 and chains the frames exactly as `tc_crc32(crc, frame, bytes)` chains them, so the value it ends with is bit for bit the one `terrain_host` computes from the same file: the board reports `CRC=4a893c8b`, the value entries 9, 10 and 11 pinned, which is the point of the design. A first version of the scan left `w_crc` set, so the scan restarted every cycle and the polling loop added to `tests/raster_tb.sv` never ended; the simulation hung for half an hour instead of failing, and both the flag and the testbench's unbounded waits were fixed, so that class of defect now fails loudly. The testbench and its runner also check the unit's checksum against the C's, for one frame and for two frames chained, and the simulation passes with the read-back and line-fetch checks intact. On the board the fabric path's mean frame went from 27,755 to 27,736 us and its mean period from 42,146 to 33,341 us, which is two vertical blanks, so 599 of the 600 frames now take two blanks and one takes three: the orbit runs at 30 frames a second where entry 9 measured 20, and the user called the frame rate rock solid. The software path, which still reads its buffer back in software, moved only with entry 11's camera change, to a 30,298 us mean frame and a 40,058 us period, and both paths still match `terrain_host` frame for frame. The core was rebuilt with the eight-seed sweep, five seeds clean and seed 2 kept at 81.04 MHz on the 75 MHz bus and 98.18 MHz on the 74.25 MHz pixel clock, `.fs` SHA-256 `391f892a11b7c636de4f67ff0892c60496783b05dc35ba9dfdb2c0a6287d392a` and `.bin` SHA-256 `089cfe606c7de4d74403be6bd7b709370062caecf3d55ba114f13fc24de16f01`; the checksum cost 299 LUT4s, 28 ALUs and 95 flip-flops with no additional block RAM, and it is not the critical path, which the timing report still puts in the HDMI encoder and the UART receiver. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged, checked that the reference's fast index and its records list the same ids in the same order, and validated this entry's six sections, sequential numbering, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The cell walk is the only large target left: outside the triangle submission and the two per-vertex transforms it is still about 15.1M cycles a frame, roughly 320 for each of the 46,592 cells visited, most of them in blocks that are drawn. Thirty frames a second is where this core now sits; 60 needs the whole frame under 16.6 ms, a halving that the cell walk alone will not give, so the level-of-detail idea -- cells merged once they cover less than a pixel, thresholded on projected size rather than distance -- is the tool for that and is deliberately unspent, as is its cost of a new pinned frame CRC and a fresh look from the user. The stress harness that caught entry 10's clip-path defect, and would have failed this cycle's hang in seconds rather than half an hour, still lives outside the repository; committing it under `tools` with the frame CRC pinned per configuration remains the outstanding debt. The unused Bullet world removal from the PC playground (entry 6) and the J10 second SDRAM bank (entry 7) remain open, and GAME-001 still describes the 64 MiB route as J9's second chip select rather than the J10 bank.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/main.c
+- fpga/raster.sv
+- tests/raster_tb.sv
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

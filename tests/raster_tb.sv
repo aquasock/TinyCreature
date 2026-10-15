@@ -90,9 +90,18 @@ module raster_tb;
 
     task automatic wait_idle;
         reg [31:0] s;
+        integer guard;
         begin
-            s = 1;
-            while (s[0]) read(15'h08, s);
+            s = 1; guard = 0;
+            while (s[0]) begin
+                read(15'h08, s);
+                guard = guard + 1;
+                if (guard > 100000) begin
+                    $display("FAIL: the engine never went idle");
+                    errors = errors + 1;
+                    $finish;
+                end
+            end
         end
     endtask
 
@@ -144,10 +153,58 @@ module raster_tb;
 
     reg [8*256-1:0] cmd0, cmd1, fb0, fb1;
     reg [31:0] q, tris0, pixels0, stalls;
+
+    // The fabric's frame checksum, against the C the firmware and
+    // terrain_host use: tc_crc32(0, bytes) == zlib.crc32(bytes), and a run
+    // chains frames by seeding each scan with the last state, so the second
+    // scan's result must be the CRC of both frames together.
+    task automatic scan(input integer slot, input [31:0] seed,
+                        input [31:0] want_crc, input integer want_nz,
+                        output [31:0] state, output [31:0] nz);
+        integer guard;
+        begin
+            write(15'h04, slot ? 32'h2 : 32'h0);  // the buffer to scan
+            write(15'h1c, seed);
+            q = 2; guard = 0;
+            while (q[1]) begin                  // STATUS bit 1: scanning
+                read(15'h08, q);
+                guard = guard + 1;
+                if (guard > 200000) begin
+                    $display("FAIL: the scan of buffer %0d never finished", slot);
+                    errors = errors + 1;
+                    $finish;
+                end
+            end
+            read(15'h1c, state);
+            read(15'h28, nz);
+            if (~state !== want_crc) begin
+                $display("FAIL: buffer %0d CRC %h, expected %h", slot, ~state,
+                         want_crc);
+                errors = errors + 1;
+            end else
+                $display("buffer %0d: CRC %h matches tc_crc32", slot, ~state);
+            if (nz !== want_nz) begin
+                $display("FAIL: buffer %0d non-zero %0d, expected %0d", slot, nz,
+                         want_nz);
+                errors = errors + 1;
+            end
+        end
+    endtask
+
+    reg [31:0] want_crc0, want_crc01, state0, state1;
+    reg [31:0] nz0, nz1;
+    integer want_nz0, want_nz1;
     initial begin
         if (!$value$plusargs("cmd0=%s", cmd0) || !$value$plusargs("cmd1=%s", cmd1) ||
             !$value$plusargs("fb0=%s", fb0) || !$value$plusargs("fb1=%s", fb1)) begin
             $display("FAIL: give +cmd0= +cmd1= +fb0= +fb1=");
+            $finish;
+        end
+        if (!$value$plusargs("crc0=%h", want_crc0) ||
+            !$value$plusargs("crc01=%h", want_crc01) ||
+            !$value$plusargs("nz0=%d", want_nz0) ||
+            !$value$plusargs("nz1=%d", want_nz1)) begin
+            $display("FAIL: give +crc0= +crc01= +nz0= +nz1=");
             $finish;
         end
         $readmemh(fb0, expect0);
@@ -179,6 +236,10 @@ module raster_tb;
         check_readback(0);
         check_line(0, 0); check_line(0, 90); check_line(0, 179);
         check_line(1, 0); check_line(1, 137);
+        // Buffer 0's content is frame 0 and buffer 1's is frame 1: scan both,
+        // the second seeded from the first, the way a run chains its frames.
+        scan(0, 32'hffffffff, want_crc0, want_nz0, state0, nz0);
+        scan(1, state0, want_crc01, want_nz1, state1, nz1);
         if (errors == 0) $display("PASS raster_tb");
         else $display("FAIL raster_tb: %0d errors", errors);
         $finish;

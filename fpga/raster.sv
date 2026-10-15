@@ -21,6 +21,14 @@
 //                starts at, a multiple of 4 below 57,600
 //   0x24 RB_DATA read: four pixels from RB_ADDR, the first in bits 7:0;
 //                RB_ADDR then moves on by 4
+//   0x1c CRC     write: start folding the target buffer into this CRC-32
+//                seed, in address order; read: the state left by the last
+//                scan that finished, raw, for the program to invert once at
+//                the end of a run. Scanning 57,600 bytes takes about 2.3 ms,
+//                so a program reads the result a frame later rather than
+//                waiting for it.
+//   0x28 NONZERO read: how many bytes the last finished scan found not zero
+//   STATUS bit 1 set while a scan is running
 //
 // Commands:
 //   ROWS  1 word: 2 << 28 | end << 16 | first << 8 | colour, fills rows
@@ -69,11 +77,20 @@ module raster #(
         else if (push) wr_ptr <= wr_ptr + 1'b1;
 
     // ---- Bus slave ----
-    reg target = 0, err2 = 0, w_ctrl = 0, w_rb = 0, r_fb = 0;
+    reg target = 0, err2 = 0, w_ctrl = 0, w_rb = 0, w_crc = 0, r_fb = 0;
     reg [1:0] r_byte = 0;
     reg r_issued = 0;
     reg [31:0] r_data = 0;
     reg [31:0] tris = 0, pixels = 0, stalls = 0;
+    // The frame checksum: a reflected CRC-32 over the target buffer in
+    // address order, seeded by the CPU. The program chains a run's frames
+    // through it exactly as tc_crc32(crc, frame, bytes) chains them, so the
+    // value it ends with is the one terrain_host computes from the same
+    // file.
+    reg [31:0] crc_reg = 32'hffffffff;
+    reg [15:0] nz_count = 0, nz_latch = 0;
+    reg [15:0] crc_addr = 0;
+    reg crc_scanning = 0, crc_buf = 0;
     wire busy;
     wire accept = hready_in && hsel && htrans[1];
     wire word = hsize == 3'd2 && haddr[1:0] == 0;
@@ -81,8 +98,9 @@ module raster #(
     wire is_reg = haddr[14:6] == 0;
     wire is_fb = is_reg && !hwrite && reg_index == 9;
     wire ok = word && is_reg &&
-              (hwrite ? reg_index <= 1 || reg_index == 8
-                      : (reg_index >= 1 && reg_index <= 6) || reg_index == 9);
+              (hwrite ? reg_index <= 1 || reg_index == 7 || reg_index == 8
+                      : (reg_index >= 1 && reg_index <= 7) || reg_index == 9 ||
+                        reg_index == 10);
     // The CPU's read port request, served when the line fetch leaves it.
     reg cpu_rd = 0;
     wire cpu_rd_grant;
@@ -92,7 +110,7 @@ module raster #(
     always @(posedge clk or negedge resetn) begin
         if (!resetn) begin
             hready <= 1; hresp <= 0; hrdata <= 0; err2 <= 0; w_fifo <= 0;
-            w_ctrl <= 0; r_fb <= 0; show <= 0; target <= 0;
+            w_ctrl <= 0; w_crc <= 0; r_fb <= 0; show <= 0; target <= 0;
             stalls <= 0; cpu_rd <= 0; r_issued <= 0;
         end else begin
             if (err2) begin
@@ -109,6 +127,9 @@ module raster #(
                     show <= hwdata[0]; target <= hwdata[1];
                 end
                 w_ctrl <= 0; hready <= 1;
+            end else if (w_crc) begin
+                // One cycle of w_crc is the scan's start pulse.
+                w_crc <= 0; hready <= 1;
             end else if (r_fb) begin
                 // Four bytes, one block RAM read each, data a cycle later.
                 if (cpu_rd && cpu_rd_grant) begin
@@ -128,11 +149,13 @@ module raster #(
                 if (accept && ok && !hwrite && !is_fb)
                     case (reg_index)
                         1: hrdata <= {30'd0, target, show};
-                        2: hrdata <= {31'd0, busy};
+                        2: hrdata <= {30'd0, crc_scanning, busy};
                         3: hrdata <= ID_VALUE;
                         4: hrdata <= tris;
                         5: hrdata <= pixels;
                         6: hrdata <= stalls;
+                        7: hrdata <= crc_reg;
+                        10: hrdata <= {16'd0, nz_latch};
                         default: hrdata <= 0;
                     endcase
                 if (accept) begin
@@ -142,6 +165,8 @@ module raster #(
                         hready <= 0; r_fb <= 1; r_byte <= 0; cpu_rd <= 1;
                     end else if (hwrite && reg_index == 0) begin
                         hready <= 0; w_fifo <= 1;
+                    end else if (hwrite && reg_index == 7) begin
+                        hready <= 0; w_crc <= 1;
                     end else if (hwrite) begin
                         hready <= 0; w_ctrl <= 1; w_rb <= reg_index == 8;
                     end
@@ -435,9 +460,73 @@ module raster #(
         end
     end
 
-    // The line fetch owns the shown buffer's read port while it runs.
-    assign cpu_rd_grant = !(fetching && f_buf == target);
+    // ---- Frame checksum - continued ----
+    // A byte a clock: eight reflected steps at once, the work the table does
+    // without a table to initialise. The scan reads the target buffer through
+    // the same port the CPU's read-back uses, so the line fetch keeps its
+    // priority and the scan waits whenever the buffer it is reading is the
+    // one being shown. Nothing is added to the frame: the program reads the
+    // result a frame later instead of waiting for it.
+    localparam [31:0] CRC_POLY = 32'hEDB88320;
+    wire [7:0] crc_byte = crc_buf ? q1 : q0;
+    wire crc_owns = crc_scanning && !(fetching && f_buf == crc_buf);
+    reg crc_own_q = 0, crc_own_qq = 0;
+    reg [7:0] crc_d = 0;
+    reg [1:0] crc_wait = 0;
+
+    function automatic [31:0] crc_step8(input [31:0] c, input [7:0] b);
+        reg [31:0] x;
+        integer n;
+        begin
+            x = c ^ {24'd0, b};
+            for (n = 0; n < 8; n = n + 1)
+                x = {1'b0, x[31:1]} ^ (x[0] ? CRC_POLY : 32'd0);
+            crc_step8 = x;
+        end
+    endfunction
+
+    always @(posedge clk or negedge resetn) begin
+        if (!resetn) begin
+            crc_reg <= 32'hffffffff; crc_addr <= 0; crc_scanning <= 0;
+            crc_buf <= 0; crc_wait <= 0; nz_count <= 0; nz_latch <= 0;
+            crc_own_q <= 0; crc_own_qq <= 0; crc_d <= 0;
+        end else begin
+            crc_own_q <= crc_owns;
+            crc_own_qq <= crc_own_q;
+            crc_d <= crc_byte;
+            if (w_crc) begin
+                crc_reg <= hwdata;      // the state the run has reached
+                crc_addr <= 0;
+                nz_count <= 0;
+                crc_buf <= target;
+                crc_scanning <= 1;
+                crc_wait <= 2;
+            end else if (crc_scanning) begin
+                if (crc_wait != 0)
+                    crc_wait <= crc_wait - 1'b1;
+                else if (crc_own_qq && crc_own_q) begin
+                    // crc_d is the byte for crc_addr: the port was ours for
+                    // the two cycles that read it, address held.
+                    crc_reg <= crc_step8(crc_reg, crc_d);
+                    if (crc_addr == PIXELS - 1) begin
+                        nz_latch <= nz_count + (crc_d != 0 ? 1'b1 : 1'b0);
+                        crc_scanning <= 0;
+                    end else begin
+                        nz_count <= nz_count + (crc_d != 0 ? 1'b1 : 1'b0);
+                        crc_addr <= crc_addr + 1'b1;
+                        crc_wait <= 2;
+                    end
+                end
+            end
+        end
+    end
+
+    // The line fetch owns the shown buffer's read port while it runs, and a
+    // scan owns it otherwise; the CPU's read-back waits for both.
+    assign cpu_rd_grant = !(fetching && f_buf == target) && !crc_scanning;
     assign cpu_q = target ? q1 : q0;
-    assign raddr0 = (fetching && !f_buf) ? f_addr : cpu_raddr;
-    assign raddr1 = (fetching && f_buf) ? f_addr : cpu_raddr;
+    assign raddr0 = (fetching && !f_buf) ? f_addr
+                   : (crc_scanning ? crc_addr : cpu_raddr);
+    assign raddr1 = (fetching && f_buf) ? f_addr
+                   : (crc_scanning ? crc_addr : cpu_raddr);
 endmodule

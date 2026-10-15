@@ -80,7 +80,7 @@ game's data and is never committed.
 
 The accepted board run drew all 600 frames identically to the PC, frame CRC
 `4a893c8b` from land CRC `ed38589d`. It drew a mean 20,085 triangles and
-filled 33,072 pixels per frame, took a mean 30.8 ms and at most 34.1 ms to
+filled 33,072 pixels per frame, took a mean 30.3 ms and at most 33.5 ms to
 draw a frame on the AE350's software path, and so showed most frames in two
 vertical blanks and the rest in three, with zero late line fetches. That draw
 time is the CPU baseline the fabric renderer has to beat.
@@ -94,26 +94,34 @@ and fills the pixels whose centres all three functions place inside, one a
 clock over the clamped bounding box. It draws into two 320 by 180 frame
 buffers of its own in single-clock block RAM, which the video unit shows
 through the same line-fetch handshake as the SDRAM, and the CPU reads a buffer
-back through two registers. `tc_soft` in `terrain.c` is its exact model, so
+back through two registers, which is also where the unit starts and reports a
+CRC-32 of the buffer it has just drawn. `tc_soft` in `terrain.c` is its exact model, so
 `terrain_host` predicts every pixel. `tools/test_tang32_raster.sh` drives two
 real Land 1 frames' commands through it in simulation and compares the result
-byte for byte, through the read-back registers and the line fetch.
+byte for byte, through the read-back registers and the line fetch, and checks
+the unit's frame checksum against the same value the C computes.
 
 On the board the rasterizer drew all 600 frames as the PC model did, frame
 CRC `4a893c8b` from 20,085 triangles and 33,072 pixels a frame, with zero
 late line fetches. It was idle by the time each frame had been sent, so the
-CPU sets the pace: a mean 28.2 ms to send a frame and at most 33.5 ms,
-against 30.8 ms and 34.1 ms for the same frames filled in software
-(`terrain-soft`), which shows most frames in two vertical blanks and the rest
-in three. Measured on the board, sending a triangle's four command words
-costs 23 CPU cycles within the frame loop, and a cached store that misses
-into the SDRAM about 620 cycles a 32-byte line, but the CPU's time is not
-that memory stream. A phase profile puts it in the cell walk and the triangle
-submission inside it: cutting the vertex record from 24 bytes to 8, which the
-whole island is walked over once a frame, moved the mean frame by only 2.5%,
-while taking the everyday all-front triangle straight from the record,
-without the clip machinery, and building the program at `-O3` took the mean
-from 37.9 ms to 28.2 ms.
+CPU sets the pace: a mean 27.7 ms to send a frame and at most 33.0 ms,
+against 30.3 ms and 33.5 ms for the same frames filled in software
+(`terrain-soft`). Three seconds of the run's twenty-five were not drawing at
+all: reading each frame's buffer back over the bus to check it cost about 5 ms
+a frame, an eighth of the period, so the rasterizer now folds a frame's buffer
+into a CRC-32 itself, in address order and seeded with the state the run has
+reached, and the program reads one register a frame instead of 14,400. That
+took the mean frame from 42.1 ms to 33.3 ms, which is two vertical blanks, so
+the orbit runs at 30 frames a second throughout: 599 of its 600 frames in two
+blanks and one in three. Measured on the board, sending a triangle's four
+command words costs 23 CPU cycles within the frame loop, and a cached store
+that misses into the SDRAM about 620 cycles a 32-byte line, but the CPU's
+time is not that memory stream. A phase profile puts it in the cell walk and
+the triangle submission inside it: cutting the vertex record from 24 bytes to
+8, which the whole island is walked over once a frame, moved the mean frame
+by only 2.5%, while taking the everyday all-front triangle straight from the
+record, without the clip machinery, and building the program at `-O3` took
+the mean from 37.9 ms to 28.2 ms.
 
 ## openblack on a PC
 
