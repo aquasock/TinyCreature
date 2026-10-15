@@ -199,7 +199,8 @@ int main(int argc, char **argv)
 	uint64_t tris = 0, pixels = 0;
 	struct tc_soft soft = {.fb = &frame[0][0], .stride = TC_WIDTH,
 			       .pal5 = shade.pal5, .lut = shade.lut};
-	const struct tc_target target = {rows, triangle, &soft};
+	const struct tc_target target = {.rows = rows, .triangle = triangle,
+					.ctx = &soft};
 	for (uint32_t i = 0; i < frames; i++) {
 		int chosen = 0;
 		char path[4096];

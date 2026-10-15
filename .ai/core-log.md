@@ -927,3 +927,37 @@ The user has named the next cycle as a regroup, and the two things he asked abou
 - User Test: PASS
 
 ---
+
+## 29 COMMIT Unreleased 2026-10-15T16:20:32-07:00
+
+#### Coming From:
+
+Unreleased 30aac1b
+
+#### Purpose:
+
+Measure where a frame's CPU time goes, phase by phase, so that the AE350 work the user chose next is aimed at the largest term rather than at a guess.
+
+#### Outcome:
+
+The user asked for the AE350 cycles after a survey of the device put the frame's cost in the CPU: the fabric is idle by the time the CPU finishes and the four command words a triangle are the interface between them. The instrument is small and stays out of the host twin's way. `struct tc_target` gained a `now` clock and a `phase` array, both NULL on the host, which has no such counter and whose frames must not move because a profile exists; `struct tc_stats` gained the cells a frame's walk drew; `tc_draw` records the sky and sea rows, the block cull and the cell walk; and the program passes the core's cycle counter and prints `CELLS`, `PHROWS`, `PHCULL` and `PHWALK` beside the fields it already printed. The run script compares named fields, so the new ones are ignored by its checks, and the host twin's six lands still draw the frame CRCs entry 28 recorded -- Land 1 `361ce46d` among them -- which is what says the instrument is not in the picture. On the board the scripted run drew `DRAW=29662us` with `PHROWS=2us PHCULL=48us PHWALK=29607us` over `CELLS=18158`: 99.8 per cent of a frame is the cell walk, the sky and sea cost two microseconds and the block cull forty-eight, so both are free as the README claimed and the walk is 1.63 microseconds, about 1,224 cycles, per drawn cell. Three throwaway builds then measured the walk by throwing parts of it away, each one checked by the twin matching on the wrong image it drew. Walking the cells row-major instead of back to front gave `PHWALK=29314` against 29607, so the depth order costs one per cent and the theory that the alternating traversal is a cache disaster is dead. Dropping the submission entirely gave `DRAW=9044us PHWALK=8988us`, which is the walk's own compute -- the vertices, the flags, the order and each cell's setup -- at 30 per cent of the frame. Keeping the back-face and bounding-box tests and dropping only the words gave `DRAW=13918us PHWALK=13863us`, which leaves 4.9 ms, 16 per cent, for testing the triangles and 15.7 ms, 53 per cent, for writing the four command words: 80,340 words at about 196 cycles each, back to back, which is above the 120 cycles AE-002 measured for uncached writes back to back and far above its 23 cycles for four posted writes amid other work, so the store buffer is stalling on them. The three experiment switches were then removed and the build reproduces entry 28 exactly -- the same 75,440 bytes of text, the same `DRAW=29662us` and the same `CRC=361ce46d` -- so nothing of the experiment was left behind. One honest note from that last run: it reported `VBL=1801 VBLMIN=3 VBLMAX=4` where every earlier run of this build reported 1800, 3 and 3, so one frame in six hundred took a fourth vertical blank. That is the flip's phase rather than a change in the renderer -- the frame CRC, the draw time and the cell count are identical and the period is 50,002 us, still twenty a second -- but it is recorded rather than smoothed over. What the split means for the next cycle is that the CPU's largest cost is not its own arithmetic: 53 per cent of the frame is the store path into the fabric, which no arrangement of C can improve, and AE-002 already says those same writes cost a fifth as much when other work sits between them. The user asked whether the display list that would fix this is worth pairing with the second SDRAM bank, and the measurement says it is not needed: a frame's commands are 80,340 words, 321 KB, so double-buffered lists are 643 KB against the 31.75 MiB free in J9, and 6.4 MB/s against a bus that moves hundreds, so the second bank belongs to content and to giving the fabric a bus of its own rather than to this. The core was not rebuilt and `fpga/raster.sv` is untouched, so no seed sweep was needed. The features the user flies are byte-identical to entry 28's accepted build, which is why this entry's user test is not run rather than passed: there is nothing new in front of him to accept. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that this cycle's only `.ai` change is this entry, checked that the reference's fast index and its records list the same eleven ids in the same order with none retired, validated this entry against the template, ordering, prose, Status, numbering and 100-entry rules, and confirmed that the project-control change agrees with the workflow and rewrites no settled history.
+
+#### Next Steps:
+
+Three ways to spend the 15.7 ms the profile found, in the order the measurement suggests. A command list in SDRAM that the fabric fetches for itself is the largest: the CPU would write its words with cached sequential stores, which AE-002 prices at 78 cycles for a whole 32-byte line against 196 a word, and the fabric already has an SDRAM read path for the framebuffers to extend; it is also the change that moves work off the AE350 and leaves the fabric holding a read channel a texture path could reuse. A cell-shaped command is the smallest: a terrain cell is two triangles sharing four corners, so 4 corner words and one colours word against 8, about 30 per cent fewer words for 4.7 ms. And the remaining 14 ms is ordinary software -- 9.0 ms of walk and 4.9 ms of tests, where 238 cycles a triangle for a cross product and six compares is fat by any measure -- and could be taken without touching the fabric at all. Open from before and unchanged: the second SDRAM bank (entry 7) now has a clearer place, which is content and a bus for the fabric rather than the display list; the palette re-fit, which is the gate on anything prettier and on the texture path the command list would enable; the keyboard, gated on TinyTang gaining keyboard forwarding from the Tiny89 work; flying to a clicked point, which has an implemented and checked pick and wants the original's animation; the pipe guard in TinyTang, `pointer_frame()` holding the transmit lock while a host owns the link; pinning a CRC per recorded input sequence in a tool, still owed; the capture card, which returns pure black to this machine in every format it offers; the Bullet world removal from the PC playground (entry 6); and GAME-001, which still describes the 64 MiB route as J9's second chip select rather than the J10 bank.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/host.c
+- firmware/terrain/main.c
+- firmware/terrain/terrain.c
+- firmware/terrain/terrain.h
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

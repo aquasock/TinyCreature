@@ -11,6 +11,7 @@
 //   TinyCreature TERRAIN OK MODE=<FABRIC|SOFT> LAND=<crc> FRAMES=<n>
 //     TRIS=<mean> PIXELS=<mean> DRAW=<us> MAX=<us> FINISH=<us> STALLS=<n>
 //     VBL=<n> VBLMIN=<n> VBLMAX=<n> PERIOD=<us> INPUT=<n> LATE=<n> CRC=<crc>
+//     CELLS=<mean> PHROWS=<us> PHCULL=<us> PHWALK=<us>
 // LAND is the file's CRC-32; TRIS and PIXELS the mean triangles sent and
 // pixels they filled per frame; DRAW and MAX the mean and longest CPU time
 // to send a frame, FINISH the mean time after that until the rasterizer is
@@ -18,7 +19,11 @@
 // rasterizer FIFO; VBL the vertical blanks 600 frames took, VBLMIN and
 // VBLMAX the fewest and most one frame took, PERIOD the mean time per shown
 // frame; CRC the CRC-32 of all frames in turn, which terrain_host computes
-// from the same file over the same bytes. With the fabric drawing, that CRC
+// from the same file over the same bytes; CELLS the mean cells the walk drew;
+// and PHROWS, PHCULL and PHWALK the mean time the frame spent in the sky and
+// sea rows, in the block cull and in the cell walk, which is this program's
+// own profile of a frame, taken with the core's cycle counter and left out of
+// the host's line because the host has no such counter. With the fabric drawing, that CRC
 // is the rasterizer's own: it folds each frame's buffer, in address order,
 // into a seed the program passes back, so the scan runs while the next frame
 // is drawn and only one register is read a frame. The last frame stays up. A
@@ -295,6 +300,14 @@ static void fabric_tables(const struct tc_shade *shade)
 		RASTER_LUT = (uint32_t)shade->lut[i] << 24 | i;
 }
 
+/* The core's cycle counter, as tc_draw's clock: the phases it measures are the
+ * board's profile of a frame, and the host twin passes nothing here because it
+ * has no such counter and its frames must not move. */
+static uint64_t phase_now(void)
+{
+	return tn_cycles64();
+}
+
 int main(void)
 {
 	if (TN_VIDEO_ID != TN_VIDEO_ID_VALUE)
@@ -339,9 +352,15 @@ int main(void)
 
 	struct tc_soft soft = {.stride = TN_VIDEO_FB_STRIDE,
 			       .pal5 = shade.pal5, .lut = shade.lut};
+	/* The frame's phases, this frame's and the run's, and the cells the walk
+	 * drew: where the phase fields of the report come from. */
+	uint64_t phase[TC_PHASE_COUNT] = {0};
+	uint64_t phase_sum[TC_PHASE_COUNT] = {0};
+	uint64_t cells = 0;
 	const struct tc_target target = FABRIC ?
-		(struct tc_target){fabric_rows, fabric_triangle, 0} :
-		(struct tc_target){tc_soft_rows, tc_soft_triangle, &soft};
+		(struct tc_target){fabric_rows, fabric_triangle, 0, phase_now, phase} :
+		(struct tc_target){tc_soft_rows, tc_soft_triangle, &soft, phase_now,
+				   phase};
 	uint32_t late0 = TN_VIDEO_LATE, vbl0 = TN_VIDEO_FRAMES;
 	uint32_t stalls0 = FABRIC ? RASTER_STALLS : 0;
 	uint32_t crc = 0, lit = 0;
@@ -372,6 +391,9 @@ int main(void)
 		uint64_t t0 = tn_cycles64();
 		tc_draw(&target, frame, FRAMES, &stats);
 		uint64_t t1 = tn_cycles64();
+		for (unsigned p = 0; p < TC_PHASE_COUNT; p++)
+			phase_sum[p] += phase[p];
+		cells += stats.cells;
 		if (FABRIC)
 			while (RASTER_STATUS & RASTER_BUSY)
 				if (tn_cycles64() - t1 > TN_CORE_HZ / 10u)
@@ -447,13 +469,18 @@ int main(void)
 		fail("PIXELS");
 	printf("TinyCreature TERRAIN OK MODE=%s LAND=%08lx FRAMES=%u TRIS=%lu "
 	       "PIXELS=%lu DRAW=%luus MAX=%luus FINISH=%luus STALLS=%lu "
-	       "VBL=%lu VBLMIN=%lu VBLMAX=%lu PERIOD=%luus INPUT=%lu LATE=%lu CRC=%08lx\n",
+	       "VBL=%lu VBLMIN=%lu VBLMAX=%lu PERIOD=%luus INPUT=%lu LATE=%lu "
+	       "CRC=%08lx CELLS=%lu PHROWS=%luus PHCULL=%luus PHWALK=%luus\n",
 	       FABRIC ? "FABRIC" : "SOFT", (unsigned long)land_crc, (unsigned)FRAMES,
 	       (unsigned long)(tris / FRAMES), (unsigned long)(pixels / FRAMES),
 	       (unsigned long)(draw / FRAMES / us), (unsigned long)(longest / us),
 	       (unsigned long)(finish / FRAMES / us), (unsigned long)(stalls / FRAMES),
 	       (unsigned long)vbl, (unsigned long)vbl_min, (unsigned long)vbl_max,
 	       (unsigned long)(elapsed / FRAMES / us), (unsigned long)in_applied,
-	       (unsigned long)late, (unsigned long)crc);
+	       (unsigned long)late, (unsigned long)crc,
+	       (unsigned long)(cells / FRAMES),
+	       (unsigned long)(phase_sum[TC_PHASE_ROWS] / FRAMES / us),
+	       (unsigned long)(phase_sum[TC_PHASE_CULL] / FRAMES / us),
+	       (unsigned long)(phase_sum[TC_PHASE_WALK] / FRAMES / us));
 	return 0;
 }

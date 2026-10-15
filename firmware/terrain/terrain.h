@@ -50,6 +50,11 @@ struct tc_target {
 	void (*triangle)(void *ctx, const int32_t *x, const int32_t *y,
 			 uint32_t colours);
 	void *ctx;
+	/* The board's cycle counter and the durations it measures into, both NULL
+	 * for the host twin: a profile is the board's alone, and the host's frames
+	 * must not move because one exists. */
+	uint64_t (*now)(void);
+	uint64_t *phase;
 };
 
 /* The shading the fill does. A triangle's three corners carry three palette
@@ -83,9 +88,20 @@ void tc_soft_rows(void *soft, uint32_t first, uint32_t end, uint8_t colour);
 void tc_soft_triangle(void *soft, const int32_t *x, const int32_t *y,
 		      uint32_t colours);
 
-/* What one frame sent: triangles, after culling. */
+/* What one frame sent: triangles, after culling, and the cells the walk drew. */
 struct tc_stats {
 	uint32_t triangles;
+	uint32_t cells;
+};
+
+/* The phases tc_draw records into tc_target.phase when it has a clock. The
+ * cursor and the sprite are inside the walk, so the three say where a frame
+ * went rather than what any one thing cost. */
+enum {
+	TC_PHASE_ROWS = 0,   /* the sky and the sea, a run of rows at a time */
+	TC_PHASE_CULL,       /* cull_blocks, once a frame */
+	TC_PHASE_WALK,       /* the cell walk and every triangle's submission */
+	TC_PHASE_COUNT
 };
 
 /* Check a TCL2 file's header and body CRC and point land into it; returns

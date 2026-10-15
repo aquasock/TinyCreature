@@ -903,6 +903,7 @@ static void draw_cell(uint32_t gx, uint32_t gz)
 	uint8_t flags = cell[0];
 	if (!(flags & 6))
 		return;
+	counts->cells++;
 	struct vertex *tl = vertex(gx, gz), *tr = vertex(gx + 1, gz);
 	struct vertex *bl = vertex(gx, gz + 1), *br = vertex(gx + 1, gz + 1);
 	// Each corner carries its own colour, and they are handed over in the
@@ -1259,6 +1260,7 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 	out = target;
 	counts = stats;
 	stats->triangles = 0;
+	stats->cells = 0;
 	generation++;
 
 	// One orbit, swinging in to 40% and back out twice on the way round.
@@ -1286,6 +1288,11 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 		camera_from_angles();
 	}
 
+	/* A board build times each phase with the core's cycle counter. The host
+	 * twin carries no clock, so this is the board's profile alone. */
+	const int timed = out->now != NULL && out->phase != NULL;
+	uint64_t phase_at = timed ? out->now() : 0;
+
 	// The sky above the horizon, the sea below it, a run of rows at a time.
 	int32_t horizon = TC_HEIGHT / 2 - FOCAL * sin_pitch / cos_pitch;
 	uint32_t run = 0, run_colour = 0;
@@ -1304,7 +1311,17 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 		run_colour = c;
 	}
 
+	if (timed) {
+		uint64_t t = out->now();
+		out->phase[TC_PHASE_ROWS] = (uint32_t)(t - phase_at);
+		phase_at = t;
+	}
 	cull_blocks();
+	if (timed) {
+		uint64_t t = out->now();
+		out->phase[TC_PHASE_CULL] = (uint32_t)(t - phase_at);
+		phase_at = t;
+	}
 	int32_t cx = floor_div(cam_x, CELL), cz = floor_div(cam_z, CELL);
 	int32_t z_lo = 0, z_hi = land->cells_z - 1;
 	while (z_lo <= z_hi) {
@@ -1322,6 +1339,12 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 					draw_sprite();
 			}
 		}
+	}
+
+	if (timed) {
+		uint64_t t = out->now();
+		out->phase[TC_PHASE_WALK] = (uint32_t)(t - phase_at);
+		phase_at = t;
 	}
 
 	// The cursor goes last, so that it lies over everything else. Its middle

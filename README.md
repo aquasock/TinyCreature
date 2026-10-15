@@ -161,6 +161,23 @@ a hundred mosaic sprites is about 74 ms, so a village wants textures in the
 fabric rather than more triangles, and the palette room a texture needs wants
 the land's 237 entries re-fitted.
 
+A build that times its own phases with the core's cycle counter reports the
+mean cells a frame drew and the time it spent in the sky and sea rows, the
+block cull and the cell walk: `CELLS=18158 PHROWS=2us PHCULL=48us
+PHWALK=29607us` against a 29,662 us mean frame. So the frame is the walk, and
+the rows and the cull are free. Three throwaway builds that measured the walk
+by throwing work away split it three ways: 9.0 ms computing the cells -- the
+vertices, the flags, the order and each cell's setup -- 4.9 ms testing the
+triangles, which is the back-face cross product, the guard band and the
+bounding box, and 15.7 ms writing the four command words. That last is 53 per
+cent of the frame, 80,340 words at about 196 cycles each back to back, which
+the CPU's store buffer cannot overlap; AE-002 measured the same writes at 23
+cycles when other work sits between them. Walking the cells row-major instead
+of back to front moved the walk by one per cent, so the depth order is nearly
+free and the cost is the interface rather than the traversal: that is what a
+command list the fabric fetches for itself would take, and it is why the
+CPU's time is best spent by not sending the commands at all.
+
 The run converts the land, prints the PC's totals, loads the program and the
 land file, and fails unless the board reports `TinyCreature TERRAIN OK` with
 the same land CRC, triangle and pixel means and frame CRC as the PC. Set
