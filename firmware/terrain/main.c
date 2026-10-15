@@ -99,8 +99,10 @@ static void wait_scan(void)
  * live mouse have left waiting for the frame being drawn. */
 static int32_t in_dx[TC_IN_FRAMES], in_dy[TC_IN_FRAMES], in_wheel[TC_IN_FRAMES];
 static uint8_t in_buttons[TC_IN_FRAMES];
+static uint8_t in_seen[TC_IN_FRAMES];    /* a report named this frame */
 static int32_t live_dx, live_dy, live_wheel;
 static uint8_t live_buttons;
+static uint8_t live_report;              /* the link delivered one */
 static uint32_t in_applied;
 
 /* Where the decoder is: 0 magic, 1 length high, 2 length low, 3 type, 4
@@ -122,11 +124,13 @@ static void input_report(const uint8_t *p)
 		live_dx += (int8_t)p[3];
 		live_dy += (int8_t)p[4];
 		live_wheel += (int8_t)p[5];
+		live_report = 1;
 	} else if (at < TC_IN_FRAMES) {
 		in_buttons[at] = p[2];
 		in_dx[at] += (int8_t)p[3];
 		in_dy[at] += (int8_t)p[4];
 		in_wheel[at] += (int8_t)p[5];
+		in_seen[at] = 1;
 	}
 }
 
@@ -196,19 +200,28 @@ static uint32_t input_frame(uint32_t frame)
 			break;
 		input_byte((uint8_t)(value & 0xffu));
 	}
+	/* A report is handed over when one arrived, not when it carried
+	 * something: the buttons are a level and the movement a delta, so the
+	 * report that lets a button go carries neither, and asking what it
+	 * contained drops it and leaves the cursor wearing the sprite of the
+	 * button that was let go. */
+	uint32_t arrived = live_report;
+	live_report = 0;
 	buttons = live_buttons;
 	dx = live_dx;
 	dy = live_dy;
 	wheel = live_wheel;
 	live_dx = live_dy = live_wheel = 0;
 	if (frame < TC_IN_FRAMES) {
-		if (in_buttons[frame])
+		if (in_seen[frame]) {
 			buttons = in_buttons[frame];
+			arrived = 1;
+		}
 		dx += in_dx[frame];
 		dy += in_dy[frame];
 		wheel += in_wheel[frame];
 	}
-	if (dx == 0 && dy == 0 && wheel == 0 && buttons == 0)
+	if (!arrived)
 		return 0;
 	tc_mouse(buttons, dx, dy, wheel);
 	return 1;

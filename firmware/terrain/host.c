@@ -164,6 +164,12 @@ int main(int argc, char **argv)
 	// draw the same frames however the link was paced.
 	static int32_t in_dx[4096], in_dy[4096], in_wheel[4096];
 	static uint8_t in_buttons[4096];
+	/* A frame is handed to the mouse when a report named it, not when that
+	 * report carried something: the buttons are a level and the movement a
+	 * delta, so the report that lets a button go carries neither, and asking
+	 * what a report contained drops it and leaves the cursor wearing the
+	 * sprite of the button that was let go. */
+	static uint8_t in_seen[4096];
 	uint32_t applied = 0;
 	const char *input_path = getenv("TC_INPUT");
 	if (input_path && !*input_path)
@@ -183,6 +189,7 @@ int main(int argc, char **argv)
 				in_dx[at] += (int8_t)record[3];
 				in_dy[at] += (int8_t)record[4];
 				in_wheel[at] += (int8_t)record[5];
+				in_seen[at] = 1;
 			}
 		}
 		fclose(in);
@@ -207,8 +214,7 @@ int main(int argc, char **argv)
 		}
 		struct tc_stats stats;
 		soft.triangles = soft.pixels = 0;
-		if (i < 4096 && (in_dx[i] || in_dy[i] || in_wheel[i] ||
-				 in_buttons[i])) {
+		if (i < 4096 && in_seen[i]) {
 			tc_mouse(in_buttons[i], in_dx[i], in_dy[i], in_wheel[i]);
 			applied++;
 		}

@@ -307,23 +307,42 @@ static uint32_t to5(uint32_t colour)
 	       (colour >> 3 & 31);
 }
 
+static int32_t pal5_dist(uint32_t rgb, uint16_t p)
+{
+	int32_t d = 0;
+	for (int shift = 0; shift < 15; shift += 5) {
+		int32_t a = (int32_t)(rgb >> shift & 31);
+		int32_t b = (int32_t)(p >> shift & 31);
+		d += (a - b) * (a - b);
+	}
+	return d;
+}
+
 void tc_shade_tables(const struct tc_land *l, uint16_t *pal5, uint8_t *lut)
 {
 	for (unsigned i = 0; i < TC_PAL5_ENTRIES; i++)
 		pal5[i] = (uint16_t)to5(tc_palette(l, i));
+	/* The cursor's own two entries stand as candidates beside the land's, or
+	 * the table answers every flat fill of one of them with the nearest land
+	 * colour, which is how the frame and the crosshair came out olive and
+	 * brown. A tie keeps the land, which is scanned first, so nothing the
+	 * land already draws moves. */
+	static const unsigned extra[2] = {TC_CURSOR_IDLE, TC_CURSOR_HELD};
 	for (uint32_t rgb = 0; rgb < TC_LUT_BYTES; rgb++) {
 		unsigned best = l->first;
 		int32_t best_d = -1;
 		for (unsigned i = l->first; i < l->first + l->colours; i++) {
-			int32_t d = 0;
-			for (int shift = 0; shift < 15; shift += 5) {
-				int32_t a = (int32_t)(rgb >> shift & 31);
-				int32_t b = (int32_t)(pal5[i] >> shift & 31);
-				d += (a - b) * (a - b);
-			}
+			int32_t d = pal5_dist(rgb, pal5[i]);
 			if (best_d < 0 || d < best_d) {
 				best_d = d;
 				best = i;
+			}
+		}
+		for (unsigned k = 0; k < 2; k++) {
+			int32_t d = pal5_dist(rgb, pal5[extra[k]]);
+			if (d < best_d) {
+				best_d = d;
+				best = extra[k];
 			}
 		}
 		lut[rgb] = (uint8_t)best;
@@ -1155,8 +1174,7 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 		else if (r < horizon)
 			c = TC_SKY_COLOUR + (uint32_t)(r * TC_RAMP / horizon);
 		else
-			c = TC_SEA_COLOUR +
-			    (uint32_t)((r - horizon) * TC_RAMP / (TC_HEIGHT - horizon));
+			c = TC_SEA_COLOUR + TC_RAMP - 1;   /* the deepest sea, one blue */
 		if (r && c != run_colour) {
 			target->rows(target->ctx, run, (uint32_t)r, (uint8_t)run_colour);
 			run = (uint32_t)r;
@@ -1187,8 +1205,16 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 				? 1u : 0u;
 		for (uint32_t i = 0; i < cursor_runs_used[which]; i++) {
 			const struct hand_run *run = &cursor_runs[which][i];
-			int32_t x0 = cursor_x + run->x * 16 - TC_CURSOR_MID_X;
-			int32_t y0 = cursor_y + run->y * 16 - TC_CURSOR_MID_Y;
+			/* The sprite is drawn on whole framebuffer pixels. The fill keeps
+			 * a pixel whose centre lies on a triangle's edge, and the
+			 * midpoint is a half pixel, so a sprite placed at a whole-pixel
+			 * position has every edge on a centre: one-pixel lines come out
+			 * two pixels wide, and not on the same side twice. Snapping each
+			 * run puts every edge on a boundary, where nothing ties. */
+			int32_t ox = (cursor_x - TC_CURSOR_MID_X + 8) & ~15;
+			int32_t oy = (cursor_y - TC_CURSOR_MID_Y + 8) & ~15;
+			int32_t x0 = ox + run->x * 16;
+			int32_t y0 = oy + run->y * 16;
 			hand_rect(x0, y0, x0 + run->length * 16, y0 + 16,
 				  run->colour);
 		}

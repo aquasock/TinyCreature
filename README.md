@@ -59,12 +59,13 @@ user's own Land 1 is converted on the PC by `tools/convert_land.py` into a
 142 KB file under `build/land/`. The converter reads the `.lnd` format as
 openblack does and gives each vertex the daylight colour openblack's terrain
 shader would give it, from the cell's materials, noise, bump map and
-luminosity, then fits those vertex colours to 237 palette entries, the rest of
-the 256 being the eight sky entries, the eight sea ones and the cursor's two,
-with entry 0 its outline, so the land's own colours start at entry 19. The
-AE350 receives the file over the loader, orbits the island once over 600
-frames, and draws shaded triangles back to front into the 320 by 180 indexed
-framebuffers in integer arithmetic. Each pixel takes the palette entry
+luminosity, then fits those vertex colours to 237 palette entries. The rest of
+the 256 are the sky's eight-entry ramp, the cursor's two colours and its
+outline in entry 0, and the sea is one blue, so the seven entries its ramp used
+to take are free; the land's own colours start at entry 19. The AE350 receives
+the file over the loader, orbits the island once over 600 frames, and draws
+shaded triangles back to front into the 320 by 180 indexed framebuffers in
+integer arithmetic. Each pixel takes the palette entry
 nearest the point of its triangle's colour plane that its own weights give,
 those weights quantised to quarters, which is what the fabric can do in a
 clock and what `tc_soft` does to the bit. Every triangle passes through a
@@ -124,12 +125,17 @@ are the whole feel --
 it and hands the board's link back to the mouse in one command, about forty
 seconds a change, with no core rebuild and no TinyTang flash. The cursor is
 drawn from the Dungeon Crawl Stone Soup tile set (CC0, credited in
-`THIRD_PARTY.md`), which the source reduces to two 16 by 16 silhouettes: a
-green frame while no button is down and a red crosshair while one is held,
-each outlined one ring out in palette entry 0, and both drawn about their own
-middle rather than beside it, so the land a press takes is the piece the
-marker is centred on. Flying to a clicked point is not implemented; it would
-want a screen-to-land raycast.
+`THIRD_PARTY.md`), which the source reduces to two 16 by 16 silhouettes: the
+green frame while no button is down and the red crosshair while one is held,
+changed the moment a button moves either way, whether or not the mouse does.
+Both are drawn on whole framebuffer pixels, because the fill keeps a pixel
+whose centre lies on a triangle's edge and a sprite on a half pixel therefore
+draws one-pixel lines two pixels wide, and both about their own middle rather
+than beside it, so the land a press takes is the piece the marker is centred
+on. Their fill is the tile's own green and red, which the shading table admits
+as two entries of its own; their outline comes out the land's nearest
+near-black. Flying to a clicked point is not implemented; it would want a
+screen-to-land raycast.
 
 The run converts the land, prints the PC's totals, loads the program and the
 land file, and fails unless the board reports `TinyCreature TERRAIN OK` with
@@ -138,7 +144,7 @@ the same land CRC, triangle and pixel means and frame CRC as the PC. Set
 game's data and is never committed.
 
 The accepted board run drew all 600 frames identically to the PC, frame CRC
-`7511d71e` from land CRC `205046bf`. It drew a mean 20,085 triangles and
+`5b022d0d` from land CRC `205046bf`. It drew a mean 20,085 triangles and
 filled 33,072 pixels per frame, took a mean 30.3 ms and at most 33.5 ms to
 draw a frame on the AE350's software path, and so showed most frames in two
 vertical blanks and the rest in three, with zero late line fetches. That draw
@@ -169,7 +175,7 @@ byte for byte, through the read-back registers and the line fetch, and checks
 the unit's frame checksum against the same value the C computes.
 
 On the board the rasterizer drew all 600 frames as the PC model did, frame
-CRC `7511d71e` from 20,085 triangles and 33,072 pixels a frame, with zero
+CRC `5b022d0d` from 20,085 triangles and 33,072 pixels a frame, with zero
 late line fetches. It is idle by the time each frame has been sent, so the
 CPU sets the pace: a mean 29.4 ms to send a frame and at most 35.2 ms,
 against 30.3 ms and 33.5 ms for the same frames filled in software
