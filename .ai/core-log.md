@@ -434,3 +434,39 @@ None.
 - User Test: N/A
 
 ---
+
+## 14 COMMIT Unreleased 2026-10-15T06:37:52-07:00
+
+#### Coming From:
+
+Unreleased 4bcde11
+
+#### Purpose:
+
+Give the terrain program a camera a person drives, held as state the firmware owns and fed by input the board can deliver, so the island stops being one fixed orbit.
+
+#### Outcome:
+
+`tc_camera(turn, zoom)` now aims the walk, adding to the orbit's own turn and to its distance from the island's centre; until a program calls it, `tc_draw` keeps the scripted orbit exactly, which is what let every frame this project has accepted stay where it was: all six shipped lands reproduce their previous frame CRCs byte for byte, the six stressed configurations still agree with the code before the change, and AddressSanitizer and UndefinedBehaviorSanitizer are clean at `-O3`. One input report is six bytes -- the frame it belongs to, the buttons, and the mouse's dx, dy and wheel, which is the shape a mouse's own HID boot report has -- and there are two ways in. A recorded sequence rides in the tail of the land file the program asks for, split off by the TCL1 header's body length so that the land's own check and its CRC still see the land alone; a live mouse sends the same six bytes on the AE350's UART as a frame in TinyTang's format, `0xAA len_hi len_lo type`, with type 0x16 and the frame 0xffff meaning apply it as it arrives. The UART stays in the loader mode it resets into, received bytes going to the AE350's own buffer, because this core carries no desk link to enter link mode with, and that is what makes the live path possible with no change to the fabric at all. `tools/tang_input.py` writes a sequence and appends it to a land file, and `tools/run_tang32.sh terrain` grew `TINYCREATURE_INPUT`, which appends, hands the PC twin the same reports, and now compares INPUT alongside LAND, FRAMES, TRIS, PIXELS and CRC. On the board a run without input reported INPUT=0 and frame CRC `4a893c8b`, the value entries 9 and 12 pinned, so the accepted frames had not moved; a run of 600 reports reported INPUT=600, TRIS=17661, PIXELS=38444 and CRC `fbadead4`, matching `terrain_host` given the same reports frame for frame, which is the first time this project has checked the board against the PC for frames a person's input shaped rather than a fixed script's. The driven camera does something the orbit never did: at 1152 blanks for 600 frames, one frame fit a single blank, so parts of the run are at 60 frames a second. Two mistakes of this cycle's are worth recording. The first board attempt deployed a stale ELF left in `build/tang32/terrain` from entry 12, whose untouched length check correctly rejected the appended tail, which read as a defect in the new code until the binary was inspected. The runner also exported `TC_INPUT` as an empty string when no input was set, and `getenv` returns that rather than nothing, so the twin tried to open an empty path; both are fixed and both runs were then taken. The user watched the run on HDMI and marked it pass. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged, checked that the reference's fast index and its records list the same ids in the same order, and validated this entry's six sections, sequential numbering, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The board's own BLE mouse is what remains, and it is the phase this cycle prepared: TinyTang already gathers the mouse's boot report in `tang_ble_mouse()` and hands it to its desktop pointer, so the work is to send that same report to the core as a type 0x16 frame beside the desk layer's own sends, which needs the BL616 flashed, the one operation in this project that can cost more than time, and the user's explicit go-ahead for it is still outstanding. The keyboard follows the same route and needs a little more, because TinyTang types it into its own desktop rather than passing it on. Once the board's mouse drives the camera, the recorded path wants a pinned frame CRC of its own held in a tool, so that the input path can be regressed without a live board, and the stress harness that caught entry 10's clip-path defect -- the debt named in entries 10, 12 and 13, and felt again here -- should be committed beside it. The unused Bullet world removal from the PC playground (entry 6) and the J10 second SDRAM bank (entry 7) remain open, and GAME-001 still describes the 64 MiB route as J9's second chip select rather than the J10 bank.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/host.c
+- firmware/terrain/main.c
+- firmware/terrain/terrain.c
+- firmware/terrain/terrain.h
+- tools/run_tang32.sh
+- tools/tang_input.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

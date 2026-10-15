@@ -70,9 +70,22 @@ uint32_t tc_palette(const struct tc_land *land, unsigned index);
 size_t tc_work_bytes(const struct tc_land *land);
 void tc_init(const struct tc_land *land, void *work);
 
+/* How a mouse count maps onto the camera: dx turns it, dy and the wheel move
+ * it in and out. Shared with the host twin so a recorded sequence draws the
+ * same frames on both. */
+#define TC_TURN_PER_COUNT 128   /* 1/65536 of a turn a count */
+#define TC_ZOOM_PER_COUNT 64    /* Q4 world units a count */
+
 /* Send frame number frame of frames, one orbit of the island, to target. */
 void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 	     struct tc_stats *stats);
+
+/* Aim the camera. turn is added to the walk's yaw in 1/65536 of a turn, and
+ * zoom to its distance from the island's centre in Q4 world units; a program
+ * that drives the camera calls this once a frame with that frame's deltas.
+ * Until it is called, tc_draw keeps its own scripted orbit, so the frames a
+ * program draws without input stay the ones a scripted orbit draws. */
+void tc_camera(int32_t turn, int32_t zoom);
 
 /* IEEE CRC-32, continued from crc (0 to start). */
 uint32_t tc_crc32(uint32_t crc, const uint8_t *data, size_t bytes);

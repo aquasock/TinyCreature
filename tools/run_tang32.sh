@@ -49,9 +49,18 @@ terrain|terrain-soft)
     land="$root/build/land/$(basename "${lnd%.*}").tcl"
     mkdir -p "$(dirname "$land")"
     python3 -I "$root/tools/convert_land.py" "$lnd" "$land"
-    host_line=$("$out/terrain/host/terrain_host" "$land")
+    # A run's recorded mouse input rides in the land file's tail, where the
+    # program looks for it after the TCL1 header says where the land ends;
+    # the PC twin is given the same reports on their own.
+    loaded="$land"
+    input="${TINYCREATURE_INPUT:-}"
+    if [[ -n "$input" ]]; then
+        loaded="$root/build/land/$(basename "${lnd%.*}")-input.tcl"
+        python3 -I "$root/tools/tang_input.py" append "$land" "$input" "$loaded"
+    fi
+    host_line=$(TC_INPUT="$input" "$out/terrain/host/terrain_host" "$land")
     echo "$host_line"
-    file_args=(--file "$land")
+    file_args=(--file "$loaded")
     run_timeout=120
     ;;
 esac
@@ -103,7 +112,7 @@ if [[ "$program" == terrain* ]]; then
     # The board must draw what this PC drew from the same file.
     field() { tr ' ' '\n' <<<"$1" | sed -n "s/^$2=//p"; }
     board_line=$(grep -a "^$expect" "$log")
-    for name in LAND FRAMES TRIS PIXELS CRC; do
+    for name in LAND FRAMES TRIS PIXELS INPUT CRC; do
         if [[ "$(field "$board_line" "$name")" != "$(field "$host_line" "$name")" ]]; then
             echo "FAIL: board $name=$(field "$board_line" "$name")," \
                  "host $name=$(field "$host_line" "$name")"

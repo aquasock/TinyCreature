@@ -72,6 +72,24 @@ rasterizer will take over. The same source builds for the PC as
     bash tools/run_tang32.sh terrain        # or: two-wire terrain
     bash tools/run_tang32.sh terrain-soft   # the same frames in software
 
+A run can be driven instead of scripted. The camera belongs to the program
+once something moves it, and a run's mouse reports ride in the land file's
+tail, where the program finds them after the TCL1 header says where the land
+ends. `tools/tang_input.py` writes such a sequence, and `TINYCREATURE_INPUT`
+makes the runner append it and hand the same reports to the PC twin, so the
+board and the PC must draw the same frames.
+
+    python3 tools/tang_input.py pattern build/land/in.bin 600
+    TINYCREATURE_INPUT=build/land/in.bin bash tools/run_tang32.sh terrain
+
+A report is six bytes: the frame it belongs to, the buttons, and the mouse's
+dx, dy and wheel, which is what a mouse's own HID boot report carries. A live
+mouse sends the same six bytes to the AE350 as a frame in TinyTang's format,
+`0xAA len_hi len_lo type`, type 0x16, with the frame 0xffff meaning "apply it
+as it arrives". The UART stays in the loader mode it resets into because this
+core carries no desk link, so the AE350 receives every byte TinyTang sends.
+The board's own BLE mouse is not wired to this yet.
+
 The run converts the land, prints the PC's totals, loads the program and the
 land file, and fails unless the board reports `TinyCreature TERRAIN OK` with
 the same land CRC, triangle and pixel means and frame CRC as the PC. Set

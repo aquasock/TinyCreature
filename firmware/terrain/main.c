@@ -10,7 +10,7 @@
 // buffers instead. Either way it reports
 //   TinyCreature TERRAIN OK MODE=<FABRIC|SOFT> LAND=<crc> FRAMES=<n>
 //     TRIS=<mean> PIXELS=<mean> DRAW=<us> MAX=<us> FINISH=<us> STALLS=<n>
-//     VBL=<n> VBLMIN=<n> VBLMAX=<n> PERIOD=<us> LATE=<n> CRC=<crc>
+//     VBL=<n> VBLMIN=<n> VBLMAX=<n> PERIOD=<us> INPUT=<n> LATE=<n> CRC=<crc>
 // LAND is the file's CRC-32; TRIS and PIXELS the mean triangles sent and
 // pixels they filled per frame; DRAW and MAX the mean and longest CPU time
 // to send a frame, FINISH the mean time after that until the rasterizer is
@@ -62,6 +62,18 @@
 #define RASTER_BUSY   0x1u
 #define RASTER_CRC_RUN 0x2u
 
+/* TinyTang's frame format, either direction: 0xAA len_hi len_lo type, the
+ * length counting the type byte, then the payload. An input frame carries a
+ * frame's mouse movement: the frame it belongs to, then the mouse's HID boot
+ * report. The frame 0xffff means "as soon as it arrives", which is what a
+ * live mouse sends; a replay tags each report with the frame it belongs to,
+ * so one sequence draws the same frames however the link is paced. */
+#define TC_FRAME_MAGIC  0xaau
+#define TC_FRAME_INPUT  0x16u
+#define TC_NO_FRAME     0xffffu
+#define TC_IN_PAYLOAD   6u      /* frame, buttons, dx, dy, wheel */
+#define TC_IN_FRAMES    4096u   /* frames a tagged report may name */
+
 static void fail(const char *name)
 {
 	printf("BAD TINYCREATURE %s\n", name);
@@ -77,6 +89,117 @@ static void wait_scan(void)
 	while (RASTER_STATUS & RASTER_CRC_RUN)
 		if (tn_cycles64() - start > TN_CORE_HZ / 10u)
 			fail("CRC BUSY");
+}
+
+/* ---- input: the mouse, as TinyTang sends it ---- */
+
+/* The deltas a tagged report named, one slot a frame, and the deltas of
+ * untagged ones waiting for the next frame. */
+static int32_t in_turn[TC_IN_FRAMES], in_zoom[TC_IN_FRAMES];
+static int32_t live_turn, live_zoom;
+static uint32_t in_applied;
+
+/* Where the decoder is: 0 magic, 1 length high, 2 length low, 3 type, 4
+ * payload. A length high byte of 8 or more cannot be a frame, and neither
+ * can a length of zero, which is how the protocol resynchronises. */
+static uint32_t rx_state, rx_left, rx_type, rx_at;
+static uint8_t rx_payload[8];
+
+/* One report a frame, six bytes: the frame it belongs to, the buttons, and
+ * the mouse's dx, dy and wheel, the same six the link delivers. A run's file
+ * holds the whole sequence, so what the board draws does not depend on how
+ * the link was paced. */
+static void input_report(const uint8_t *p)
+{
+	uint32_t at = (uint32_t)p[0] | (uint32_t)p[1] << 8;
+	int32_t turn = (int8_t)p[3] * TC_TURN_PER_COUNT;
+	int32_t zoom = ((int8_t)p[4] + (int8_t)p[5]) * TC_ZOOM_PER_COUNT;
+
+	if (at == TC_NO_FRAME) {
+		live_turn += turn;
+		live_zoom += zoom;
+	} else if (at < TC_IN_FRAMES) {
+		in_turn[at] += turn;
+		in_zoom[at] += zoom;
+	}
+}
+
+/* A run's recorded reports, as they arrived in the file. */
+static void input_load(const uint8_t *data, uint32_t bytes)
+{
+	for (uint32_t i = 0; i + TC_IN_PAYLOAD <= bytes; i += TC_IN_PAYLOAD)
+		input_report(data + i);
+}
+
+static void input_byte(uint8_t byte)
+{
+	switch (rx_state) {
+	case 0:
+		if (byte == TC_FRAME_MAGIC)
+			rx_state = 1;
+		return;
+	case 1:
+		if (byte >= 8u) {
+			rx_state = 0;
+			return;
+		}
+		rx_left = (uint32_t)byte << 8;
+		rx_state = 2;
+		return;
+	case 2:
+		rx_left |= byte;
+		if (rx_left == 0) {
+			rx_state = 0;
+			return;
+		}
+		rx_state = 3;
+		return;
+	case 3:
+		rx_type = byte;
+		rx_left -= 1u;   /* the type byte is counted in the length */
+		rx_at = 0;
+		if (rx_left != 0) {
+			rx_state = 4;
+			return;
+		}
+		break;           /* no payload: the frame is complete */
+	case 4:
+		if (rx_at < sizeof rx_payload)
+			rx_payload[rx_at] = byte;
+		rx_at++;
+		if (--rx_left != 0)
+			return;
+		break;           /* the frame is complete */
+	}
+	if (rx_type == TC_FRAME_INPUT && rx_at == TC_IN_PAYLOAD)
+		input_report(rx_payload);
+	rx_state = 0;
+}
+
+/* Aim the camera at what this frame's mouse reports hold, if anything, and
+ * say whether anything did. */
+static uint32_t input_frame(uint32_t frame)
+{
+	int32_t turn, zoom;
+	uint32_t value;
+	/* Everything the link has delivered since the last frame. */
+	for (unsigned n = 0; n < 512u; n++) {
+		value = TN_UART_RX;
+		if (!(value & TN_UART_RX_VALID))
+			break;
+		input_byte((uint8_t)(value & 0xffu));
+	}
+	turn = live_turn;
+	zoom = live_zoom;
+	live_turn = live_zoom = 0;
+	if (frame < TC_IN_FRAMES) {
+		turn += in_turn[frame];
+		zoom += in_zoom[frame];
+	}
+	if (turn == 0 && zoom == 0)
+		return 0;
+	tc_camera(turn, zoom);
+	return 1;
 }
 
 static const uint8_t *receive(uint32_t *bytes)
@@ -128,13 +251,27 @@ int main(void)
 		RASTER_CTRL = 0; // show the SDRAM buffers
 	uint32_t bytes;
 	const uint8_t *file = receive(&bytes);
+	/* The file is a TCL1 land, and a run's recorded mouse reports follow it,
+	 * six bytes each. The header's body length says where the land ends, so
+	 * the land's own check and CRC see the land alone. */
+	uint32_t land_bytes = 0;
+	if (bytes >= 32u && file[0] == 'T' && file[1] == 'C' && file[2] == 'L' &&
+	    file[3] == '1')
+		land_bytes = 32u + ((uint32_t)file[16] | (uint32_t)file[17] << 8 |
+				    (uint32_t)file[18] << 16 |
+				    (uint32_t)file[19] << 24);
+	if (land_bytes == 0 || land_bytes > bytes) {
+		printf("BAD TINYCREATURE LAND LENGTH\n");
+		exit(1);
+	}
 	struct tc_land land;
-	const char *why = tc_land_open(&land, file, bytes);
+	const char *why = tc_land_open(&land, file, land_bytes);
 	if (why) {
 		printf("BAD TINYCREATURE LAND %s\n", why);
 		exit(1);
 	}
-	uint32_t land_crc = tc_crc32(0, file, bytes);
+	uint32_t land_crc = tc_crc32(0, file, land_bytes);
+	input_load(file + land_bytes, bytes - land_bytes);
 	void *work = malloc(tc_work_bytes(&land));
 	if (!work)
 		fail("MEMORY");
@@ -161,6 +298,7 @@ int main(void)
 	uint64_t start = tn_cycles64();
 	for (uint32_t frame = 0; frame < FRAMES; frame++) {
 		uint32_t blanks = TN_VIDEO_FRAMES;
+		in_applied += input_frame(frame);
 		uint32_t back = (TN_VIDEO_STATUS & TN_VIDEO_BUFFER) ? 0u : 1u;
 		uint32_t tris0 = 0, pixels0 = 0;
 		if (FABRIC) {
@@ -242,13 +380,13 @@ int main(void)
 		fail("PIXELS");
 	printf("TinyCreature TERRAIN OK MODE=%s LAND=%08lx FRAMES=%u TRIS=%lu "
 	       "PIXELS=%lu DRAW=%luus MAX=%luus FINISH=%luus STALLS=%lu "
-	       "VBL=%lu VBLMIN=%lu VBLMAX=%lu PERIOD=%luus LATE=%lu CRC=%08lx\n",
+	       "VBL=%lu VBLMIN=%lu VBLMAX=%lu PERIOD=%luus INPUT=%lu LATE=%lu CRC=%08lx\n",
 	       FABRIC ? "FABRIC" : "SOFT", (unsigned long)land_crc, (unsigned)FRAMES,
 	       (unsigned long)(tris / FRAMES), (unsigned long)(pixels / FRAMES),
 	       (unsigned long)(draw / FRAMES / us), (unsigned long)(longest / us),
 	       (unsigned long)(finish / FRAMES / us), (unsigned long)(stalls / FRAMES),
 	       (unsigned long)vbl, (unsigned long)vbl_min, (unsigned long)vbl_max,
-	       (unsigned long)(elapsed / FRAMES / us), (unsigned long)late,
-	       (unsigned long)crc);
+	       (unsigned long)(elapsed / FRAMES / us), (unsigned long)in_applied,
+	       (unsigned long)late, (unsigned long)crc);
 	return 0;
 }

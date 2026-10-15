@@ -46,6 +46,11 @@ static uint32_t verts_x, blocks_x, blocks_z, generation;
 static int32_t cam_x, cam_y, cam_z, sin_yaw, cos_yaw, sin_pitch, cos_pitch;
 static const struct tc_target *out;
 static struct tc_stats *counts;
+// What a program has aimed the camera with, added to the scripted orbit's own
+// turn and distance. cam_driven records that it has, so a frame drawn without
+// input stays byte for byte the frame a scripted orbit draws.
+static int32_t cam_turn, cam_zoom;
+static int cam_driven;
 
 static uint32_t read32(const uint8_t *p)
 {
@@ -547,6 +552,13 @@ static uint32_t farther(int32_t *lo, int32_t *hi, int32_t c)
 	return (uint32_t)(*hi)--;
 }
 
+void tc_camera(int32_t turn, int32_t zoom)
+{
+	cam_turn += turn;
+	cam_zoom += zoom;
+	cam_driven = 1;
+}
+
 void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 	     struct tc_stats *stats)
 {
@@ -560,6 +572,18 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 	int32_t size = (land->cells_x > land->cells_z ? land->cells_x : land->cells_z) * CELL;
 	int32_t reach = size * 4 / 5;
 	int32_t radius = (int32_t)(reach * (7 * 16384 + 3 * (int64_t)icos(2 * turn)) / (10 * 16384));
+	if (cam_driven) {
+		// A program owns the camera: its turn is added to the orbit's, and
+		// its zoom moves the distance, held between a quarter of the scripted
+		// swing and twice it, so the camera stays outside the island and near
+		// enough to see it.
+		turn += (uint32_t)cam_turn;
+		radius += cam_zoom;
+		if (radius < reach / 4)
+			radius = reach / 4;
+		if (radius > reach * 2)
+			radius = reach * 2;
+	}
 	cam_x = land->cells_x * CELL / 2 + (int32_t)((int64_t)radius * isin(turn) >> 14);
 	cam_z = land->cells_z * CELL / 2 + (int32_t)((int64_t)radius * icos(turn) >> 14);
 	cam_y = (int32_t)((int64_t)radius * TAN_PITCH >> 14) + LIFT;

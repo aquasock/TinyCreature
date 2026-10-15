@@ -10,8 +10,11 @@
 //
 //   terrain_host <land.tcl> [frames] [prefix frame...]
 //
+// TC_INPUT names a file of mouse reports, six bytes each: the frame it
+// belongs to, the buttons, and the mouse's dx, dy and wheel.
+//
 // prints
-//   HOST TERRAIN LAND=<crc> FRAMES=<n> TRIS=<mean> PIXELS=<mean> CRC=<crc>
+//   HOST TERRAIN LAND=<crc> FRAMES=<n> TRIS=<mean> PIXELS=<mean> INPUT=<n> CRC=<crc>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -133,6 +136,34 @@ int main(int argc, char **argv)
 		return 1;
 	tc_init(&land, work);
 
+	// A recorded input sequence, one report a frame and six bytes each: the
+	// frame it belongs to, the buttons, and the mouse's dx, dy and wheel,
+	// which is what the board is given in the land file it asks for. The two
+	// draw the same frames however the link was paced.
+	static int32_t in_turn[4096], in_zoom[4096];
+	uint32_t applied = 0;
+	const char *input_path = getenv("TC_INPUT");
+	if (input_path && !*input_path)
+		input_path = NULL;   /* set but empty means no input */
+	if (input_path) {
+		FILE *in = fopen(input_path, "rb");
+		if (!in) {
+			perror(input_path);
+			return 1;
+		}
+		uint8_t record[6];
+		while (fread(record, 1, sizeof record, in) == sizeof record) {
+			uint32_t at = (uint32_t)record[0] |
+				      (uint32_t)record[1] << 8;
+			if (at < 4096) {
+				in_turn[at] += (int8_t)record[3] * TC_TURN_PER_COUNT;
+				in_zoom[at] += ((int8_t)record[4] +
+						(int8_t)record[5]) * TC_ZOOM_PER_COUNT;
+			}
+		}
+		fclose(in);
+	}
+
 	uint32_t crc = 0;
 	uint64_t tris = 0, pixels = 0;
 	struct tc_soft soft = {.fb = &frame[0][0], .stride = TC_WIDTH};
@@ -151,6 +182,10 @@ int main(int argc, char **argv)
 		}
 		struct tc_stats stats;
 		soft.triangles = soft.pixels = 0;
+		if (i < 4096 && (in_turn[i] || in_zoom[i])) {
+			tc_camera(in_turn[i], in_zoom[i]);
+			applied++;
+		}
 		tc_draw(&target, i, frames, &stats);
 		if (soft.triangles != stats.triangles)
 			return 1;
@@ -176,8 +211,9 @@ int main(int argc, char **argv)
 			}
 		}
 	}
-	printf("HOST TERRAIN LAND=%08x FRAMES=%u TRIS=%u PIXELS=%u CRC=%08x\n",
+	printf("HOST TERRAIN LAND=%08x FRAMES=%u TRIS=%u PIXELS=%u INPUT=%u CRC=%08x\n",
 	       (unsigned)tc_crc32(0, file, bytes), (unsigned)frames,
-	       (unsigned)(tris / frames), (unsigned)(pixels / frames), (unsigned)crc);
+	       (unsigned)(tris / frames), (unsigned)(pixels / frames),
+	       (unsigned)applied, (unsigned)crc);
 	return 0;
 }
