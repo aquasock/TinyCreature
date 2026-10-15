@@ -1022,3 +1022,34 @@ The entries are free, so the fabric change the pivot needs is next: a textured q
 - User Test: NOT RUN
 
 ---
+
+## 32 COMMIT Unreleased 2026-10-15T17:05:00-07:00
+
+#### Coming From:
+
+Unreleased cdb72f6
+
+#### Purpose:
+
+Convert a 32 by 32 tile sheet into indexed tiles, and measure what one shared palette costs the tile art this project is turning to.
+
+#### Outcome:
+
+The user settled the art direction as DFgraphics' Meph tileset at 32 by 32, so this cycle built the tile converter and measured the colour budget it has to live in. Two things were established before the code. Dungeon Crawl Stone Soup's `LICENSE.txt` is a CC0 public-domain dedication -- "No Copyright" -- which matches what `THIRD_PARTY.md` already records for the cursor, so that set is free of any friction. Meph was fetched into `build/tiles/`, 33 MB, and it ships 512 by 512 sheets of 32 by 32 tiles, 256 to a sheet, with `-top`, `-bg` and alternate variants for Dwarf Fortress's layered drawing; the sheet's own `manifest.json` carries the credit line, "Meph, Vordak and Denzi", "Meph-lite 32x" content version 5.5 of 2020-03-11, and the Bay 12 forums thread, which is now recorded in `THIRD_PARTY.md` along with the fact that the repositories carry no licence file and the terms that exist are the author's. `tools/convert_tiles.py` is new: it slices a sheet, drops the tiles with no pixel in them, quantises every colour of what is left into a pool of palette entries by the same weighted median cut the land's converter uses, and writes a header of the pool and, per tile, one palette index a mosaic cell, plus a preview of what will be planted. It takes `--first`, `--colours`, `--cell` and `--limit`, and reports the fit as a weighted mean and a worst colour, which is how the numbers below were taken. The measurement is the cycle's real result, and it is a negative one. Meph's main sheet is 255 non-blank tiles holding 16,544 distinct colours, and fitting those to the 45 entries entry 31 freed costs 20.12 mean and 136.6 worst out of 255. More entries barely help: 32 tiles fit to 45, 96, 160 and 224 entries at 20.05, 18.46, 16.91 and 13.18, so five times the entries buys a third of the error. Fewer tiles do not help either -- 8 tiles fit 45 entries at 16.80 -- and the reason was found by measuring the art itself: Meph's tiles hold a mean of 122.7 distinct colours each, a median of 39 and a worst of 756, against Dungeon Crawl's monsters at 32.6 mean, 24 median and 274 worst. That looked like the explanation until Dungeon Crawl was put through the same converter: 64 of its tiles, only 1,047 colours between them, fit the same 45 entries at 31.68 mean, worse than Meph's 32 tiles. So the price is not what a tile holds but what the tiles drawn together hold between them. Tile art is per-tile palettes, and one global 256-entry palette cannot carry a diverse set however palette-light each tile is -- which is the wall the hardware of the era hit, and the reason the NES, the SNES and the Amiga all had per-sprite sub-palettes and palette switching rather than one palette for the frame. The design that follows is that a textured quad should name a small palette of its own rather than the frame's, and the trade it costs the terrain is already measured: spending 128 of the 256 entries on art as eight sixteen-entry palettes leaves the island 128, where its fit is 7.82 rather than the 2.85 that 192 entries give it. The converter is committed; the art is not, and neither is the fetched Meph tree. The core was not rebuilt and `fpga/raster.sv` is untouched, so no seed sweep was needed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that this cycle's only `.ai` change is this entry, checked that the reference's fast index and its records list the same eleven ids in the same order with none retired, validated this entry against the template, ordering, prose, Status, numbering and 100-entry rules, and confirmed that the project-control change agrees with the workflow and rewrites no settled history.
+
+#### Next Steps:
+
+The textured quad command is next, and this cycle changed its shape: instead of one texture store addressed by tile and one global palette, the command should carry a palette of its own -- eight sixteen-entry palettes is the size the measurements point at -- with the tile's texels indexing into that rather than into the frame's palette. That needs the fabric to keep a second small palette table per primitive, the program to load the art's palettes beside the land's, and a decision from the user about how much of the 256 the art gets: 128 for eight palettes leaves the island 128 entries and a fit of 7.82, while 64 for four palettes leaves 192 and the 2.85 the island has now. The tile converter is ready to serve either, since it already takes the pool's size and first entry. The art itself is not committed and neither is the fetched tree; `THIRD_PARTY.md` now records the credit and the fact that the terms are the author's and live on the forum thread, so if the sets are ever redistributed rather than converted locally that is the line to revisit. Open from before and unchanged: the cell-shaped command and the display list, both priced and both declined for now because the frame fits its hold with 14 ms to spare; the palette's other half, which is how much of the pool a world that is not Land 1 should take; the keyboard, gated on TinyTang gaining keyboard forwarding from the Tiny89 work; flying to a clicked point; the pipe guard in TinyTang; pinning a CRC per recorded input sequence in a tool, which matters more since entries 30 and 31 moved every pinned value; the capture card; the Bullet world removal (entry 6); and GAME-001.
+
+#### Files Modified:
+
+- THIRD_PARTY.md
+- tools/convert_tiles.py
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---

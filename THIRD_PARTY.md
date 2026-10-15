@@ -25,6 +25,23 @@ License:
 > OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 > SOFTWARE.
 
+## Meph's 32x tileset (the tile art)
+
+Not yet drawn by the renderer: it is the tile set the project means to carry,
+and `tools/convert_tiles.py` converts it. Meph ships 512 by 512 sheets of 32 by
+32 tiles, 256 to a sheet, with `-top` and `-bg` variants for Dwarf Fortress's
+layered drawing. The sheet's own manifest gives the credit line below; the
+GitHub repository carries no licence file, and what terms there are, are the
+author's, stated on the forum thread the set came from. The art is not committed
+to this repository: the converter is, and the tiles are fetched and converted
+locally, which is how the game's own landscape is handled too.
+
+- Meph, Vordak and Denzi, "Meph-lite 32x", content version 5.5 of 2020-03-11
+- https://github.com/DFgraphics/Meph
+- http://www.bay12forums.com/smf/index.php?topic=139579.0
+
+---
+
 ## Dungeon Crawl Stone Soup tile set (the cursor)
 
 `firmware/terrain/terrain.c` carries the shape of the mouse cursor as two grids
