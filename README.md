@@ -59,9 +59,11 @@ user's own Land 1 is converted on the PC by `tools/convert_land.py` into a
 142 KB file under `build/land/`. The converter reads the `.lnd` format as
 openblack does and gives each vertex the daylight colour openblack's terrain
 shader would give it, from the cell's materials, noise, bump map and
-luminosity, then fits those vertex colours to 239 palette entries. The AE350
-receives the file over the loader, orbits the island once over 600 frames,
-and draws shaded triangles back to front into the 320 by 180 indexed
+luminosity, then fits those vertex colours to 237 palette entries, the rest of
+the 256 being the eight sky entries, the eight sea ones and the cursor's two,
+with entry 0 its outline, so the land's own colours start at entry 19. The
+AE350 receives the file over the loader, orbits the island once over 600
+frames, and draws shaded triangles back to front into the 320 by 180 indexed
 framebuffers in integer arithmetic. Each pixel takes the palette entry
 nearest the point of its triangle's colour plane that its own weights give,
 those weights quantised to quarters, which is what the fabric can do in a
@@ -99,34 +101,35 @@ whole run, so in-band input cannot arrive until the host lets go of the port.
 
 The camera the mouse drives is openblack's (core-reference OB-005): the middle
 button held and dragged turns and tilts it, the left button held and dragged
-slides the land along with the hand, and the wheel moves the camera in and
+slides the land along with the cursor, and the wheel moves the camera in and
 out, which this user asked to be the other way round from the usual. A middle
-press takes hold of the piece of land under the hand: that point becomes what
+press takes hold of the piece of land under the cursor: that point becomes what
 the camera looks at and the point it turns about, at the distance it was from
 the camera when the button went down, so the land under the finger holds still
 while everything else swings around it. The point is found by taking the
 camera and the projection back apart and marching the result against the
 height field the renderer draws, once per press, and a press that misses the
 island leaves the camera turning about the focus it had. While the middle
-button is held the hand is drawn at the middle of the screen, which is where
+button is held the cursor is drawn at the middle of the screen, which is where
 the aim puts the land it took, and it follows the mouse again when the button
 comes up. A left press on the land takes hold of it the same way: the piece
-of land under the hand becomes a world point the hand is holding, and while
-the button is held the hand is drawn where that point projects, so it travels
-with the land it took rather than staying under the mouse, and when the button
-comes up the hand is left holding where the land went while the mouse moves it
-on from there. Four
-constants in `firmware/terrain/terrain.h` are the whole feel --
+of land under the cursor becomes a world point the cursor is holding, and
+while the button is held the cursor is drawn where that point projects, so it
+travels with the land it took rather than staying under the mouse, and when
+the button comes up the cursor is left holding where the land went while the
+mouse moves it on from there. Four constants in `firmware/terrain/terrain.h`
+are the whole feel --
 `TC_TURN_PER_COUNT`, `TC_PITCH_PER_COUNT`, `TC_ZOOM_PER_COUNT` and
 `TC_DRAG_DIVISOR` -- and `tools/run_tang32_feel.sh` builds for the mouse, loads
 it and hands the board's link back to the mouse in one command, about forty
-seconds a change, with no core rebuild and no TinyTang flash. A hand is drawn
-where the pointer is, this project's own shape and not the game's, filled in
-the palest sky and outlined in the deepest sea -- the program's own two
-colours, the only pair that suits every land -- so that a left drag has
-something on screen to hold the land with -- where the pointer is, and where
-the land it has taken is while it holds it. Flying to a clicked point is not
-implemented; it would want a screen-to-land raycast.
+seconds a change, with no core rebuild and no TinyTang flash. The cursor is
+drawn from the Dungeon Crawl Stone Soup tile set (CC0, credited in
+`THIRD_PARTY.md`), which the source reduces to two 16 by 16 silhouettes: a
+green frame while no button is down and a red crosshair while one is held,
+each outlined one ring out in palette entry 0, and both drawn about their own
+middle rather than beside it, so the land a press takes is the piece the
+marker is centred on. Flying to a clicked point is not implemented; it would
+want a screen-to-land raycast.
 
 The run converts the land, prints the PC's totals, loads the program and the
 land file, and fails unless the board reports `TinyCreature TERRAIN OK` with
@@ -135,7 +138,7 @@ the same land CRC, triangle and pixel means and frame CRC as the PC. Set
 game's data and is never committed.
 
 The accepted board run drew all 600 frames identically to the PC, frame CRC
-`da75b4c1` from land CRC `c3794636`. It drew a mean 20,085 triangles and
+`7511d71e` from land CRC `205046bf`. It drew a mean 20,085 triangles and
 filled 33,072 pixels per frame, took a mean 30.3 ms and at most 33.5 ms to
 draw a frame on the AE350's software path, and so showed most frames in two
 vertical blanks and the rest in three, with zero late line fetches. That draw
@@ -166,7 +169,7 @@ byte for byte, through the read-back registers and the line fetch, and checks
 the unit's frame checksum against the same value the C computes.
 
 On the board the rasterizer drew all 600 frames as the PC model did, frame
-CRC `da75b4c1` from 20,085 triangles and 33,072 pixels a frame, with zero
+CRC `7511d71e` from 20,085 triangles and 33,072 pixels a frame, with zero
 late line fetches. It is idle by the time each frame has been sent, so the
 CPU sets the pace: a mean 29.4 ms to send a frame and at most 35.2 ms,
 against 30.3 ms and 33.5 ms for the same frames filled in software

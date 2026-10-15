@@ -55,36 +55,73 @@ static uint8_t last_buttons;   // what the mouse's buttons were last report
  * projects. */
 static int left_grab;
 static int32_t grab_x, grab_y, grab_z;
-// The cursor: a hand drawn in two colours, its outline the deepest sea and
-// its fill the palest sky, which are the program's own colours and so are the
-// same on every land. It is what the mouse moves and what a left drag takes
-// hold of the land with, so it is drawn last, over everything. Each row of it
-// is a few runs of one colour, and a run is two triangles: the CPU cannot
-// write the rasterizer's pixels, only send it triangles.
-#define TC_HAND_W 13
-#define TC_HAND_H 15
-#define TC_CURSOR_FILL    (TC_SKY_COLOUR + TC_RAMP - 1)
-#define TC_CURSOR_OUTLINE (TC_SEA_COLOUR + TC_RAMP - 1)
+// The cursor: one sprite of two colours drawn at the screen's own pixel size,
+// its fill the green frame or the red crosshair and its outline the one ring
+// the build derives around it, which is palette entry 0 and so is the same on
+// every land. It is what the mouse moves and what a press takes hold of the
+// land with, so it is drawn last, over everything. Each row of it is a few runs
+// of one colour, and a run is two triangles: the CPU cannot write the
+// rasterizer's pixels, only send it triangles.
+#define TC_CURSOR_W 16
+#define TC_CURSOR_H 16
+/* The middle of a sprite, in Q4: the mouse's position is the marker's middle,
+ * so a press picks the piece of land the marker is centred on. */
+#define TC_CURSOR_MID_X 120   /* 7.5 pixels */
+#define TC_CURSOR_MID_Y 120
+/* A knock-out value for the derived outline inside the build grid, which
+ * cannot hold a zero: zero is what it means by empty. It becomes palette
+ * entry 0, which the land never draws, in the runs below. */
+#define TC_CURSOR_EDGE_GRID 255
 
-// The outline is derived rather than drawn, so the shape below is only the
-// hand: the tip of the pointing finger is at its top left, which is also the
-// cursor's hotspot.
-static const char *const hand_shape[TC_HAND_H] = {
-	"  ##         ",
-	"  ##         ",
-	"  ##         ",
-	"  ##         ",
-	"  ##         ",
-	"  ## ## ##   ",
-	"  ## ## ##   ",
-	"  ## ## ##   ",
-	"  ########   ",
-	"  ########   ",
-	"#### ######  ",
-	"###########  ",
-	"  ########   ",
-	"   ######    ",
-	"   #####     ",
+// Two sprites from Dungeon Crawl Stone Soup's tile set, which is CC0 and is
+// credited in THIRD_PARTY.md: a green frame while no button is down and a red
+// crosshair while a button is held. Each is one flat colour, which is palette
+// entry 17 or 18, with entry 0 for the outline the build derives one ring out
+// from it.
+static const char *const cursor_frame[TC_CURSOR_H] = {
+	"################",
+	"#              #",
+	"#              #",
+	"#              #",
+	"#              #",
+	"#              #",
+	"#              #",
+	"#              #",
+	"#              #",
+	"#              #",
+	"#              #",
+	"#              #",
+	"#              #",
+	"#              #",
+	"#              #",
+	"################",
+};
+
+static const char *const cursor_cross[TC_CURSOR_H] = {
+	"####        ####",
+	"#      ##      #",
+	"#      ##      #",
+	"#      ##      #",
+	"       ##       ",
+	"       ##       ",
+	"       ##       ",
+	" ############## ",
+	" ############## ",
+	"       ##       ",
+	"       ##       ",
+	"       ##       ",
+	"#      ##      #",
+	"#      ##      #",
+	"#      ##      #",
+	"####        ####",
+};
+
+static const struct {
+	const char *const *shape;
+	uint8_t colour;
+} cursors[2] = {
+	{cursor_frame, TC_CURSOR_IDLE},
+	{cursor_cross, TC_CURSOR_HELD},
 };
 
 struct hand_run {
@@ -92,54 +129,59 @@ struct hand_run {
 	uint8_t colour;
 };
 
-static struct hand_run hand_runs[128];
-static uint32_t hand_runs_used;
-static int32_t cursor_x, cursor_y;   // Q4 screen pixels, at the fingertip
+static struct hand_run cursor_runs[2][512];
+static uint32_t cursor_runs_used[2];
+static uint8_t cursor_buttons;   /* what the buttons were when the frame was drawn */
+static int32_t cursor_x, cursor_y;   // Q4 screen pixels, at the marker's middle
 
-static void hand_build(void)
+static void cursor_build(unsigned which)
 {
-	uint8_t grid[TC_HAND_H][TC_HAND_W];
+	uint8_t grid[TC_CURSOR_H][TC_CURSOR_W];
+	const char *const *shape = cursors[which].shape;
 
-	for (int32_t y = 0; y < TC_HAND_H; y++)
-		for (int32_t x = 0; x < TC_HAND_W; x++) {
-			if (hand_shape[y][x] == '#') {
-				grid[y][x] = TC_CURSOR_FILL;
+	for (int32_t y = 0; y < TC_CURSOR_H; y++)
+		for (int32_t x = 0; x < TC_CURSOR_W; x++) {
+			if (shape[y][x] == '#') {
+				grid[y][x] = cursors[which].colour;
 				continue;
 			}
-			// One ring out from the hand is its outline.
+			// One ring out from the sprite is its outline.
 			grid[y][x] = 0;
 			for (int32_t dy = -1; dy <= 1 && !grid[y][x]; dy++)
 				for (int32_t dx = -1; dx <= 1; dx++) {
 					int32_t ny = y + dy, nx = x + dx;
-					if (ny < 0 || ny >= TC_HAND_H ||
-					    nx < 0 || nx >= TC_HAND_W)
+					if (ny < 0 || ny >= TC_CURSOR_H ||
+					    nx < 0 || nx >= TC_CURSOR_W)
 						continue;
-					if (hand_shape[ny][nx] == '#') {
-						grid[y][x] = TC_CURSOR_OUTLINE;
+					if (shape[ny][nx] == '#') {
+						grid[y][x] = TC_CURSOR_EDGE_GRID;
 						break;
 					}
 				}
 		}
 
-	hand_runs_used = 0;
-	for (int32_t y = 0; y < TC_HAND_H; y++)
-		for (int32_t x = 0; x < TC_HAND_W;) {
+	cursor_runs_used[which] = 0;
+	for (int32_t y = 0; y < TC_CURSOR_H; y++)
+		for (int32_t x = 0; x < TC_CURSOR_W;) {
 			uint8_t colour = grid[y][x];
 			if (!colour) {
 				x++;
 				continue;
 			}
 			int32_t start = x;
-			while (x < TC_HAND_W && grid[y][x] == colour)
+			while (x < TC_CURSOR_W && grid[y][x] == colour)
 				x++;
-			if (hand_runs_used <
-			    sizeof hand_runs / sizeof hand_runs[0]) {
-				hand_runs[hand_runs_used].y = (int16_t)y;
-				hand_runs[hand_runs_used].x = (int16_t)start;
-				hand_runs[hand_runs_used].length =
-					(int16_t)(x - start);
-				hand_runs[hand_runs_used].colour = colour;
-				hand_runs_used++;
+			if (cursor_runs_used[which] <
+			    sizeof cursor_runs[0] / sizeof cursor_runs[0][0]) {
+				struct hand_run *run =
+					&cursor_runs[which][cursor_runs_used[which]];
+				run->y = (int16_t)y;
+				run->x = (int16_t)start;
+				run->length = (int16_t)(x - start);
+				run->colour = colour == TC_CURSOR_EDGE_GRID
+						      ? TC_CURSOR_EDGE
+						      : colour;
+				cursor_runs_used[which]++;
 			}
 		}
 }
@@ -242,6 +284,11 @@ static uint32_t mix(uint32_t a, uint32_t b, unsigned i, unsigned n)
 
 uint32_t tc_palette(const struct tc_land *l, unsigned index)
 {
+	/* The cursor's own two colours, taken from its art. */
+	if (index == TC_CURSOR_IDLE)
+		return 0x00c000;
+	if (index == TC_CURSOR_HELD)
+		return 0xff0000;
 	if (index >= TC_SKY_COLOUR && index < TC_SKY_COLOUR + TC_RAMP)
 		return mix(0x2a5aa8, 0xb4cce0, index - TC_SKY_COLOUR, TC_RAMP - 1);
 	if (index >= TC_SEA_COLOUR && index < TC_SEA_COLOUR + TC_RAMP)
@@ -352,8 +399,9 @@ struct tc_shade tc_init(const struct tc_land *l, void *work)
 	camera_from_angles();
 	cam_driven = 0;
 	last_buttons = 0;
-	// The cursor's shape, and where it starts: the middle of the screen.
-	hand_build();
+	// The cursor's two shapes, and where it starts: the middle of the screen.
+	cursor_build(0);
+	cursor_build(1);
 	cursor_x = TC_WIDTH / 2 * 16;
 	cursor_y = TC_HEIGHT / 2 * 16;
 	block_low = (uint8_t *)(vertices + count);
@@ -1036,8 +1084,10 @@ void tc_mouse(uint8_t buttons, int32_t dx, int32_t dy, int32_t wheel)
 		}
 	}
 	/* Which buttons these were, once every edge above has been read, so that
-	 * the next report knows what this one was. */
+	 * the next report knows what this one was, and so that the cursor can
+	 * draw the frame's sprite or the crosshair. */
 	last_buttons = buttons;
+	cursor_buttons = buttons;
 }
 
 // One run of the cursor as the two triangles a rectangle needs, wound the way
@@ -1127,13 +1177,20 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 		}
 	}
 
-	// The cursor goes last, so that it lies over the land it is holding.
-	if (cam_driven)
-		for (uint32_t i = 0; i < hand_runs_used; i++) {
-			const struct hand_run *run = &hand_runs[i];
-			int32_t x0 = cursor_x + run->x * 16;
-			int32_t y0 = cursor_y + run->y * 16;
+	// The cursor goes last, so that it lies over everything else. Its middle
+	// is the mouse's position, and the sprite it draws is the frame's or the
+	// crosshair's depending on what is held.
+	if (cam_driven) {
+		unsigned which =
+			(cursor_buttons &
+			 (TC_MOUSE_LEFT | TC_MOUSE_MIDDLE | TC_MOUSE_RIGHT))
+				? 1u : 0u;
+		for (uint32_t i = 0; i < cursor_runs_used[which]; i++) {
+			const struct hand_run *run = &cursor_runs[which][i];
+			int32_t x0 = cursor_x + run->x * 16 - TC_CURSOR_MID_X;
+			int32_t y0 = cursor_y + run->y * 16 - TC_CURSOR_MID_Y;
 			hand_rect(x0, y0, x0 + run->length * 16, y0 + 16,
 				  run->colour);
 		}
+	}
 }

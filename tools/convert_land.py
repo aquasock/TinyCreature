@@ -48,8 +48,11 @@ COUNTRY_BYTES = 3076
 MATERIAL_BYTES = 0x20002
 NOISE_BYTES = 0x10000
 CELLS_PER_BLOCK = 16
-TERRAIN_COLOURS = 239
-FIRST_COLOUR = 17
+# The palette is 256 entries and the program owns the first nineteen: 0 is
+# never drawn by the land, 1 to 8 are the sky's ramp, 9 to 16 the sea's, and
+# 17 and 18 are the cursor's two colours. The land takes the rest.
+TERRAIN_COLOURS = 237
+FIRST_COLOUR = 19
 WATER = 0x10 | 0x40  # hasWater, fullWater
 SPLIT = 0x80
 

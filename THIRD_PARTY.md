@@ -24,3 +24,19 @@ License:
 > LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 > OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 > SOFTWARE.
+
+## Dungeon Crawl Stone Soup tile set (the cursor)
+
+`firmware/terrain/terrain.c` carries the shape of the mouse cursor as two grids
+of characters: the frame `misc/cursor_green.png`, drawn while no mouse button is
+held, and the crosshair `misc/cursor_red.png`, drawn while the left or the right
+button is held. Both are from the Dungeon Crawl Stone Soup Full tile set,
+reduced to a silhouette and written out as source rather than shipped as an
+image.
+
+The set is released under CC0 1.0: the artists waived their copyright, so it
+may be used for any purpose without attribution. Its README asks that users
+credit the artists and say where the tiles came from, which this is.
+
+- https://github.com/crawl/tiles/tree/master/releases
+- https://opengameart.org/content/dungeon-crawl-32x32-tiles

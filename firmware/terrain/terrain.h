@@ -19,8 +19,11 @@
  * the top down to the horizon, 9 to 16 the sea from the horizon down; the
  * land file's colours start at TC_LAND_COLOUR. */
 #define TC_SKY_COLOUR  1
+#define TC_CURSOR_IDLE 17
+#define TC_CURSOR_HELD 18
+#define TC_CURSOR_EDGE  0
 #define TC_SEA_COLOUR  9
-#define TC_LAND_COLOUR 17
+#define TC_LAND_COLOUR 19
 #define TC_RAMP        8
 
 struct tc_land {
@@ -113,6 +116,7 @@ struct tc_shade tc_init(const struct tc_land *land, void *work);
 /* The mouse's buttons, as its HID boot report has them. */
 #define TC_MOUSE_LEFT   0x01u
 #define TC_MOUSE_MIDDLE 0x04u
+#define TC_MOUSE_RIGHT  0x02u
 
 /* Send frame number frame of frames, one orbit of the island, to target. */
 void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,

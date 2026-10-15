@@ -701,3 +701,37 @@ The user has said he will name the next cycle, so this is a handover rather than
 - User Test: PASS
 
 ---
+
+## 22 COMMIT Unreleased 2026-10-15T11:49:14-07:00
+
+#### Coming From:
+
+Unreleased 4a5316d
+
+#### Purpose:
+
+Give the mouse a cursor that says what it is doing and takes the land by its own middle: the Dungeon Crawl Stone Soup tile set's green frame while no button is down and its red crosshair while one is held, drawn about the pick point rather than beside a fingertip.
+
+#### Outcome:
+
+The user picked `/home/vash/Downloads/Dungeon Crawl Stone Soup Full/` as the project's asset source, to move away from Lionhead's own art, and chose two of its tiles as the mouse cursor: the frame `misc/cursor_green.png` while no button is down and the crosshair `misc/cursor_red.png` while one is held, with a press taking the piece of land the marker is centred on rather than the piece beside a fingertip. Both are one flat colour and the source now carries them as grids of characters, as `THIRD_PARTY.md` records; the set is CC0, and it is credited there and named in the README. So that the cursor can own two palette entries of its own, the land gives up two of the 239 it had: `TC_LAND_COLOUR` moves from 17 to 19, `TC_CURSOR_IDLE` and `TC_CURSOR_HELD` take 17 and 18, and `tools/convert_land.py` fits each vertex to 237 entries, so all six converted lands were regenerated and their frame CRCs moved with their palettes while their triangle and pixel means did not, Land 1's from `da75b4c1` to `7511d71e` at an unchanged 20,085 triangles and 33,072 pixels and land CRC `205046bf`. Entry 0, which the land never draws, is the outline the build derives one ring out from whichever sprite is in use, so both markers keep an edge against the terrain without a third colour. Two faults came out of the first build. The sprite choice read `TC_MOUSE_LEFT | TC_MOUSE_RIGHT`, so a middle drag, which is the press that pivots on the land, kept the idle marker and never showed the crosshair; the mask now names the middle bit. And the user judged both markers too large at 32 by 32, so they are 16 by 16 with the pick at 7.5 screen pixels rather than 15.5. They were not redrawn by hand: they were taken from the two PNGs again and reduced 2 by 2, a block surviving when any of its four pixels is at least half opaque, and the check on that method is that it regenerates the 32 by 32 grids with exactly the ink they were committed with, 124 pixels for the frame and 212 for the crosshair. The middle button's fix is proved by a control rather than by inspection: a throwaway build with the middle bit taken out of the mask draws one recorded middle-held session with a different sprite and nothing else, 27,788 triangles and `5d6673ba` against 27,836 and `b80d95aa`, the camera identical because the mask cannot touch it, while the same control reproduces the right-button and left-button sessions to the byte at `24813` and `d4aa354d`, and `23614` and `0b12dfdc`, which is what says the change reaches the middle and nothing else. All six scripted lands draw what they drew before the cursor changed, and the reason is worth keeping: the cursor is drawn only when the camera is driven, and `terrain_host` hands a report to `tc_mouse` only when it carries something, so a scripted run draws no cursor at all and the cursor work is invisible to that baseline by construction rather than by luck. The recorded sessions were rebaselined, the drag to `TRIS=20201 PIXELS=28738 CRC=86406394` and the pattern to `24765` and `c8030604`, the cursor costing 113 and 128 fewer triangles a frame than the 32 by 32 pair did. AddressSanitizer and UndefinedBehaviorSanitizer are clean on the scripted, both recorded and middle-held runs, with the same CRCs as the optimized build. The core was not rebuilt: this is the AE350 program alone. Over two-wire the board drew the scripted run to `CRC=7511d71e` from land CRC `205046bf`, matching the PC, in a mean 29.6 ms a frame and at most 35.7 ms against a 37.8 ms period, and the recorded drag to `TRIS=20201 PIXELS=28738 CRC=86406394`, also matching, in a mean 28.8 ms and at most 37.1 ms, with zero late line fetches in both. The user flew it and passed it, and the one thing the halving left in his hands is the weight it gives each marker: a one-pixel line cannot be halved, so the frame's border stays one pixel while the crosshair's arms stay two, because two is what its source bars are, and the held marker therefore reads heavier than the idle one where a strict half scale would have thinned its arms to one. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged, checked that the reference's fast index and its records list the same ids in the same order with no retired ids, and validated this entry's six sections, sequential numbering, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The user has said he will name the next cycle, so this is a handover rather than a plan. Open and in his hands from this cycle: whether the crosshair's arms should be thinned to one pixel so the two markers weigh the same, which is a redraw rather than a downsample and which he has seen and accepted as it stands. Open and in his hands from the last: whether a middle press that misses the island should stop rotating the camera, which is the original's rule, or keep turning about the focus it had, which is what this camera has done since entry 16; and whether a new pivot should ease in over about a second the way the original's does, where this one jumps there as it presses. Flying to a clicked point is still the obvious next use of a pick that exists and is checked, and it wants the original's animation taken with it. The keyboard is still the stated next want, gated on TinyTang gaining keyboard forwarding from the Tiny89 work, with this program's decoder reading only frame type 0x16 as six bytes of mouse and discarding unknown types safely, so a new type is fine and a re-used one is not. The pipe guard in TinyTang is still the one defect either project carries, `pointer_frame()` holding the transmit lock while a host owns the link. Pinning a CRC per recorded input sequence in a tool is owed more strongly each cycle: entries 16, 20, 21 and 22 all leave driven-run figures that only the log records. The level-of-detail idea stays parked with a measured price beside it, the unused Bullet world removal from the PC playground (entry 6) and the J10 second SDRAM bank (entry 7) remain open, and GAME-001 still describes the 64 MiB route as J9's second chip select rather than the J10 bank.
+
+#### Files Modified:
+
+- README.md
+- THIRD_PARTY.md
+- firmware/terrain/terrain.c
+- firmware/terrain/terrain.h
+- tools/convert_land.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
