@@ -97,6 +97,21 @@ const char *tc_land_open(struct tc_land *out, const uint8_t *file, size_t bytes)
 	size_t cells = (size_t)l.cells_x * l.cells_z;
 	if (body != 4u * l.colours + vertices + 3 * cells)
 		return "SIZE";
+	// to_camera holds each camera-space difference, and the products it forms
+	// with a Q14 sine or cosine, in 32 bits. This is the grid limit that keeps
+	// them there. The camera orbits at 0.5 of the island's extent of its
+	// centre and within 0.8 of that extent of it, so a difference is at most
+	// 1.3 extents; of an angle's sine and cosine, the two used together sum to
+	// at most 2^14 times the square root of two, so the yaw rotation's result
+	// is at most 1.841 extents; the pitch rotation adds 0.214 extents and the
+	// tallest cell, height(255), to it; and each rotation sums two products,
+	// so the bound is the sum of those, times 2^14. Every land shipped with
+	// the game passes it with at least ten percent to spare.
+	int64_t extent = (int64_t)(l.cells_x > l.cells_z ? l.cells_x : l.cells_z) * CELL;
+	int64_t rz_max = extent * 18404 / 10000;
+	int64_t dy_max = extent * 2140 / 10000 + 2744;
+	if ((rz_max + dy_max) * 16384 >= (int64_t)1 << 31)
+		return "TOO WIDE";
 	l.palette = (const uint32_t *)(file + 32);
 	l.altitude = file + 32 + 4 * l.colours;
 	l.cells = l.altitude + vertices;
@@ -195,14 +210,18 @@ static int32_t icos(uint32_t a)
 	return isin(a + 0x4000);
 }
 
+// The camera transform: rotate a world point into camera space, Q4. Every
+// product and sum here is held in 32 bits, which tc_land_open's grid check is
+// what makes safe -- a 64-bit product costs several instructions on the A25
+// and this is on the path of every vertex.
 static void to_camera(int32_t wx, int32_t wy, int32_t wz, int32_t *x,
 		      int32_t *y, int32_t *z)
 {
-	int64_t dx = wx - cam_x, dy = wy - cam_y, dz = wz - cam_z;
-	int64_t rz = (dx * sin_yaw + dz * cos_yaw) >> 14;
-	*x = (int32_t)((dx * cos_yaw - dz * sin_yaw) >> 14);
-	*y = (int32_t)((dy * cos_pitch + rz * sin_pitch) >> 14);
-	*z = (int32_t)((rz * cos_pitch - dy * sin_pitch) >> 14);
+	int32_t dx = wx - cam_x, dy = wy - cam_y, dz = wz - cam_z;
+	int32_t rz = (dx * sin_yaw + dz * cos_yaw) >> 14;
+	*x = (dx * cos_yaw - dz * sin_yaw) >> 14;
+	*y = (dy * cos_pitch + rz * sin_pitch) >> 14;
+	*z = (rz * cos_pitch - dy * sin_pitch) >> 14;
 }
 
 // The screen position of a camera-space point, Q4: pixels, 16 to a pixel.

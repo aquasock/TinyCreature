@@ -340,3 +340,33 @@ Continue on the cell walk, which the phase profile now puts at about 15.1M cycle
 - User Test: PASS
 
 ---
+
+## 11 COMMIT Unreleased 2026-10-15T05:52:55-07:00
+
+#### Coming From:
+
+Unreleased 3ba2a9b
+
+#### Purpose:
+
+Cut the per-vertex camera transform, which entry 10's phase profile put at 2.3M cycles a frame with all eight of its products in 64 bits on a 32-bit core, without moving the accepted frame.
+
+#### Outcome:
+
+`to_camera` now holds its products in 32 bits, which is only safe against a bound, so `tc_land_open` checks that bound and refuses a grid that would break it rather than leaving it to a comment: the widest land the game ships, Land 5 at 352 by 256 cells, an extent of 56,320 in Q4, passes with 9.6 percent to spare, a synthetic 400-cell land is rejected with `TOO WIDE`, and 384 cells is accepted, so the limit is enforced and its edge is tested. Since the whole point was that the frame must not move, the frame is what was checked: the 64-bit and the 32-bit transform drew all 600 frames of the orbit byte for byte identically on each of the six lands the game ships, among them Land 5 at the tightest bound, and the same held across the six stressed configurations, including the one that takes the near-plane clip 1,300,229 times, with AddressSanitizer and UndefinedBehaviorSanitizer clean at `-O3` on the baseline, on the stressed build and on Land 5. On the board the fabric path's mean frame fell from 28,204 to 27,755 us, its longest from 33,491 to 33,011 and its mean period from 42,455 to 42,146, the software path's mean frame from 30,779 to 30,298, and both still reported frame CRC `4a893c8b` against `terrain_host`, the same value entries 9 and 10 pinned, so the frame the user had accepted was not re-drawn but re-derived. The saving is 1.6 percent, well under the 1.5 ms the estimate had claimed, which makes this the second time this work's arithmetic predicted more than the board measured: the products were not as costly as the disassembly's density of `mul` and `mulh` suggested. The frame is provably the frame the user accepted, so that acceptance carries rather than being taken again, and the build itself ran on the board. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged, checked that the reference's fast index and its records list the same ids in the same order, and validated this entry's six sections, sequential numbering, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+Entry 10's next-step note named two targets and this was one; the other was already in hand, because the phase profile and a throwaway probe showed that reading each frame's buffer back over the bus to check it cost about 5 ms of every frame, a fifth of the whole period and nothing to do with drawing. Moving that fold into the fabric is the cycle that followed. After it the cell walk's remaining 15.1M cycles a frame are the open target, and the level-of-detail idea is held in reserve for 60 frames a second, where the budget is 16.6 ms and free cuts will not reach it.
+
+#### Files Modified:
+
+- firmware/terrain/terrain.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
