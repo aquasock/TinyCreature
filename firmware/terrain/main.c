@@ -93,10 +93,12 @@ static void wait_scan(void)
 
 /* ---- input: the mouse, as TinyTang sends it ---- */
 
-/* The deltas a tagged report named, one slot a frame, and the deltas of
- * untagged ones waiting for the next frame. */
-static int32_t in_turn[TC_IN_FRAMES], in_zoom[TC_IN_FRAMES];
-static int32_t live_turn, live_zoom;
+/* What a report carried, one slot a frame, and what the untagged reports of a
+ * live mouse have left waiting for the frame being drawn. */
+static int32_t in_dx[TC_IN_FRAMES], in_dy[TC_IN_FRAMES], in_wheel[TC_IN_FRAMES];
+static uint8_t in_buttons[TC_IN_FRAMES];
+static int32_t live_dx, live_dy, live_wheel;
+static uint8_t live_buttons;
 static uint32_t in_applied;
 
 /* Where the decoder is: 0 magic, 1 length high, 2 length low, 3 type, 4
@@ -112,15 +114,17 @@ static uint8_t rx_payload[8];
 static void input_report(const uint8_t *p)
 {
 	uint32_t at = (uint32_t)p[0] | (uint32_t)p[1] << 8;
-	int32_t turn = (int8_t)p[3] * TC_TURN_PER_COUNT;
-	int32_t zoom = ((int8_t)p[4] + (int8_t)p[5]) * TC_ZOOM_PER_COUNT;
 
 	if (at == TC_NO_FRAME) {
-		live_turn += turn;
-		live_zoom += zoom;
+		live_buttons = p[2];
+		live_dx += (int8_t)p[3];
+		live_dy += (int8_t)p[4];
+		live_wheel += (int8_t)p[5];
 	} else if (at < TC_IN_FRAMES) {
-		in_turn[at] += turn;
-		in_zoom[at] += zoom;
+		in_buttons[at] = p[2];
+		in_dx[at] += (int8_t)p[3];
+		in_dy[at] += (int8_t)p[4];
+		in_wheel[at] += (int8_t)p[5];
 	}
 }
 
@@ -180,7 +184,8 @@ static void input_byte(uint8_t byte)
  * say whether anything did. */
 static uint32_t input_frame(uint32_t frame)
 {
-	int32_t turn, zoom;
+	int32_t dx, dy, wheel;
+	uint8_t buttons;
 	uint32_t value;
 	/* Everything the link has delivered since the last frame. */
 	for (unsigned n = 0; n < 512u; n++) {
@@ -189,16 +194,21 @@ static uint32_t input_frame(uint32_t frame)
 			break;
 		input_byte((uint8_t)(value & 0xffu));
 	}
-	turn = live_turn;
-	zoom = live_zoom;
-	live_turn = live_zoom = 0;
+	buttons = live_buttons;
+	dx = live_dx;
+	dy = live_dy;
+	wheel = live_wheel;
+	live_dx = live_dy = live_wheel = 0;
 	if (frame < TC_IN_FRAMES) {
-		turn += in_turn[frame];
-		zoom += in_zoom[frame];
+		if (in_buttons[frame])
+			buttons = in_buttons[frame];
+		dx += in_dx[frame];
+		dy += in_dy[frame];
+		wheel += in_wheel[frame];
 	}
-	if (turn == 0 && zoom == 0)
+	if (dx == 0 && dy == 0 && wheel == 0 && buttons == 0)
 		return 0;
-	tc_camera(turn, zoom);
+	tc_mouse(buttons, dx, dy, wheel);
 	return 1;
 }
 

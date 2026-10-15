@@ -140,7 +140,8 @@ int main(int argc, char **argv)
 	// frame it belongs to, the buttons, and the mouse's dx, dy and wheel,
 	// which is what the board is given in the land file it asks for. The two
 	// draw the same frames however the link was paced.
-	static int32_t in_turn[4096], in_zoom[4096];
+	static int32_t in_dx[4096], in_dy[4096], in_wheel[4096];
+	static uint8_t in_buttons[4096];
 	uint32_t applied = 0;
 	const char *input_path = getenv("TC_INPUT");
 	if (input_path && !*input_path)
@@ -156,9 +157,10 @@ int main(int argc, char **argv)
 			uint32_t at = (uint32_t)record[0] |
 				      (uint32_t)record[1] << 8;
 			if (at < 4096) {
-				in_turn[at] += (int8_t)record[3] * TC_TURN_PER_COUNT;
-				in_zoom[at] += ((int8_t)record[4] +
-						(int8_t)record[5]) * TC_ZOOM_PER_COUNT;
+				in_buttons[at] = record[2];
+				in_dx[at] += (int8_t)record[3];
+				in_dy[at] += (int8_t)record[4];
+				in_wheel[at] += (int8_t)record[5];
 			}
 		}
 		fclose(in);
@@ -182,8 +184,9 @@ int main(int argc, char **argv)
 		}
 		struct tc_stats stats;
 		soft.triangles = soft.pixels = 0;
-		if (i < 4096 && (in_turn[i] || in_zoom[i])) {
-			tc_camera(in_turn[i], in_zoom[i]);
+		if (i < 4096 && (in_dx[i] || in_dy[i] || in_wheel[i] ||
+				 in_buttons[i])) {
+			tc_mouse(in_buttons[i], in_dx[i], in_dy[i], in_wheel[i]);
 			applied++;
 		}
 		tc_draw(&target, i, frames, &stats);

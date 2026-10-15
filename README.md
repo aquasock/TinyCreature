@@ -94,6 +94,17 @@ entry 79, core-reference TANG-001), and the user has driven it. One thing to
 know when a run is loaded from a PC: the loader holds the board's link for the
 whole run, so in-band input cannot arrive until the host lets go of the port.
 
+The camera the mouse drives is openblack's (core-reference OB-005): the middle
+button held and dragged turns and tilts it, the left button held and dragged
+slides the land along with the hand, and the wheel moves the camera in and
+out, which this user asked to be the other way round from the usual. Four
+constants in `firmware/terrain/terrain.h` are the whole feel --
+`TC_TURN_PER_COUNT`, `TC_PITCH_PER_COUNT`, `TC_ZOOM_PER_COUNT` and
+`TC_DRAG_DIVISOR` -- and `tools/run_tang32_feel.sh` builds for the mouse, loads
+it and hands the board's link back to the mouse in one command, about forty
+seconds a change, with no core rebuild and no TinyTang flash. Flying to a
+clicked point is not implemented; it would want a screen-to-land raycast.
+
 The run converts the land, prints the PC's totals, loads the program and the
 land file, and fails unless the board reports `TinyCreature TERRAIN OK` with
 the same land CRC, triangle and pixel means and frame CRC as the PC. Set

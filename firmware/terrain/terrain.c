@@ -46,10 +46,15 @@ static uint32_t verts_x, blocks_x, blocks_z, generation;
 static int32_t cam_x, cam_y, cam_z, sin_yaw, cos_yaw, sin_pitch, cos_pitch;
 static const struct tc_target *out;
 static struct tc_stats *counts;
-// What a program has aimed the camera with, added to the scripted orbit's own
-// turn and distance. cam_driven records that it has, so a frame drawn without
-// input stays byte for byte the frame a scripted orbit draws.
-static int32_t cam_turn, cam_zoom;
+// The camera the mouse drives, in openblack's terms (core-reference OB-005):
+// the point on the land it looks at, the angle and tilt it looks from, and how
+// far from that point it sits. The scripted orbit fills the same camera when
+// no report has arrived, which is what keeps a run without input drawing the
+// frames this project accepted.
+static int32_t cam_focus_x, cam_focus_y, cam_focus_z;  // Q4 world units
+static int32_t cam_turn;                               // 1/65536 of a turn
+static int32_t cam_pitch;                              // 1/65536 of a turn
+static int32_t cam_dist;                               // Q4, focus to camera
 static int cam_driven;
 
 static uint32_t read32(const uint8_t *p)
@@ -157,6 +162,11 @@ static int32_t height(uint32_t altitude)
 	return (int32_t)(altitude * 2744u >> 8); // 0.67 units, Q4
 }
 
+// The angle helpers below tc_init only by placement: it seeds the camera the
+// mouse will drive, and that camera is described in the same angles.
+static int32_t isin(uint32_t a);
+static int32_t icos(uint32_t a);
+
 void tc_init(const struct tc_land *l, void *work)
 {
 	land = l;
@@ -168,6 +178,18 @@ void tc_init(const struct tc_land *l, void *work)
 	for (uint32_t i = 0; i < count; i++)
 		vertices[i].stamp = 0;
 	generation = 0;
+	// Where the mouse picks the camera up when its first report arrives: the
+	// scripted orbit's own frame zero, the island's centre looked at from reach
+	// away at the orbit's tilt, so that a hand on the mouse moves the view from
+	// where the run would have started rather than jumping it.
+	cam_turn = 0x8000;
+	cam_pitch = PITCH;
+	cam_dist = (int32_t)((int64_t)((l->cells_x > l->cells_z ? l->cells_x : l->cells_z) *
+				      CELL * 4 / 5) * 16384 / icos(PITCH));
+	cam_focus_x = (int32_t)l->cells_x * CELL / 2;
+	cam_focus_z = (int32_t)l->cells_z * CELL / 2;
+	cam_focus_y = LIFT;
+	cam_driven = 0;
 	block_low = (uint8_t *)(vertices + count);
 	block_high = block_low + blocks_x * blocks_z;
 	block_shown = block_high + blocks_x * blocks_z;
@@ -552,11 +574,72 @@ static uint32_t farther(int32_t *lo, int32_t *hi, int32_t c)
 	return (uint32_t)(*hi)--;
 }
 
-void tc_camera(int32_t turn, int32_t zoom)
+// The land's height under a world position, Q4, clamped to the island: the
+// camera's focus follows the ground it is dragged over.
+static int32_t ground(int32_t x, int32_t z)
 {
-	cam_turn += turn;
-	cam_zoom += zoom;
-	cam_driven = 1;
+	int32_t gx = x / CELL, gz = z / CELL;
+	if (gx < 0)
+		gx = 0;
+	if (gz < 0)
+		gz = 0;
+	if (gx > (int32_t)land->cells_x)
+		gx = (int32_t)land->cells_x;
+	if (gz > (int32_t)land->cells_z)
+		gz = (int32_t)land->cells_z;
+	return height(land->altitude[(uint32_t)gz * verts_x + (uint32_t)gx]);
+}
+
+void tc_mouse(uint8_t buttons, int32_t dx, int32_t dy, int32_t wheel)
+{
+	/* The camera the scripted orbit left in the same variables, so that the
+	 * first report takes the view up where it is rather than jumping it. */
+	if (!cam_driven)
+		cam_driven = 1;
+
+	if (buttons & TC_MOUSE_MIDDLE) {
+		/* Turning: the angle moves with the drag and the tilt against it,
+		 * which is what makes dragging down look further down. */
+		cam_turn += dx * TC_TURN_PER_COUNT;
+		cam_pitch -= dy * TC_PITCH_PER_COUNT;
+		if (cam_pitch < 4096)
+			cam_pitch = 4096;      /* about nine degrees: never flat */
+		if (cam_pitch > 0x3800)
+			cam_pitch = 0x3800;    /* about seventy-nine: never straight down */
+	} else if (buttons & TC_MOUSE_LEFT) {
+		/* The land follows the hand: a count covers this much of it at
+		 * this distance, and the focus moves against the drag. Pulling the
+		 * land down moves the focus forward, which takes more world for
+		 * the same count because the ground is seen at a tilt. */
+		int32_t per = cam_dist / TC_DRAG_DIVISOR;
+		int32_t ax = -(per * dx);
+		int32_t az = (int32_t)((int64_t)per * dy * 16384 / cos_pitch);
+		cam_focus_x += (int32_t)(((int64_t)ax * cos_yaw +
+					  (int64_t)az * sin_yaw) >> 14);
+		cam_focus_z += (int32_t)((-(int64_t)ax * sin_yaw +
+					  (int64_t)az * cos_yaw) >> 14);
+		if (cam_focus_x < 0)
+			cam_focus_x = 0;
+		if (cam_focus_z < 0)
+			cam_focus_z = 0;
+		if (cam_focus_x > (int32_t)land->cells_x * CELL)
+			cam_focus_x = (int32_t)land->cells_x * CELL;
+		if (cam_focus_z > (int32_t)land->cells_z * CELL)
+			cam_focus_z = (int32_t)land->cells_z * CELL;
+		cam_focus_y = ground(cam_focus_x, cam_focus_z);
+	}
+
+	if (wheel) {
+		/* Rolling towards the hand comes closer: the wheel is inverted from
+		 * the usual direction, as this user wants it. */
+		cam_dist += wheel * TC_ZOOM_PER_COUNT;
+		if (cam_dist < 320)
+			cam_dist = 320;              /* twenty units: in the grass */
+		if (cam_dist > (int32_t)((land->cells_x > land->cells_z ?
+					  land->cells_x : land->cells_z) * CELL * 2))
+			cam_dist = (int32_t)((land->cells_x > land->cells_z ?
+					      land->cells_x : land->cells_z) * CELL * 2);
+	}
 }
 
 void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
@@ -568,29 +651,41 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 	generation++;
 
 	// One orbit, swinging in to 40% and back out twice on the way round.
-	uint32_t turn = (uint32_t)((uint64_t)frame * 65536 / frames);
 	int32_t size = (land->cells_x > land->cells_z ? land->cells_x : land->cells_z) * CELL;
 	int32_t reach = size * 4 / 5;
-	int32_t radius = (int32_t)(reach * (7 * 16384 + 3 * (int64_t)icos(2 * turn)) / (10 * 16384));
-	if (cam_driven) {
-		// A program owns the camera: its turn is added to the orbit's, and
-		// its zoom moves the distance, held between a quarter of the scripted
-		// swing and twice it, so the camera stays outside the island and near
-		// enough to see it.
-		turn += (uint32_t)cam_turn;
-		radius += cam_zoom;
-		if (radius < reach / 4)
-			radius = reach / 4;
-		if (radius > reach * 2)
-			radius = reach * 2;
+	if (!cam_driven) {
+		uint32_t turn = (uint32_t)((uint64_t)frame * 65536 / frames);
+		int32_t radius = (int32_t)(reach * (7 * 16384 + 3 * (int64_t)icos(2 * turn)) / (10 * 16384));
+		cam_x = land->cells_x * CELL / 2 + (int32_t)((int64_t)radius * isin(turn) >> 14);
+		cam_z = land->cells_z * CELL / 2 + (int32_t)((int64_t)radius * icos(turn) >> 14);
+		cam_y = (int32_t)((int64_t)radius * TAN_PITCH >> 14) + LIFT;
+		sin_yaw = isin(turn + 0x8000);
+		cos_yaw = icos(turn + 0x8000);
+		sin_pitch = isin(PITCH);
+		cos_pitch = icos(PITCH);
+		// The same camera written as the focus, angle, tilt and distance the
+		// mouse drives, so its first report can take it over in place.
+		cam_turn = (int32_t)(turn + 0x8000);
+		cam_pitch = PITCH;
+		cam_dist = (int32_t)((int64_t)radius * 16384 / cos_pitch);
+		cam_focus_x = cam_x + (int32_t)((int64_t)radius * sin_yaw >> 14);
+		cam_focus_z = cam_z + (int32_t)((int64_t)radius * cos_yaw >> 14);
+		cam_focus_y = cam_y - (int32_t)((int64_t)radius * TAN_PITCH >> 14);
+	} else {
+		sin_yaw = isin((uint32_t)cam_turn);
+		cos_yaw = icos((uint32_t)cam_turn);
+		sin_pitch = isin((uint32_t)cam_pitch);
+		cos_pitch = icos((uint32_t)cam_pitch);
+		int32_t horiz = (int32_t)((int64_t)cam_dist * cos_pitch >> 14);
+		cam_x = cam_focus_x - (int32_t)((int64_t)horiz * sin_yaw >> 14);
+		cam_z = cam_focus_z - (int32_t)((int64_t)horiz * cos_yaw >> 14);
+		cam_y = cam_focus_y + (int32_t)((int64_t)cam_dist * sin_pitch >> 14);
+		// The camera stays clear of the ground it is looking at, which is what
+		// keeps a drag over a hill from burying it (core-reference OB-005).
+		int32_t clearance = ground(cam_x, cam_z) + 160;
+		if (cam_y < clearance)
+			cam_y = clearance;
 	}
-	cam_x = land->cells_x * CELL / 2 + (int32_t)((int64_t)radius * isin(turn) >> 14);
-	cam_z = land->cells_z * CELL / 2 + (int32_t)((int64_t)radius * icos(turn) >> 14);
-	cam_y = (int32_t)((int64_t)radius * TAN_PITCH >> 14) + LIFT;
-	sin_yaw = isin(turn + 0x8000);
-	cos_yaw = icos(turn + 0x8000);
-	sin_pitch = isin(PITCH);
-	cos_pitch = icos(PITCH);
 
 	// The sky above the horizon, the sea below it, a run of rows at a time.
 	int32_t horizon = TC_HEIGHT / 2 - FOCAL * sin_pitch / cos_pitch;

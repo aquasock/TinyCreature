@@ -70,22 +70,30 @@ uint32_t tc_palette(const struct tc_land *land, unsigned index);
 size_t tc_work_bytes(const struct tc_land *land);
 void tc_init(const struct tc_land *land, void *work);
 
-/* How a mouse count maps onto the camera: dx turns it, dy and the wheel move
- * it in and out. Shared with the host twin so a recorded sequence draws the
- * same frames on both. */
+/* How a mouse count maps onto the camera: dx and dy turn it, the wheel moves
+ * it in and out, and a drag covers this fraction of the camera's distance.
+ * These four are the whole feel of the camera. They are shared with the host
+ * twin so a recorded sequence draws the same frames on both. */
 #define TC_TURN_PER_COUNT 128   /* 1/65536 of a turn a count */
-#define TC_ZOOM_PER_COUNT 64    /* Q4 world units a count */
+#define TC_PITCH_PER_COUNT 24   /* 1/65536 of a turn a count, tilting */
+#define TC_ZOOM_PER_COUNT 128   /* Q4 world units a wheel detent */
+#define TC_DRAG_DIVISOR 256     /* a count covers distance / this of the world */
+
+/* The mouse's buttons, as its HID boot report has them. */
+#define TC_MOUSE_LEFT   0x01u
+#define TC_MOUSE_MIDDLE 0x04u
 
 /* Send frame number frame of frames, one orbit of the island, to target. */
 void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 	     struct tc_stats *stats);
 
-/* Aim the camera. turn is added to the walk's yaw in 1/65536 of a turn, and
- * zoom to its distance from the island's centre in Q4 world units; a program
- * that drives the camera calls this once a frame with that frame's deltas.
- * Until it is called, tc_draw keeps its own scripted orbit, so the frames a
- * program draws without input stay the ones a scripted orbit draws. */
-void tc_camera(int32_t turn, int32_t zoom);
+/* Hand the camera one mouse report: the buttons as they are now, and the
+ * movement and the wheel since the last one. What they mean is openblack's
+ * mapping (core-reference OB-005): the left button drags the landscape, the
+ * middle one turns the camera about its focus, and the wheel changes how far
+ * from the focus it sits. A run that hands over no reports keeps tc_draw's own
+ * scripted orbit, so the frames this project accepted stay where they are. */
+void tc_mouse(uint8_t buttons, int32_t dx, int32_t dy, int32_t wheel);
 
 /* IEEE CRC-32, continued from crc (0 to start). */
 uint32_t tc_crc32(uint32_t crc, const uint8_t *data, size_t bytes);

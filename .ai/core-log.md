@@ -500,3 +500,39 @@ Fix the pipe guard in TinyTang and flash it once more: the state wants a query o
 - User Test: PASS
 
 ---
+
+## 16 COMMIT Unreleased 2026-10-15T07:33:43-07:00
+
+#### Coming From:
+
+Unreleased c0945d8
+
+#### Purpose:
+
+Drive the terrain camera with the mouse the way the original game does, so that the user can move around as they did in Black & White and judge the frame rate from that, rather than from a scripted orbit.
+
+#### Outcome:
+
+The camera is now openblack's (core-reference OB-005): a focus point on the land, an angle and a tilt it is seen from, and a distance from that point, with the middle button held and dragged turning and tilting it, the left button held and dragged moving the focus so that the land follows the hand, and the wheel changing the distance -- which the user asked to be inverted from the usual direction, and it is, with the comment saying so. The renderer needed nothing: `to_camera()` has always taken a position and two angles, and only the update was scripted. The mapping lives in `tc_mouse()` in `firmware/terrain/terrain.c` rather than in the firmware, so one function decides what a report means and the host twin beside it decides the same, which is what lets a recorded session still be checked frame for frame. The tilt is held between about nine and seventy-nine degrees, the distance between twenty world units and twice the island's width, and the camera keeps ten units of clearance over the ground it looks at. The four constants in terrain.h are the whole feel -- `TC_TURN_PER_COUNT` 128, `TC_PITCH_PER_COUNT` 24, `TC_ZOOM_PER_COUNT` 128 and `TC_DRAG_DIVISOR` 256 -- and the zoom was doubled and the wheel inverted at the user's request, each tried on the board and passed. A run that hands over no report keeps the scripted orbit exactly, which is what the whole acceptance chain rests on: all six shipped lands still reproduce their frame CRCs byte for byte, most importantly Land 1's `4a893c8b`, the six stressed configurations still agree with the code before the change, and AddressSanitizer and UndefinedBehaviorSanitizer are clean on both the scripted and the driven paths. A recorded session of turns, drags and wheel now draws `TRIS=15602 PIXELS=15872 INPUT=600 CRC=62c277f1` where the scripted orbit draws `20085`, `33072` and `4a893c8b`. One bug was found by the first driven run drawing nothing at all: the input is applied before `tc_draw` has ever run, so on the first frame the camera state was uninitialised zeros, a distance of zero and a focus at the world origin. The camera is now seeded at init with the scripted orbit's own frame zero -- the island's centre looked at from reach away at the orbit's tilt -- so a hand on the mouse moves the view from where the run would start rather than jumping it, and no frame is drawn from a state that never existed. `tools/run_tang32_feel.sh` is new: one command that builds for a long run, loads the core, runs the program, hands the board's link back to the mouse and says what the buttons do, about forty seconds a change with no core rebuild and no TinyTang flash. `tools/tang_input.py`'s pattern now holds the middle button, then the left, then rolls the wheel, which is every way the camera moves. The user drove the camera with the board's own mouse through all of it and passed the cycle. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged, checked that the reference's fast index and its records list the same ids in the same order, and validated this entry's six sections, sequential numbering, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The pipe guard in TinyTang is still the one defect either project is carrying: `pointer_frame()` takes the transmit lock while a host owns the link and stalls the desk task for that pipe's life, where it should return early, and fixing it needs a build and a flash. Flying to a clicked point, openblack's double click, needs a screen-to-land raycast and is the one camera behaviour deliberately left out. The keyboard is held off at the user's request. The feel is now the user's to set through terrain.h's four constants, and the recorded-input run remains the regression that a live run cannot be, which is the case for pinning a CRC per recorded sequence in a tool beside the stress harness that entries 10, 12, 13, 14 and 15 all owe. The level-of-detail idea stays parked for sixty frames a second, where the budget is 16.6 ms and free cuts will not reach it. The unused Bullet world removal from the PC playground (entry 6) and the J10 second SDRAM bank (entry 7) remain open, and GAME-001 still describes the 64 MiB route as J9's second chip select rather than the J10 bank.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/host.c
+- firmware/terrain/main.c
+- firmware/terrain/terrain.c
+- firmware/terrain/terrain.h
+- tools/run_tang32_feel.sh
+- tools/tang_input.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

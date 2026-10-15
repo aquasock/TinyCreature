@@ -90,6 +90,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | How does openblack render, and which shader programs would a fixed-function back end have to cover? | OB | OB-002 |
 | How complete is openblack on the real game, and what did a first run use? | OB | OB-003 |
 | How is a .lnd landscape laid out, and how does openblack colour a terrain vertex? | OB | OB-004 |
+| How does openblack's camera answer the mouse, and which button does what? | OB | OB-005 |
 | What did Black & White need to run? | GAME | GAME-001 |
 | Which open FPGA rasterizer implements an OpenGL-style fixed-function pipeline, and how fast is it? | GFX | GFX-001 |
 | Which EXTS addresses reach the fabric, and what do bus and SDRAM accesses cost the A25? | AE | AE-001, AE-002 |
@@ -108,6 +109,7 @@ OB-001: "openblack (github.com/openblack/openblack) is a GPL-3.0 C++23 reimpleme
 OB-002: "openblack draws everything through bgfx with 10 game shader programs (terrain, water, sky, object, object instanced, vegetation, sprite, line, footprint) plus imgui's; its terrain fragment shader takes up to nine texture samples a pixel and its water reflects a second rendering of the scene"
 OB-003: "openblack a243c6b2 built on this PC and run on the user's patched Black & White draws Land 1's landscape correctly with no villagers or creature; a repeatable three-run profile measures about 361 MiB peak RSS with bgfx Noop and 532 MiB with Vulkan, so the current engine does not fit in 64 MiB"
 OB-004: "openblack a243c6b2 reads a .lnd as a 1052-byte header with a 32 by 32 block lookup table, low-resolution textures, 2520-byte blocks of 17 by 17 eight-byte cells, 3076-byte countries, 0x20002-byte 256 by 256 B5G5R5A1 materials, then 64 KiB noise and bump maps; a cell outside every block is all zero but fullWater; a vertex's materials come from its country at (altitude + noise) mod 256"
+OB-005: "openblack's DefaultWorldCameraModel picks its mode from the input each frame -- the left button on the land drags the landscape, the middle button (bound to ROTATE_AROUND_MOUSE_ON) turns the camera about its focus as an arc ball, a double click flies to the point clicked, and the wheel changes the distance by k_WheelZoomFactor, 20, a detent -- with the rotation scaled by (1.9, -1.7) and two buttons with a drag zooming by 1.9 a count"
 GAME-001: "Black & White (2001) for Windows needed at least a 350 MHz Pentium II or K6-2, 64 MB of RAM, an 8 MB Direct3D (DirectX 7) card and 500 to 600 MB of disk; the Mac version a 333 MHz G3, 128 MB and an 8 MB OpenGL 1.2 card"
 GFX-001: "Rasterix (github.com/ToNi3141/Rasterix) is a Verilog FPGA rasterizer with a mostly OpenGL 1.3 fixed-function pixel pipeline, up to two texture units and register combiners, vertex work in software, reported at 100 Mpixel/s and 200 Mtexel/s at 100 MHz; its licence has not been read"
 AE-001: "In the Tang32 core the AE350's EXTS port carries 0xe8018000 to 0xe801ffff to the fabric: the raster unit decoded there answers its ID and runs; 0xe8020000 and above are untested"
@@ -172,6 +174,18 @@ TANG-001: "Every message between the BL616 and a loaded core is 0xAA len_hi len_
   sources:
     - "openblack a243c6b2: components/lnd/include/LNDFile.h, components/lnd/src/LNDFile.cpp (LNDFile::ReadFile), src/3D/Implementations/LandIsland.cpp (GetCell, GetNoise, EmptyCell, k_HeightUnit, k_CellSize), src/3D/LandBlock.cpp (BuildVertexList, LandVertex), assets/shaders/fs_terrain.sc, assets/shaders/vs_terrain.sc"
   verification: "Read on 2026-10-15 (core-log entry 8). tools/convert_land.py parsed the user's Land1.lnd by this layout, every one of its 100 blocks' blockX and blockZ agreeing with the lookup table, and the Tang drew the result, which the user accepted as Land 1; the empty-cell rule was confirmed when the first conversion, which treated those cells as dry, drew the slivers described above."
+
+- record_id: OB-005
+  kind: EXTERNAL
+  topic_id: OB
+  title: "How openblack's camera answers the mouse"
+  status: SOURCED
+  verified_date: 2026-10-15
+  statement: "DefaultWorldCameraModel picks a mode from the input every frame (src/Camera/DefaultWorldCameraModel.cpp): a hand on the land with MOVE held is DraggingLandscape, ROTATE_AROUND_MOUSE_ON is ArcBall, a double click on the land is FlyingToPoint, keyboard movement or a rotation left over from a drag is Polar, and otherwise it is Cartesian. In its action map (src/Input/GameActionMap.cpp) the left button is MOVE and the middle button is ROTATE_AROUND_MOUSE_ON. ArcBall adds the mouse delta to the rotation angle scaled by k_RotateOnSpeedMultiplier, (1.9, -1.7); the wheel adds the minus or plus of k_WheelZoomFactor, 20, to the distance for each detent; and two buttons with a drag add the vertical delta times k_TwoButtonZoomFactor, 1.9. The model's other constants are k_InteractionSpeedMultiplier 400, k_CameraModelHalfPi 1.53938043 -- the original's own approximation of a half turn of tilt -- k_CameraInteractionStepSize 3, k_FlyingDistanceThresholds 100, 60, 30 and 15, k_FlyingThresholdFactor 1.5, k_GroundDistanceMinimum 10, and k_FlightHeightFactor 0.1."
+  consequence: "This is what 'the mouse works the way the original game did' means in the reimplementation this project builds on, and this project's terrain camera follows it: middle-drag turns and tilts, left-drag moves the focus so the land follows the hand, and the wheel changes the distance, with a minimum clearance over the ground. What a count is worth is this project's own, in firmware/terrain/terrain.h's TC_* constants, because its projection is not openblack's; the modes and the bindings are openblack's. Flying to a clicked point is not implemented here, and would need a screen-to-land raycast."
+  sources:
+    - "openblack at a243c6b2: src/Camera/DefaultWorldCameraModel.cpp, src/Camera/DefaultWorldCameraModel.h, src/Input/GameActionMap.cpp, src/Input/GameActionMapInterface.h"
+  verification: "Read from openblack's sources on 2026-10-15; not run, so SOURCED. The behaviour it describes was then confirmed on this board the same day by driving this project's camera with the board's own mouse (core-log entry 16)."
 
 - record_id: GAME-001
   kind: EXTERNAL
