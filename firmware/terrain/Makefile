@@ -21,6 +21,10 @@ SOURCES  := main.c terrain.c $(TINYNES)/firmware/boot/load.c
 CPPFLAGS += -I$(TINYNES)/firmware/boot $(if $(FRAMES),-DFRAMES=$(FRAMES)) \
             $(if $(FABRIC),-DFABRIC=$(FABRIC))
 
+# In place of the runtime's -O2: this renderer is integer and index-heavy, and
+# the board draws measurably faster for it. OPT= on the command line still wins.
+OPT ?= -O3
+
 include $(TINYNES)/firmware/rt/rt.mk
 
 HOST_CC ?= gcc

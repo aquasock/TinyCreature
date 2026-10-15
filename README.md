@@ -79,11 +79,11 @@ the same land CRC, triangle and pixel means and frame CRC as the PC. Set
 game's data and is never committed.
 
 The accepted board run drew all 600 frames identically to the PC, frame CRC
-`859df765` from land CRC `ed38589d`. It rasterized a mean of 19,218 triangles
-and filled 32,505 pixels per frame, took a mean 38.1 ms and at most 42.8 ms to
-draw a frame on the AE350's software path, and so showed one frame every three
-vertical blanks, 20 frames per second, with zero late line fetches. That
-draw time is the CPU baseline the fabric renderer has to beat.
+`4a893c8b` from land CRC `ed38589d`. It drew a mean 20,085 triangles and
+filled 33,072 pixels per frame, took a mean 30.8 ms and at most 34.1 ms to
+draw a frame on the AE350's software path, and so showed most frames in two
+vertical blanks and the rest in three, with zero late line fetches. That draw
+time is the CPU baseline the fabric renderer has to beat.
 
 ## The fabric rasterizer
 
@@ -101,14 +101,19 @@ byte for byte, through the read-back registers and the line fetch.
 
 On the board the rasterizer drew all 600 frames as the PC model did, frame
 CRC `4a893c8b` from 20,085 triangles and 33,072 pixels a frame, with zero
-late line fetches. It was idle by the time each frame had been sent, but the
-CPU still took a mean 37.9 ms to send a frame, against 42.4 ms for the same
-frames filled in software (`terrain-soft`), so both showed a frame every
-three vertical blanks. Measured on the board, sending a triangle's four
-command words cost 23 CPU cycles within the frame loop, while a cached store
-that misses into the SDRAM cost about 620 cycles a 32-byte line. The CPU's
-time goes on cache misses in its walk over about 1.1 MB of vertex records,
-not on drawing.
+late line fetches. It was idle by the time each frame had been sent, so the
+CPU sets the pace: a mean 28.2 ms to send a frame and at most 33.5 ms,
+against 30.8 ms and 34.1 ms for the same frames filled in software
+(`terrain-soft`), which shows most frames in two vertical blanks and the rest
+in three. Measured on the board, sending a triangle's four command words
+costs 23 CPU cycles within the frame loop, and a cached store that misses
+into the SDRAM about 620 cycles a 32-byte line, but the CPU's time is not
+that memory stream. A phase profile puts it in the cell walk and the triangle
+submission inside it: cutting the vertex record from 24 bytes to 8, which the
+whole island is walked over once a frame, moved the mean frame by only 2.5%,
+while taking the everyday all-front triangle straight from the record,
+without the clip machinery, and building the program at `-O3` took the mean
+from 37.9 ms to 28.2 ms.
 
 ## openblack on a PC
 

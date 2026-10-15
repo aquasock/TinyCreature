@@ -24,16 +24,25 @@
 #define BLOCK     16    // cells a side in a block
 #define GUARD     32000 // Q4: corners sent to a target stay within 2000 pixels
 
+// A vertex, 8 bytes so that a frame's walk writes as little to the SDRAM as
+// it can, and so that four vertices share a cache line. The camera-space
+// position it was computed from is not kept: the record holds what every
+// drawn triangle needs, and the rare vertex that needs more recomputes it
+// from its place in the grid.
 struct vertex {
-	int32_t x, y, z;   // camera space, Q4
-	int32_t sx, sy;    // screen, Q4, when z >= NEAR
-	uint32_t stamp;    // the frame these belong to
+	int16_t sx, sy;    // screen, Q4, exact when VERT_FRONT
+	uint32_t stamp;    // generation << 2 | state
 };
+
+// What a vertex's record holds, in the two low bits of stamp.
+#define VERT_FRONT  0u  // in front of the near plane, both coordinates exact
+#define VERT_BEHIND 1u  // behind the near plane, so no screen position
+#define VERT_WIDE   2u  // in front, but a screen coordinate did not fit int16
 
 static const struct tc_land *land;
 static struct vertex *vertices;
 static uint8_t *block_low, *block_high, *block_shown;
-static uint32_t verts_x, blocks_x, blocks_z, stamp;
+static uint32_t verts_x, blocks_x, blocks_z, generation;
 static int32_t cam_x, cam_y, cam_z, sin_yaw, cos_yaw, sin_pitch, cos_pitch;
 static const struct tc_target *out;
 static struct tc_stats *counts;
@@ -138,7 +147,7 @@ void tc_init(const struct tc_land *l, void *work)
 	vertices = work;
 	for (uint32_t i = 0; i < count; i++)
 		vertices[i].stamp = 0;
-	stamp = 0;
+	generation = 0;
 	block_low = (uint8_t *)(vertices + count);
 	block_high = block_low + blocks_x * blocks_z;
 	block_shown = block_high + blocks_x * blocks_z;
@@ -196,22 +205,46 @@ static void to_camera(int32_t wx, int32_t wy, int32_t wz, int32_t *x,
 	*z = (int32_t)((rz * cos_pitch - dy * sin_pitch) >> 14);
 }
 
-static void project(struct vertex *v)
+// The screen position of a camera-space point, Q4: pixels, 16 to a pixel.
+static void project_xy(int32_t x, int32_t y, int32_t z, int32_t *sx, int32_t *sy)
 {
-	int64_t inv = (1 << 30) / v->z;
-	v->sx = TC_WIDTH * 8 + (int32_t)(v->x * inv >> 18);
-	v->sy = TC_HEIGHT * 8 - (int32_t)(v->y * inv >> 18);
+	int64_t inv = (1 << 30) / z;
+	*sx = TC_WIDTH * 8 + (int32_t)(x * inv >> 18);
+	*sy = TC_HEIGHT * 8 - (int32_t)(y * inv >> 18);
+}
+
+// A stored vertex's camera-space position, recomputed from the grid it
+// indexes because the 8-byte record does not keep it. The arithmetic is the
+// one vertex() used, so the result is the value it would have stored.
+static void vertex_camera(const struct vertex *v, int32_t *x, int32_t *y, int32_t *z)
+{
+	size_t i = (size_t)(v - vertices);
+	uint32_t gz = (uint32_t)(i / verts_x), gx = (uint32_t)(i % verts_x);
+	to_camera((int32_t)gx * CELL, height(land->altitude[gz * verts_x + gx]),
+		  (int32_t)gz * CELL, x, y, z);
 }
 
 static struct vertex *vertex(uint32_t gx, uint32_t gz)
 {
 	struct vertex *v = &vertices[gz * verts_x + gx];
-	if (v->stamp != stamp) {
+	if ((v->stamp >> 2) != generation) {
+		int32_t x, y, z, sx = 0, sy = 0;
+		uint32_t state = VERT_BEHIND;
 		to_camera((int32_t)gx * CELL, height(land->altitude[gz * verts_x + gx]),
-			  (int32_t)gz * CELL, &v->x, &v->y, &v->z);
-		if (v->z >= NEAR)
-			project(v);
-		v->stamp = stamp;
+			  (int32_t)gz * CELL, &x, &y, &z);
+		if (z >= NEAR) {
+			project_xy(x, y, z, &sx, &sy);
+			state = VERT_FRONT;
+			if (sx > 32767 || sx < -32768 || sy > 32767 || sy < -32768) {
+				// Held clamped and flagged; submit() recomputes it.
+				state = VERT_WIDE;
+				sx = sx > 32767 ? 32767 : sx < -32768 ? -32768 : sx;
+				sy = sy > 32767 ? 32767 : sy < -32768 ? -32768 : sy;
+			}
+		}
+		v->sx = (int16_t)sx;
+		v->sy = (int16_t)sy;
+		v->stamp = generation << 2 | state;
 	}
 	return v;
 }
@@ -306,39 +339,89 @@ static int clip_guard(int32_t *x, int32_t *y, int n)
 	return n;
 }
 
-// Draw one triangle facing up, its corners counter-clockwise seen from
-// above: clip it at the near plane, then send each part that faces the
-// camera and reaches the screen.
-static void submit(const struct vertex *a, const struct vertex *b,
-		   const struct vertex *c, uint8_t colour)
+// One triangle facing up, its corners counter-clockwise seen from above:
+// send it if it faces the camera and reaches the screen. Front faces wind
+// clockwise on the screen (y down), which is the order that makes the
+// rasterizer's edge functions >= 0 inside.
+static void emit(const int32_t *x, const int32_t *y, uint8_t colour)
+{
+	int64_t cross = (int64_t)(x[1] - x[0]) * (y[2] - y[0]) -
+			(int64_t)(y[1] - y[0]) * (x[2] - x[0]);
+	if (cross >= 0)
+		return;
+	int32_t x_lo = x[0], x_hi = x[0], y_lo = y[0], y_hi = y[0];
+	for (int i = 1; i < 3; i++) {
+		x_lo = x[i] < x_lo ? x[i] : x_lo;
+		x_hi = x[i] > x_hi ? x[i] : x_hi;
+		y_lo = y[i] < y_lo ? y[i] : y_lo;
+		y_hi = y[i] > y_hi ? y[i] : y_hi;
+	}
+	// No pixel centre on the screen in its box: the rasterizer would fill
+	// nothing, so it is not sent.
+	if (((x_lo + 7) >> 4) > ((x_hi - 8) >> 4) || x_hi < 8 ||
+	    x_lo + 7 >= TC_WIDTH * 16 || ((y_lo + 7) >> 4) > ((y_hi - 8) >> 4) ||
+	    y_hi < 8 || y_lo + 7 >= TC_HEIGHT * 16)
+		return;
+	out->triangle(out->ctx, x, y, colour);
+	counts->triangles++;
+}
+
+// The slow side of submit(): a corner whose screen position the 8-byte
+// record could not hold exactly, or one that reached past the guard band.
+// Recomputes camera space from the grid where it is needed, clips at the
+// near plane, and fans the result.
+static void submit_slow(const struct vertex *a, const struct vertex *b,
+			const struct vertex *c, uint8_t colour)
 {
 	const struct vertex *in[3] = {a, b, c};
-	int behind = (a->z < NEAR) + (b->z < NEAR) + (c->z < NEAR);
+	uint32_t state[3];
+	int32_t x[3] = {0, 0, 0}, y[3] = {0, 0, 0}, z[3] = {0, 0, 0};
+	int32_t sx[3] = {0, 0, 0}, sy[3] = {0, 0, 0};
+	int behind = 0;
+	for (int i = 0; i < 3; i++) {
+		state[i] = in[i]->stamp & 3u;
+		if (state[i] == VERT_FRONT) {
+			sx[i] = in[i]->sx;
+			sy[i] = in[i]->sy;
+			continue;
+		}
+		vertex_camera(in[i], &x[i], &y[i], &z[i]);
+		if (state[i] == VERT_BEHIND)
+			behind++;
+		else
+			project_xy(x[i], y[i], z[i], &sx[i], &sy[i]);
+	}
 	if (behind == 3)
 		return;
+	if (behind) {
+		// Clipping interpolates along the edges, so every corner needs its
+		// camera-space position, including the ones the record held exactly.
+		for (int i = 0; i < 3; i++)
+			if (state[i] == VERT_FRONT)
+				vertex_camera(in[i], &x[i], &y[i], &z[i]);
+	}
 	int32_t px[9], py[9];
 	int n = 0;
 	if (!behind) {
 		for (int i = 0; i < 3; i++) {
-			px[n] = in[i]->sx;
-			py[n++] = in[i]->sy;
+			px[n] = sx[i];
+			py[n++] = sy[i];
 		}
 	} else {
 		for (int i = 0; i < 3; i++) {
-			const struct vertex *p = in[i], *q = in[(i + 1) % 3];
-			if (p->z >= NEAR) {
-				px[n] = p->sx;
-				py[n++] = p->sy;
+			int j = (i + 1) % 3;
+			if (z[i] >= NEAR) {
+				px[n] = sx[i];
+				py[n++] = sy[i];
 			}
-			if ((p->z >= NEAR) != (q->z >= NEAR)) {
-				int64_t num = NEAR - p->z, den = q->z - p->z;
-				struct vertex v;
-				v.x = p->x + (int32_t)((q->x - p->x) * num / den);
-				v.y = p->y + (int32_t)((q->y - p->y) * num / den);
-				v.z = NEAR;
-				project(&v);
-				px[n] = v.sx;
-				py[n++] = v.sy;
+			if ((z[i] >= NEAR) != (z[j] >= NEAR)) {
+				int64_t num = NEAR - z[i], den = z[j] - z[i];
+				int32_t cx = x[i] + (int32_t)((x[j] - x[i]) * num / den);
+				int32_t cy = y[i] + (int32_t)((y[j] - y[i]) * num / den);
+				int32_t qx, qy;
+				project_xy(cx, cy, NEAR, &qx, &qy);
+				px[n] = qx;
+				py[n++] = qy;
 			}
 		}
 	}
@@ -348,30 +431,33 @@ static void submit(const struct vertex *a, const struct vertex *b,
 			break;
 		}
 	for (int k = 1; k + 1 < n; k++) {
-		int32_t x[3] = {px[0], px[k], px[k + 1]};
-		int32_t y[3] = {py[0], py[k], py[k + 1]};
-		int64_t cross = (int64_t)(x[1] - x[0]) * (y[2] - y[0]) -
-				(int64_t)(y[1] - y[0]) * (x[2] - x[0]);
-		if (cross >= 0)
-			continue;
-		int32_t x_lo = x[0], x_hi = x[0], y_lo = y[0], y_hi = y[0];
-		for (int i = 1; i < 3; i++) {
-			x_lo = x[i] < x_lo ? x[i] : x_lo;
-			x_hi = x[i] > x_hi ? x[i] : x_hi;
-			y_lo = y[i] < y_lo ? y[i] : y_lo;
-			y_hi = y[i] > y_hi ? y[i] : y_hi;
-		}
-		// No pixel centre on the screen in its box: the rasterizer would
-		// fill nothing, so it is not sent.
-		if (((x_lo + 7) >> 4) > ((x_hi - 8) >> 4) || x_hi < 8 ||
-		    x_lo + 7 >= TC_WIDTH * 16 || ((y_lo + 7) >> 4) > ((y_hi - 8) >> 4) ||
-		    y_hi < 8 || y_lo + 7 >= TC_HEIGHT * 16)
-			continue;
-		// Front faces wind clockwise on the screen (y down), which is the
-		// order that makes the rasterizer's edge functions >= 0 inside.
-		out->triangle(out->ctx, x, y, colour);
-		counts->triangles++;
+		int32_t tx[3] = {px[0], px[k], px[k + 1]};
+		int32_t ty[3] = {py[0], py[k], py[k + 1]};
+		emit(tx, ty, colour);
 	}
+}
+
+// Draw one triangle facing up. The walk's everyday case -- every corner in
+// front of the near plane with an exact screen position inside the guard
+// band, which is every triangle of the orbit the board draws -- is taken
+// straight from the record, with none of the clip machinery's stack; a
+// corner beyond the guard band falls through to submit_slow().
+static void submit(const struct vertex *a, const struct vertex *b,
+		   const struct vertex *c, uint8_t colour)
+{
+	if (!(a->stamp & 3u) && !(b->stamp & 3u) && !(c->stamp & 3u)) {
+		int32_t x[3] = {a->sx, b->sx, c->sx};
+		int32_t y[3] = {a->sy, b->sy, c->sy};
+		int i;
+		for (i = 0; i < 3; i++)
+			if (x[i] < -GUARD || x[i] > GUARD || y[i] < -GUARD || y[i] > GUARD)
+				break;
+		if (i == 3) {
+			emit(x, y, colour);
+			return;
+		}
+	}
+	submit_slow(a, b, c, colour);
 }
 
 static int outside(int32_t x, int32_t y, int32_t z)
@@ -448,7 +534,7 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 	out = target;
 	counts = stats;
 	stats->triangles = 0;
-	stamp++;
+	generation++;
 
 	// One orbit, swinging in to 40% and back out twice on the way round.
 	uint32_t turn = (uint32_t)((uint64_t)frame * 65536 / frames);

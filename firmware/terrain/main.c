@@ -10,15 +10,19 @@
 // buffers instead. Either way it reports
 //   TinyCreature TERRAIN OK MODE=<FABRIC|SOFT> LAND=<crc> FRAMES=<n>
 //     TRIS=<mean> PIXELS=<mean> DRAW=<us> MAX=<us> FINISH=<us> STALLS=<n>
-//     PERIOD=<us> VBL=<n> LATE=<n> CRC=<crc>
+//     VBL=<n> VBLMIN=<n> VBLMAX=<n> PERIOD=<us> LATE=<n> CRC=<crc>
 // LAND is the file's CRC-32; TRIS and PIXELS the mean triangles sent and
 // pixels they filled per frame; DRAW and MAX the mean and longest CPU time
 // to send a frame, FINISH the mean time after that until the rasterizer is
 // idle; STALLS the mean bus cycles per frame the CPU waited on a full
-// rasterizer FIFO; PERIOD the mean time per shown frame; CRC the CRC-32 of
-// all frames in turn, read back from where they were drawn, which
-// terrain_host computes from the same file. The last frame stays up. A
-// failed check prints BAD TINYCREATURE <name> and the program exits with 1.
+// rasterizer FIFO; VBL the vertical blanks 600 frames took, VBLMIN and
+// VBLMAX the fewest and most one frame took, PERIOD the mean time per shown
+// frame; CRC the CRC-32 of all frames in turn, read back from where they
+// were drawn, which terrain_host computes from the same file. The last frame
+// stays up. A failed check prints BAD TINYCREATURE <name> and the program
+// exits with 1. VBLMAX is what a frame rate is judged by: the display shows
+// a frame no sooner than the blank after it is ready, so the shown rate is
+// 60/VBLMAX frames a second.
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -129,8 +133,10 @@ int main(void)
 	uint32_t stalls0 = FABRIC ? RASTER_STALLS : 0;
 	uint32_t crc = 0, lit = 0;
 	uint64_t tris = 0, pixels = 0, draw = 0, longest = 0, finish = 0;
+	uint32_t vbl_min = ~0u, vbl_max = 0;
 	uint64_t start = tn_cycles64();
 	for (uint32_t frame = 0; frame < FRAMES; frame++) {
+		uint32_t blanks = TN_VIDEO_FRAMES;
 		uint32_t back = (TN_VIDEO_STATUS & TN_VIDEO_BUFFER) ? 0u : 1u;
 		uint32_t tris0 = 0, pixels0 = 0;
 		if (FABRIC) {
@@ -185,6 +191,9 @@ int main(void)
 		while ((TN_VIDEO_STATUS & (TN_VIDEO_SHOWING | TN_VIDEO_BUFFER)) != want)
 			if (tn_cycles64() - wait > TN_CORE_HZ / 10u)
 				fail("FLIP");
+		uint32_t spent = TN_VIDEO_FRAMES - blanks;
+		vbl_min = spent < vbl_min ? spent : vbl_min;
+		vbl_max = spent > vbl_max ? spent : vbl_max;
 	}
 	uint64_t elapsed = tn_cycles64() - start;
 	uint32_t vbl = TN_VIDEO_FRAMES - vbl0;
@@ -203,12 +212,13 @@ int main(void)
 		fail("PIXELS");
 	printf("TinyCreature TERRAIN OK MODE=%s LAND=%08lx FRAMES=%u TRIS=%lu "
 	       "PIXELS=%lu DRAW=%luus MAX=%luus FINISH=%luus STALLS=%lu "
-	       "PERIOD=%luus VBL=%lu LATE=%lu CRC=%08lx\n",
+	       "VBL=%lu VBLMIN=%lu VBLMAX=%lu PERIOD=%luus LATE=%lu CRC=%08lx\n",
 	       FABRIC ? "FABRIC" : "SOFT", (unsigned long)land_crc, (unsigned)FRAMES,
 	       (unsigned long)(tris / FRAMES), (unsigned long)(pixels / FRAMES),
 	       (unsigned long)(draw / FRAMES / us), (unsigned long)(longest / us),
 	       (unsigned long)(finish / FRAMES / us), (unsigned long)(stalls / FRAMES),
-	       (unsigned long)(elapsed / FRAMES / us), (unsigned long)vbl,
-	       (unsigned long)late, (unsigned long)crc);
+	       (unsigned long)vbl, (unsigned long)vbl_min, (unsigned long)vbl_max,
+	       (unsigned long)(elapsed / FRAMES / us), (unsigned long)late,
+	       (unsigned long)crc);
 	return 0;
 }
