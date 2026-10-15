@@ -144,11 +144,38 @@ the same land CRC, triangle and pixel means and frame CRC as the PC. Set
 game's data and is never committed.
 
 The accepted board run drew all 600 frames identically to the PC, frame CRC
-`5b022d0d` from land CRC `205046bf`. It drew a mean 20,085 triangles and
-filled 33,072 pixels per frame, took a mean 30.3 ms and at most 33.5 ms to
-draw a frame on the AE350's software path, and so showed most frames in two
-vertical blanks and the rest in three, with zero late line fetches. That draw
+`ed8eb724` from land CRC `205046bf`. It drew a mean 15,568 triangles and
+filled 36,048 pixels per frame -- 20,085 and 33,072 before the far-field merge
+below -- and took a mean 30.3 ms and at most 33.5 ms to
+draw a frame on the AE350's software path, measured before that merge, and so
+showed most frames in two vertical blanks and the rest in three, with zero
+late line fetches. That draw
 time is the CPU baseline the fabric renderer has to beat.
+
+## The far-field merge
+
+The renderer sends its commands to the fabric over the bus, and that bus, not
+the CPU, is what a frame waits on: a null-target build put sending a frame's
+commands at 10.8 ms of a 29.5 ms frame, for 80,340 words at about 101 A25
+cycles each, which matches AE-002's drain rate of one word per twelve bus
+cycles exactly. A stream of uncached stores cannot be reordered into speed, so
+the only lever in software is sending fewer primitives. Beyond the depth at
+which a cell covers `TC_MERGE_PIXELS` screen pixels, a group of
+`TC_MERGE_CELLS` a side is drawn as the two triangles of the quad its corners
+sit in instead of thirty-two of its own, and a group whose cells do not all
+draw is left alone so that a patch cannot cover water with land. Four cells a
+side took the orbit's 20,085 triangles to 15,568 and its mean frame from
+29.5 ms to 24.3, which is the two vertical blanks the display shows a frame
+in: the mean period is 32.5 ms, with the lightest frames shown after a single
+blank. The driven camera, which is closer in, drops from 24,765 to 9,925. The
+cost is that a patch's edge runs corner to corner where the land's edge is the
+polyline of its boundary vertices, so a ridge crossing a group's boundary
+leaves 111 screen pixels of sea where land should be; `TC_MERGE_FLAT` requires
+a group's boundary to be straight in projection and buys those pixels back at
+the cost of the merge firing, measured at four cells as 111 pixels with the
+test off, 54 at one pixel and 18 at half a pixel, against 22, 8.6 and 4 per
+cent fewer triangles. It is off by default, the user having judged the
+shoreline good.
 
 ## The fabric rasterizer
 
@@ -175,7 +202,7 @@ byte for byte, through the read-back registers and the line fetch, and checks
 the unit's frame checksum against the same value the C computes.
 
 On the board the rasterizer drew all 600 frames as the PC model did, frame
-CRC `5b022d0d` from 20,085 triangles and 33,072 pixels a frame, with zero
+CRC `ed8eb724` from 15,568 triangles and 36,048 pixels a frame, with zero
 late line fetches. It is idle by the time each frame has been sent, so the
 CPU sets the pace: a mean 29.4 ms to send a frame and at most 35.2 ms,
 against 30.3 ms and 33.5 ms for the same frames filled in software
@@ -183,7 +210,7 @@ against 30.3 ms and 33.5 ms for the same frames filled in software
 colours, rather than filling it with their mean, costs about 1.6 ms a frame
 and the worst frame 2.2 ms: the fill takes two clocks a pixel instead of one,
 each triangle walks the palette before it starts, and the CPU waits on a
-fuller FIFO more often. The mean period is 36.7 ms, about 27 frames a second,
+fuller FIFO more often. The mean period is 32.5 ms, about 31 frames a second,
 where the unshaded fill held 30. The mesh averages under two screen pixels a
 triangle at the default orbit, so most of that interpolation is finer than the
 display can show; the user judged the look on the board, close in where it

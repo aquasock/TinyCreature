@@ -24,6 +24,47 @@
 #define BLOCK     16    // cells a side in a block
 #define GUARD     32000 // Q4: corners sent to a target stay within 2000 pixels
 
+/* The screen pixels a cell may cover and still be absorbed into its block's
+ * quad. Beyond that depth the mesh is drawing finer than the display can show,
+ * so a block of sixteen cells is drawn as the two triangles of the quad they
+ * sit in instead of thirty-two of their own. The test is on depth and not on a
+ * block's size on screen because depth is what is monotone: every patch drawn
+ * this way is farther than every cell the walk still draws, which is what
+ * keeps the back-to-front order of the two passes right. */
+#define TC_MERGE_PIXELS 2
+#ifndef TC_MERGE_DEPTH
+#define TC_MERGE_DEPTH (FOCAL * CELL / TC_MERGE_PIXELS)
+#endif
+
+/* How far, in Q4 screen units, a block's boundary vertex may sit off the line
+ * between the block's corners before the block is too lumpy to become a patch.
+ * A patch's edge runs corner to corner; where a ridge crosses a block's edge
+ * the terrain bulges outside that line and the sea shows through the sliver
+ * the cells would have covered -- measured, 383 pixels of it, and not all of
+ * them thin. Testing the boundary costs a comparison a vertex and keeps the
+ * settled far field, which is what a lower level of detail is for. */
+/* How far, in Q4 screen units, a group's boundary vertex may sit off the line
+ * between the group's corners before the group is too lumpy to become a patch.
+ * Zero turns the test off. A patch's edge runs corner to corner, so where a
+ * ridge crosses the boundary the terrain bulges outside that line and the sea
+ * shows through the sliver the cells would have covered. Measured on Land 1:
+ * with the test off, four-cell groups give 111 such pixels and 22 per cent
+ * fewer triangles; at half a pixel, 18 pixels and 4 per cent. It is a dial
+ * between the frame and the shoreline, and the frame is what the merge is
+ * for, so it starts off. */
+#ifndef TC_MERGE_FLAT
+#define TC_MERGE_FLAT 0
+#endif
+
+/* The finest level the far field merges to: a group of cells this many a side
+ * is drawn as the two triangles of the quad its corners sit in. Four, not the
+ * sixteen a block holds, because the relief inside four cells is small enough
+ * for the straightness test to pass where a block's would not, and a patch
+ * that does cut a corner cuts less of one. */
+#ifndef TC_MERGE_CELLS
+#define TC_MERGE_CELLS 4
+#endif
+
 // A vertex, 8 bytes so that a frame's walk writes as little to the SDRAM as
 // it can, and so that four vertices share a cache line. The camera-space
 // position it was computed from is not kept: the record holds what every
@@ -45,8 +86,10 @@ static struct vertex *vertices;
  * tc_init's own, in the working memory beside the vertices. */
 static const uint16_t *shade_pal5;
 static const uint8_t *shade_lut;
+
 static uint8_t *block_low, *block_high, *block_shown;
-static uint32_t verts_x, blocks_x, blocks_z, generation;
+static uint8_t *merge_done;   /* the group a patch has already drawn */
+static uint32_t verts_x, blocks_x, blocks_z, generation, merge_groups_x;
 // Q4 world units
 static int32_t cam_x, cam_y, cam_z, sin_yaw, cos_yaw, sin_pitch, cos_pitch;
 static uint8_t last_buttons;   // what the mouse's buttons were last report
@@ -323,10 +366,10 @@ void tc_shade_tables(const struct tc_land *l, uint16_t *pal5, uint8_t *lut)
 	for (unsigned i = 0; i < TC_PAL5_ENTRIES; i++)
 		pal5[i] = (uint16_t)to5(tc_palette(l, i));
 	/* The cursor's own two entries stand as candidates beside the land's, or
-	 * the table answers every flat fill of one of them with the nearest land
-	 * colour, which is how the frame and the crosshair came out olive and
-	 * brown. A tie keeps the land, which is scanned first, so nothing the
-	 * land already draws moves. */
+	 * every flat fill of one of them would answer with the nearest land colour,
+	 * which is how the frame and the crosshair came out olive and brown. A tie
+	 * keeps the land, which is scanned first, so nothing the land already draws
+	 * moves. */
 	static const unsigned extra[2] = {TC_CURSOR_IDLE, TC_CURSOR_HELD};
 	for (uint32_t rgb = 0; rgb < TC_LUT_BYTES; rgb++) {
 		unsigned best = l->first;
@@ -372,7 +415,9 @@ size_t tc_work_bytes(const struct tc_land *l)
 {
 	size_t blocks = (size_t)(l->cells_x / BLOCK) * (l->cells_z / BLOCK);
 	return (size_t)(l->cells_x + 1) * (l->cells_z + 1) * sizeof(struct vertex) +
-	       3 * blocks + TC_PAL5_BYTES + TC_LUT_BYTES;
+	       3 * blocks +
+	       (size_t)(l->cells_x / TC_MERGE_CELLS) *
+			(l->cells_z / TC_MERGE_CELLS) + TC_PAL5_BYTES + TC_LUT_BYTES;
 }
 
 static int32_t height(uint32_t altitude)
@@ -426,12 +471,14 @@ struct tc_shade tc_init(const struct tc_land *l, void *work)
 	block_low = (uint8_t *)(vertices + count);
 	block_high = block_low + blocks_x * blocks_z;
 	block_shown = block_high + blocks_x * blocks_z;
+	merge_groups_x = l->cells_x / TC_MERGE_CELLS;
+	merge_done = block_shown + blocks_x * blocks_z;
 	// The shading tables, which every fill reads and main.c hands the fabric.
-	uint16_t *pal5 = (uint16_t *)(block_shown + blocks_x * blocks_z);
+	uint16_t *pal5 = (uint16_t *)(merge_done +
+				     (size_t)merge_groups_x *
+					     (l->cells_z / TC_MERGE_CELLS));
 	uint8_t *lut = (uint8_t *)pal5 + TC_PAL5_BYTES;
 	tc_shade_tables(l, pal5, lut);
-	shade_pal5 = pal5;
-	shade_lut = lut;
 	const struct tc_shade shade = {pal5, lut};
 	for (uint32_t bz = 0; bz < blocks_z; bz++)
 		for (uint32_t bx = 0; bx < blocks_x; bx++) {
@@ -823,8 +870,20 @@ static int32_t floor_div(int32_t a, int32_t b)
 	return a >= 0 ? a / b : -((-a + b - 1) / b);
 }
 
+static int merge_group(uint32_t gx, uint32_t gz);
 static void draw_cell(uint32_t gx, uint32_t gz)
 {
+	uint32_t g = (gz / TC_MERGE_CELLS) * merge_groups_x + gx / TC_MERGE_CELLS;
+
+	// A group drawn as a patch covers its cells, and the first cell of it
+	// the walk reaches is where the patch goes.
+	if (merge_done[g])
+		return;
+	if (gx % TC_MERGE_CELLS == 0 && gz % TC_MERGE_CELLS == 0 &&
+	    merge_group(gx, gz)) {
+		merge_done[g] = 1;
+		return;
+	}
 	const uint8_t *cell = &land->cells[gz * land->cells_x + gx];
 	uint8_t flags = cell[0];
 	if (!(flags & 6))
@@ -833,11 +892,11 @@ static void draw_cell(uint32_t gx, uint32_t gz)
 	struct vertex *bl = vertex(gx, gz + 1), *br = vertex(gx + 1, gz + 1);
 	// Each corner carries its own colour, and they are handed over in the
 	// order the corners are, which is the order the fill shades between.
+	int32_t px = cam_x - (int32_t)gx * CELL, pz = cam_z - (int32_t)gz * CELL;
 	uint32_t ctl = land->colour[gz * verts_x + gx];
 	uint32_t ctr = land->colour[gz * verts_x + gx + 1];
 	uint32_t cbl = land->colour[(gz + 1) * verts_x + gx];
 	uint32_t cbr = land->colour[(gz + 1) * verts_x + gx + 1];
-	int32_t px = cam_x - (int32_t)gx * CELL, pz = cam_z - (int32_t)gz * CELL;
 	const struct vertex *t[2][3];
 	uint32_t c[2][3];
 	int far;
@@ -860,6 +919,109 @@ static void draw_cell(uint32_t gx, uint32_t gz)
 			submit(t[i][0], t[i][1], t[i][2],
 			       c[i][0] | c[i][1] << 8 | c[i][2] << 16);
 	}
+}
+
+// Defined below: the walk takes the next cell from it and the merge the next
+// block, and the merge comes first in the file.
+static uint32_t farther(int32_t *lo, int32_t *hi, int32_t c);
+
+/* Whether a group's boundary is straight enough in projection to be a patch:
+ * every boundary vertex must sit near the line between the two corners of the
+ * side it lies on. A group that fails keeps its cells, and those draw the edge
+ * a patch would have cut straight through. */
+static int flat_edges(uint32_t ox, uint32_t oz, uint32_t size)
+{
+	for (int side = 0; side < 4; side++) {
+		uint32_t ax = ox, az = oz, dx = 0, dz = 0;
+
+		if (side == 0) {          /* the far edge, along x */
+			ax = ox; az = oz; dx = 1; dz = 0;
+		} else if (side == 1) {   /* the near edge */
+			ax = ox; az = oz + size; dx = 1; dz = 0;
+		} else if (side == 2) {   /* the left edge */
+			ax = ox; az = oz; dx = 0; dz = 1;
+		} else {                  /* the right edge */
+			ax = ox + size; az = oz; dx = 0; dz = 1;
+		}
+		const struct vertex *a = vertex(ax, az);
+		const struct vertex *b = vertex(ax + dx * size, az + dz * size);
+
+		for (uint32_t k = 1; k < size; k++) {
+			const struct vertex *v = vertex(ax + dx * k, az + dz * k);
+			int32_t lx = a->sx +
+				     ((b->sx - a->sx) * (int32_t)k) / (int32_t)size;
+			int32_t ly = a->sy +
+				     ((b->sy - a->sy) * (int32_t)k) / (int32_t)size;
+			int32_t ex = v->sx - lx, ey = v->sy - ly;
+
+			if (ex < 0)
+				ex = -ex;
+			if (ey < 0)
+				ey = -ey;
+			if (ex > TC_MERGE_FLAT || ey > TC_MERGE_FLAT)
+				return 0;
+		}
+	}
+	return 1;
+}
+
+/* A group of TC_MERGE_CELLS a side drawn as the two triangles of the quad its
+ * corners sit in, when every cell in it draws both its triangles and the
+ * group's nearest corner is far enough away. The corners are the grid's own
+ * vertices with their own colours, so the patch shades as the cells would and
+ * meets its neighbours at vertices they already use. It says whether it drew.
+ * The record holds a vertex's screen position and not its camera-space one, so
+ * the depth comes from the grid, four corners to a group.
+ *
+ * The corners alone are not enough: the quad's edge runs corner to corner,
+ * while the land's edge is the polyline of the boundary vertices, so a ridge
+ * crossing the boundary bulges outside the quad and the sea shows through the
+ * sliver. Growing each side outward by its own bulge would fix that, and was
+ * tried: it came out worse, 152 pixels against 111, because the bulge was
+ * taken along a screen axis and the sides of a grid-aligned group are not
+ * screen-axis-aligned once the camera has yawed. Doing it properly wants each
+ * side's screen normal, which is the next thing to try. */
+static int merge_group(uint32_t gx, uint32_t gz)
+{
+	const uint32_t n = TC_MERGE_CELLS;
+	uint32_t k;
+	int i;
+
+	for (uint32_t z = 0; z < n; z++)
+		for (uint32_t x = 0; x < n; x++)
+			if ((land->cells[(gz + z) * land->cells_x + gx + x] & 6) != 6)
+				return 0;
+	struct vertex *tl = vertex(gx, gz), *tr = vertex(gx + n, gz);
+	struct vertex *bl = vertex(gx, gz + n), *br = vertex(gx + n, gz + n);
+	const struct vertex *corner[4] = {tl, tr, bl, br};
+	int32_t near_z = 0;
+
+	for (i = 0; i < 4; i++) {
+		int32_t x, y, z;
+		vertex_camera(corner[i], &x, &y, &z);
+		if (!i || z < near_z)
+			near_z = z;
+	}
+	if (near_z < TC_MERGE_DEPTH)
+		return 0;
+	if (TC_MERGE_FLAT > 0 && !flat_edges(gx, gz, n))
+		return 0;
+
+	int32_t px = cam_x - (int32_t)gx * CELL, pz = cam_z - (int32_t)gz * CELL;
+	uint32_t ctl = land->colour[gz * verts_x + gx];
+	uint32_t ctr = land->colour[gz * verts_x + gx + n];
+	uint32_t cbl = land->colour[(gz + n) * verts_x + gx];
+	uint32_t cbr = land->colour[(gz + n) * verts_x + gx + n];
+	const struct vertex *t[2][3] = {{bl, tl, tr}, {bl, tr, br}};
+	uint32_t c[2][3] = {{cbl, ctl, ctr}, {cbl, ctr, cbr}};
+	int far = px + pz > (int32_t)n * CELL ? 0 : 1;
+
+	for (k = 0; k < 2; k++) {
+		int j = k ? 1 - far : far;
+		submit(t[j][0], t[j][1], t[j][2],
+		       c[j][0] | c[j][1] << 8 | c[j][2] << 16);
+	}
+	return 1;
 }
 
 // The next of lo..hi, whichever is farther from c, toward c.
@@ -1183,6 +1345,8 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 	}
 
 	cull_blocks();
+	memset(merge_done, 0, (size_t)merge_groups_x *
+			      (land->cells_z / TC_MERGE_CELLS));
 	int32_t cx = floor_div(cam_x, CELL), cz = floor_div(cam_z, CELL);
 	int32_t z_lo = 0, z_hi = land->cells_z - 1;
 	while (z_lo <= z_hi) {
