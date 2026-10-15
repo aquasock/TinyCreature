@@ -13,6 +13,7 @@ patch_files=(
     "$root/patches/openblack-playground.patch"
     "$root/patches/openblack-playground-retro.patch"
     "$root/patches/openblack-playground-memory.patch"
+    "$root/patches/openblack-camera-arcball.patch"
 )
 
 "$root/tools/fetch_openblack.sh"

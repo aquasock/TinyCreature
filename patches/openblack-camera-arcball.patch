@@ -1,0 +1,123 @@
+diff --git a/src/Camera/DefaultWorldCameraModel.cpp b/src/Camera/DefaultWorldCameraModel.cpp
+index 8d94626c..bb2e6e4d 100644
+--- a/src/Camera/DefaultWorldCameraModel.cpp
++++ b/src/Camera/DefaultWorldCameraModel.cpp
+@@ -368,20 +368,17 @@ void DefaultWorldCameraModel::UpdateModeArcBall(glm::vec3 eulerAngles, glm::u16v
+ 	const auto point = _focusAtClick + _originFocusDistanceAtInteractionStart * glm::euclidean(glm::yx(eulerAngles));
+ 
+ 	const auto basisZ = glm::normalize(point - _focusAtClick);
+-	const auto basisX = glm::normalize(glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), basisZ));
+-	const auto basisY = glm::normalize(glm::cross(basisZ, basisX));
+ 
+-	const auto windowSize = static_cast<glm::vec2>(Locator::windowing::value().GetSize());
+-	const auto aspect = windowSize.y / windowSize.x;
+-	const auto screenCentreOffset = static_cast<glm::vec2>(mouseCurrent) / windowSize - 0.5f;
+-
+-	const auto halfTanX = glm::tan(xFov * 0.5f);
+-	const auto halfTanY = halfTanX * aspect;
+-
+-	const auto cameraOffsetX = screenCentreOffset.x * halfTanX * basisX * _arcBallRadius * 2.0f;
+-	const auto cameraOffsetY = screenCentreOffset.y * halfTanY * basisY * _arcBallRadius * 2.0f;
+-
+-	_targetFocus = _screenSpaceMouseRaycastHitAtClick.value() + cameraOffsetX + cameraOffsetY;
++	// The grabbed point stays the pivot. The camera orbits it at a fixed
++	// radius and looks at it, so the land under the finger holds still while
++	// everything else swings around it. Where the pointer happens to sit on
++	// screen does not move the pivot: the original recentres the pointer on
++	// every frame of a rotation, which is why the recorded camera data in
++	// test/camera/scenarios has the cursor at the window centre throughout a
++	// middle drag, and why its pivot never slides. openblack does not recentre
++	// yet (TODO #711), so leaving the offset in made the grabbed point track
++	// the cursor instead.
++	_targetFocus = _screenSpaceMouseRaycastHitAtClick.value();
+ 	_targetOrigin = _targetFocus + basisZ * _arcBallRadius;
+ 	_focusAtClick = _targetFocus;
+ }
+diff --git a/src/Input/GameActionMap.cpp b/src/Input/GameActionMap.cpp
+index 8f4601c6..c2122a56 100644
+--- a/src/Input/GameActionMap.cpp
++++ b/src/Input/GameActionMap.cpp
+@@ -203,6 +203,34 @@ void GameActionMap::Frame()
+ 	    static_cast<BindableActionMap>(static_cast<uint64_t>(_bindableMap) &
+ 	                                   ~(static_cast<uint64_t>(_mouseWheelBinding[0].value_or(BindableActionMap::NONE)) |
+ 	                                     static_cast<uint64_t>(_mouseWheelBinding[1].value_or(BindableActionMap::NONE))));
++	// Hold the pointer at the centre of the window while the camera rotates,
++	// the way the original does: every frame of a middle drag in
++	// test/camera/scenarios has the pointer at the window's centre, and the
++	// camera's pivot is the piece of land the hand took, which the aim settles
++	// onto - so the hand and the land it holds end up in the same place. The
++	// motion the mouse reports while it is held is what turns the camera
++	// (TODO #711).
++	const auto rotating = static_cast<uint64_t>(_bindableMap) &
++	                      static_cast<uint64_t>(BindableActionMap::ROTATE_AROUND_MOUSE_ON);
++	if (rotating != 0)
++	{
++		const auto screenSize = Locator::windowing::has_value()
++		                            ? glm::ivec2(Locator::windowing::value().GetSize())
++		                            : glm::ivec2(1, 1);
++		_recentreMouse = glm::uvec2(screenSize) / 2u;
++		if (Locator::windowing::has_value())
++		{
++			// The game's own window, not whichever one has keyboard focus: the
++			// button reaches this window when the pointer is over it, focus or
++			// not, and the recentring has to go to the same place.
++			Locator::windowing::value().SetMousePosition(static_cast<glm::ivec2>(*_recentreMouse));
++		}
++		_mousePosition = *_recentreMouse;
++	}
++	else
++	{
++		_recentreMouse.reset();
++	}
+ }
+ 
+ void GameActionMap::ProcessEvent(const SDL_Event& event)
+@@ -346,7 +374,15 @@ void GameActionMap::ProcessEvent(const SDL_Event& event)
+ 	}
+ 	else if (event.type == SDL_MOUSEMOTION)
+ 	{
+-		_mouseDelta = {event.motion.xrel, event.motion.yrel};
++		// A pointer put back at the window centre reports that jump as motion,
++		// and its relative part is the reverse of the movement the hand just
++		// made. Counting it would cancel the turn it was part of, so it is
++		// dropped and whatever real motion came with it stands.
++		if (!(_recentreMouse.has_value() && static_cast<uint32_t>(event.motion.x) == _recentreMouse->x &&
++		      static_cast<uint32_t>(event.motion.y) == _recentreMouse->y))
++		{
++			_mouseDelta = {event.motion.xrel, event.motion.yrel};
++		}
+ 	}
+ }
+ 
+diff --git a/src/Input/GameActionMap.h b/src/Input/GameActionMap.h
+index 2dd03c31..643112f6 100644
+--- a/src/Input/GameActionMap.h
++++ b/src/Input/GameActionMap.h
+@@ -59,5 +59,11 @@ class GameActionMap final: public GameActionInterface
+ 	std::array<std::optional<BindableActionMap>, 2> _mouseWheelBinding; // up, down
+ 	glm::uvec2 _mousePosition;
+ 	glm::ivec2 _mouseDelta;
++	// Where the pointer is held while the camera is being rotated about a
++	// point. Vanilla recentres the pointer on every frame of that gesture, so
++	// the hand stays on the piece of land it took; without it the pointer
++	// walks away from the pivot and the rotation reads as the land sliding
++	// under the cursor (TODO #711).
++	std::optional<glm::uvec2> _recentreMouse;
+ };
+ } // namespace openblack::input
+diff --git a/src/Windowing/WindowingInterface.h b/src/Windowing/WindowingInterface.h
+index 08ed8baf..ffa28d00 100644
+--- a/src/Windowing/WindowingInterface.h
++++ b/src/Windowing/WindowingInterface.h
+@@ -37,6 +37,11 @@ class WindowingInterface
+ 	[[nodiscard]] virtual uint32_t GetID() const = 0;
+ 	[[nodiscard]] virtual glm::ivec2 GetSize() const = 0;
+ 	[[nodiscard]] virtual float GetAspectRatio() const = 0;
++	// Put the pointer somewhere in this window. The camera model needs it while
++	// the camera is rotated about a point, the way the original recentres the
++	// pointer: without it the pointer walks away from the pivot and the window
++	// stops reporting motion. Implementations without a pointer do nothing.
++	[[nodiscard]] virtual WindowingInterface& SetMousePosition([[maybe_unused]] glm::ivec2 position) { return *this; }
+ 
+ 	virtual WindowingInterface& SetDisplayMode(DisplayMode mode) = 0;
+ };
