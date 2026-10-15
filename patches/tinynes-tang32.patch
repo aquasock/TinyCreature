@@ -348,7 +348,7 @@ index a2ae317..e1aed21 100644
  }
  
 diff --git a/fpga/ae350_soc/ae350_soc.sv b/fpga/ae350_soc/ae350_soc.sv
-index a157f7b..250c0cd 100644
+index a157f7b..9fa6e8e 100644
 --- a/fpga/ae350_soc/ae350_soc.sv
 +++ b/fpga/ae350_soc/ae350_soc.sv
 @@ -1,17 +1,11 @@
@@ -373,7 +373,7 @@ index a157f7b..250c0cd 100644
  //
  // If the CPU has written nothing to the UART 2^NOBOOT_BITS bus clocks after
  // reset (about 1.8 s), fabric reports instead, about once a second until the
-@@ -159,9 +153,9 @@ module ae350_soc_top #(
+@@ -159,11 +153,25 @@ module ae350_soc_top #(
      wire [63:0] sd_rdata;
  
      wire vid_start;
@@ -384,8 +384,42 @@ index a157f7b..250c0cd 100644
 +    wire [7:0] vid_index;
      wire [15:0] vid_data;
      wire vid_done;
++    // The video unit's line fetches go to the SDRAM or, when the raster
++    // unit says to show its buffers, to them; the source is held from
++    // each fetch's start to its end.
++    wire sd_vvalid, sd_vdone, rs_vvalid, rs_vdone, raster_show;
++    wire [7:0] sd_vindex, rs_vindex;
++    wire [15:0] sd_vdata, rs_vdata;
++    reg fetch_raster = 1'b0;
++    always @(posedge bus_clk)
++        if (vid_start)
++            fetch_raster <= raster_show;
++    assign vid_valid = fetch_raster ? rs_vvalid : sd_vvalid;
++    assign vid_index = fetch_raster ? rs_vindex : sd_vindex;
++    assign vid_data = fetch_raster ? rs_vdata : sd_vdata;
++    assign vid_done = fetch_raster ? rs_vdone : sd_vdone;
  
-@@ -239,43 +233,29 @@ module ae350_soc_top #(
+     wire [31:0] exts_addr;
+     wire [31:0] exts_wdata;
+@@ -217,12 +225,12 @@ module ae350_soc_top #(
+         .ack(sd_ack),
+         .rdata(sd_rdata),
+         .ready(),
+-        .vstart(vid_start),
++        .vstart(vid_start && !raster_show),
+         .vaddr(vid_addr),
+-        .vvalid(vid_valid),
+-        .vindex(vid_index),
+-        .vdata(vid_data),
+-        .vdone(vid_done),
++        .vvalid(sd_vvalid),
++        .vindex(sd_vindex),
++        .vdata(sd_vdata),
++        .vdone(sd_vdone),
+         .sdram_clk(sdram_clk),
+         .sdram_cs_n(sdram_cs_n),
+         .sdram_ras_n(sdram_ras_n),
+@@ -239,43 +247,36 @@ module ae350_soc_top #(
      wire fb_ready;
      wire cpu_owns;
  
@@ -406,30 +440,40 @@ index a157f7b..250c0cd 100644
 -    wire video_hit = !exts_addr[18] && (exts_addr[17] | exts_addr[16]);
 -    wire pads_hit = exts_addr[18] && !(exts_addr[17] | exts_addr[16]);
 -    wire audio_hit = exts_addr[18] && !exts_addr[17] && exts_addr[16];
-+    wire link, rx_link_valid, txt_valid, ln_ready, link_flush;
-+    wire [7:0] rx_link_data, txt_data;
-+    // The minimal EXTS window contains UART at 0xe8000000 and video at
-+    // 0xe8010000. Other accesses receive the UART slave's error response.
-+    wire video_hit = exts_addr[17:16] == 2'b01;
-     reg data_uart = 1'b1;
+-    reg data_uart = 1'b1;
 -    wire [31:0] uart_rdata, video_rdata, pads_rdata, audio_rdata;
 -    wire uart_ready, uart_resp, video_ready, video_resp, pads_ready, pads_resp;
 -    wire audio_ready, audio_resp;
-+    wire [31:0] uart_rdata, video_rdata;
++    wire link, rx_link_valid, txt_valid, ln_ready, link_flush;
++    wire [7:0] rx_link_data, txt_data;
++    // The minimal EXTS window contains UART at 0xe8000000, video at
++    // 0xe8010000 and TinyCreature's raster unit at 0xe8018000. Other
++    // accesses receive the UART slave's error response.
++    wire video_hit = exts_addr[17:16] == 2'b01 && !exts_addr[15];
++    wire raster_hit = exts_addr[17:16] == 2'b01 && exts_addr[15];
++    reg data_uart = 1'b1, data_raster = 1'b0;
++    wire [31:0] uart_rdata, video_rdata, raster_rdata;
 +    wire uart_ready, uart_resp, video_ready, video_resp;
++    wire raster_ready, raster_resp;
      always @(posedge bus_clk or negedge resetn)
-         if (!resetn)
+-        if (!resetn)
++        if (!resetn) begin
              data_uart <= 1'b1;
-         else if (exts_ready)
+-        else if (exts_ready)
 -            data_uart <= !video_hit && !pads_hit && !audio_hit;
 -    assign exts_rdata = data_uart ? uart_rdata
 -                                  : (video_rdata | pads_rdata | audio_rdata);
 -    assign exts_ready = uart_ready & video_ready & pads_ready & audio_ready;
 -    assign exts_resp = uart_resp | video_resp | pads_resp | audio_resp;
-+            data_uart <= !video_hit;
-+    assign exts_rdata = data_uart ? uart_rdata : video_rdata;
-+    assign exts_ready = uart_ready & video_ready;
-+    assign exts_resp = uart_resp | video_resp;
++            data_raster <= 1'b0;
++        end else if (exts_ready) begin
++            data_uart <= !video_hit && !raster_hit;
++            data_raster <= raster_hit;
++        end
++    assign exts_rdata = data_uart ? uart_rdata :
++                        data_raster ? raster_rdata : video_rdata;
++    assign exts_ready = uart_ready & video_ready & raster_ready;
++    assign exts_resp = uart_resp | video_resp | raster_resp;
  
      exts_uart #(.UART_DIV2(UART_DIV2), .DROP_CPU_TX(CPU_TX_DROP)) regs (
          .clk(bus_clk),
@@ -437,11 +481,11 @@ index a157f7b..250c0cd 100644
          .haddr(exts_addr),
          .htrans(exts_trans),
 -        .hsel(exts_sel && !video_hit && !pads_hit && !audio_hit),
-+        .hsel(exts_sel && !video_hit),
++        .hsel(exts_sel && !video_hit && !raster_hit),
          .hready_in(exts_ready),
          .hwrite(exts_write),
          .hwdata(exts_wdata),
-@@ -291,72 +271,19 @@ module ae350_soc_top #(
+@@ -291,72 +292,19 @@ module ae350_soc_top #(
          .rx_link_data(rx_link_data),
          .txt_valid(txt_valid),
          .txt_data(txt_data),
@@ -521,7 +565,36 @@ index a157f7b..250c0cd 100644
  
      // HDMI: 50 MHz -> 27 MHz -> 371.25 MHz serial clock (hdmi_pll), divided
      // by 5 to the 74.25 MHz pixel clock. 50 * 27 = 1350 MHz VCO / 50; 27 * 55
-@@ -523,11 +450,6 @@ module ae350_soc_top #(
+@@ -503,6 +451,28 @@ module ae350_soc_top #(
+             pix_reset_sync <= {pix_reset_sync[1:0], 1'b0};
+     wire pix_reset = pix_reset_sync[2];
+ 
++    raster raster (
++        .clk(bus_clk),
++        .resetn(resetn),
++        .haddr(exts_addr[14:0]),
++        .htrans(exts_trans),
++        .hsel(exts_sel && raster_hit),
++        .hwrite(exts_write),
++        .hsize(exts_size),
++        .hwdata(exts_wdata),
++        .hready_in(exts_ready),
++        .hrdata(raster_rdata),
++        .hready(raster_ready),
++        .hresp(raster_resp),
++        .show(raster_show),
++        .vstart(vid_start && raster_show),
++        .vaddr(vid_addr),
++        .vvalid(rs_vvalid),
++        .vindex(rs_vindex),
++        .vdata(rs_vdata),
++        .vdone(rs_vdone)
++    );
++
+     wire [9:0] tmds_ch [0:2];   // blue, green, red
+     video screen (
+         .clk(bus_clk),
+@@ -523,11 +493,6 @@ module ae350_soc_top #(
          .vindex(vid_index),
          .vdata(vid_data),
          .vdone(vid_done),
@@ -1501,15 +1574,68 @@ index 428c206..ef21bda 100644
 +        end else begin q<={1'b0,qm[8],qm[7:0]};cnt<=cnt-two_nqm8+diff;end
  endmodule
 diff --git a/tools/build_ae350_soc.sh b/tools/build_ae350_soc.sh
-index 3c594f2..0518544 100755
+index 3c594f2..4032f34 100755
 --- a/tools/build_ae350_soc.sh
 +++ b/tools/build_ae350_soc.sh
-@@ -58,7 +58,7 @@ cd "$root"
+@@ -33,6 +33,12 @@ family=GW5AST-138C
+ # 75 and 74.25, with the fewest pixel-clock pins off the global network (2)
+ # and the shortest pixel-clock route (482 pips) of any seed.
+ seed="${TINY_NES_SEED:-11}"
++# TinyCreature's own modules (its raster unit), read after these sources.
++extra_sv="${TINY_NES_EXTRA_SV:-}"
++# TinyCreature's seed sweep synthesises once (TINY_NES_STAGE=synth stops
++# after synthesis) and routes each seed from that netlist (TINY_NES_NETLIST).
++stage="${TINY_NES_STAGE:-all}"
++netlist="${TINY_NES_NETLIST:-}"
+ 
+ [[ -f "$suite/environment" ]] || { echo "missing open toolchain: $suite" >&2; exit 2; }
+ # shellcheck disable=SC1090
+@@ -50,19 +56,25 @@ export NPNR_GOWIN_CLK_FIRST="${NPNR_GOWIN_CLK_FIRST:-bus_clk}"
+ }
+ mkdir -p "$out"
+ 
++# The boot ROM's INIT_FILE is relative to the repository root.
++cd "$root"
++if [[ -n "$netlist" ]]; then
++    echo "Netlist from $netlist"
++    cp "$netlist" "$out/ae350_soc.json"
++else
+ echo "Boot ROM firmware"
+ make -s -C "$root/firmware/boot"
+ 
+-# The boot ROM's INIT_FILE is relative to the repository root.
+-cd "$root"
  echo "Yosys synthesis"
  yosys -Q -T -q -l "$out/synth.log" -p "
      read_verilog -lib $suite/share/yosys/gowin/cells_xtra_gw5a.v
 -    read_verilog -sv $src/ahb_boot_rom.sv $src/ahb_ram.sv $src/ahb_sdram.sv $src/exts_uart.sv $src/desk_link.sv $src/video.sv $src/wii_pads.sv $src/i2s_out.sv $src/ae350_soc.sv
-+    read_verilog -sv $src/ahb_boot_rom.sv $src/ahb_ram.sv $src/ahb_sdram.sv $src/exts_uart.sv $src/video.sv $src/ae350_soc.sv
++    read_verilog -sv $src/ahb_boot_rom.sv $src/ahb_ram.sv $src/ahb_sdram.sv $src/exts_uart.sv $src/video.sv $extra_sv $src/ae350_soc.sv
      $synth_param
      synth_gowin -family gw5a -top ae350_soc_top
      write_json $out/ae350_soc.json
+ "
++fi
++[[ "$stage" == synth ]] && exit 0
+ 
+ echo "nextpnr placement and routing"
+ "$nextpnr" \
+@@ -111,7 +123,9 @@ print(f"Pixel Fmax {min(t['achieved'] for t in pixel):.2f} MHz")
+ # open flow on this chip (core-log entry 14), so every block RAM in the video
+ # unit must have both ports on one clock; its line buffers are flip-flops.
+ cells = design["modules"]["top"]["cells"]
+-video_rams = {n: c for n, c in cells.items() if n.startswith("screen.")
++# The raster unit's frame buffers and FIFO are held to the same rules.
++video_cell = lambda n: n.startswith("screen.") or n.startswith("raster.")
++video_rams = {n: c for n, c in cells.items() if video_cell(n)
+               and any(p.startswith("CLKB") for p in c["connections"])}
+ two_clock = sorted(n for n, c in video_rams.items()
+                    if c["connections"]["CLKA"] != c["connections"]["CLKB"])
+@@ -121,7 +135,7 @@ print(f"Video block RAMs: {len(video_rams)}, each on one clock")
+ # Only the 9-bit block RAM modes have been shown to read back correctly in
+ # the video unit on this chip (core-log entry 14), so its stores, the desk
+ # layer's included, must map to them.
+-other_modes = sorted(n for n, c in cells.items() if n.startswith("screen.")
++other_modes = sorted(n for n, c in cells.items() if video_cell(n)
+                      and any(k.startswith("BIT_WIDTH") and int(v, 2) % 9
+                              for k, v in c["parameters"].items()))
+ if other_modes:

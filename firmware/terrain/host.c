@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The terrain renderer on this PC: draws the same frames as the AE350
-// program from the same TCL1 file and prints the same totals and frame CRC,
-// so a board run can be compared with it, and writes chosen frames as PNGs.
+// program from the same TCL1 file through tc_soft, the fabric
+// rasterizer's model, and prints the same totals and frame CRC, so a board
+// run can be compared with it. For each chosen frame it writes
+// <prefix><frame>.png, <prefix><frame>.cmd, the rasterizer command words
+// the frame sends, one hex word a line, and <prefix><frame>.fb, the frame
+// it must produce, one hex byte a line, for tests/raster_tb.sv.
 //
-//   terrain_host <land.tcl> [frames] [png-prefix frame...]
+//   terrain_host <land.tcl> [frames] [prefix frame...]
 //
 // prints
 //   HOST TERRAIN LAND=<crc> FRAMES=<n> TRIS=<mean> PIXELS=<mean> CRC=<crc>
@@ -15,6 +19,26 @@
 #include "terrain.h"
 
 static uint8_t frame[TC_HEIGHT][TC_WIDTH];
+static FILE *commands;
+
+// tc_soft, which also writes each command as fpga/raster.sv takes it.
+static void rows(void *ctx, uint32_t first, uint32_t end, uint8_t colour)
+{
+	if (commands)
+		fprintf(commands, "%08x\n", 2u << 28 | end << 16 | first << 8 | colour);
+	tc_soft_rows(ctx, first, end, colour);
+}
+
+static void triangle(void *ctx, const int32_t *x, const int32_t *y, uint8_t colour)
+{
+	if (commands) {
+		fprintf(commands, "%08x\n", 1u << 28 | colour);
+		for (int k = 0; k < 3; k++)
+			fprintf(commands, "%08x\n",
+				(uint32_t)(uint16_t)y[k] << 16 | (uint16_t)x[k]);
+	}
+	tc_soft_triangle(ctx, x, y, colour);
+}
 
 static void put32(FILE *f, uint32_t v)
 {
@@ -26,7 +50,8 @@ static void chunk(FILE *f, const char *type, const uint8_t *data, uint32_t n)
 {
 	put32(f, n);
 	fwrite(type, 1, 4, f);
-	fwrite(data, 1, n, f);
+	if (n)
+		fwrite(data, 1, n, f);
 	put32(f, tc_crc32(tc_crc32(0, (const uint8_t *)type, 4), data, n));
 }
 
@@ -110,21 +135,46 @@ int main(int argc, char **argv)
 
 	uint32_t crc = 0;
 	uint64_t tris = 0, pixels = 0;
+	struct tc_soft soft = {.fb = &frame[0][0], .stride = TC_WIDTH};
+	const struct tc_target target = {rows, triangle, &soft};
 	for (uint32_t i = 0; i < frames; i++) {
+		int chosen = 0;
+		char path[4096];
+		for (int k = 4; k < argc; k++)
+			chosen |= strtoul(argv[k], NULL, 0) == i;
+		if (chosen) {
+			snprintf(path, sizeof path, "%s%04u.cmd", argv[3], (unsigned)i);
+			if (!(commands = fopen(path, "w"))) {
+				perror(path);
+				return 1;
+			}
+		}
 		struct tc_stats stats;
-		tc_draw(&frame[0][0], TC_WIDTH, i, frames, &stats);
+		soft.triangles = soft.pixels = 0;
+		tc_draw(&target, i, frames, &stats);
+		if (soft.triangles != stats.triangles)
+			return 1;
 		crc = tc_crc32(crc, &frame[0][0], sizeof frame);
 		tris += stats.triangles;
-		pixels += stats.pixels;
-		for (int k = 4; k < argc; k++)
-			if (strtoul(argv[k], NULL, 0) == i) {
-				char path[4096];
-				snprintf(path, sizeof path, "%s%04u.png", argv[3], (unsigned)i);
-				if (write_png(path, &land)) {
-					perror(path);
-					return 1;
-				}
+		pixels += soft.pixels;
+		if (chosen) {
+			fclose(commands);
+			commands = NULL;
+			snprintf(path, sizeof path, "%s%04u.fb", argv[3], (unsigned)i);
+			FILE *fb = fopen(path, "w");
+			if (!fb) {
+				perror(path);
+				return 1;
 			}
+			for (size_t p = 0; p < sizeof frame; p++)
+				fprintf(fb, "%02x\n", (&frame[0][0])[p]);
+			fclose(fb);
+			snprintf(path, sizeof path, "%s%04u.png", argv[3], (unsigned)i);
+			if (write_png(path, &land)) {
+				perror(path);
+				return 1;
+			}
+		}
 	}
 	printf("HOST TERRAIN LAND=%08x FRAMES=%u TRIS=%u PIXELS=%u CRC=%08x\n",
 	       (unsigned)tc_crc32(0, file, bytes), (unsigned)frames,

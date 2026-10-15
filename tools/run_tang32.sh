@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Load the Tang32 core and run one of its programs:
-#   video    the ten-second landscape/video integrity test (the default)
-#   terrain  Land 1 from the user's own game, converted here, drawn on the
-#            board and checked frame for frame against terrain_host
+#   video         the ten-second landscape/video integrity test (the default)
+#   terrain       Land 1 from the user's own game, converted here, drawn
+#                 by the fabric rasterizer and checked frame for frame
+#                 against terrain_host
+#   terrain-soft  the same frames drawn by the AE350 in software, for
+#                 comparison
 # TINYCREATURE_LND picks another .lnd for terrain.
 set -euo pipefail
 
@@ -16,9 +19,9 @@ program=video
 for arg in "$@"; do
     case "$arg" in
     auto|one-wire|two-wire) mode="$arg" ;;
-    video|terrain) program="$arg" ;;
+    video|terrain|terrain-soft) program="$arg" ;;
     *)
-        echo "usage: $0 [auto|one-wire|two-wire] [video|terrain]" >&2
+        echo "usage: $0 [auto|one-wire|two-wire] [video|terrain|terrain-soft]" >&2
         exit 2
         ;;
     esac
@@ -31,8 +34,8 @@ video)
     file_args=()
     run_timeout=30
     ;;
-terrain)
-    elf="$out/terrain/terrain.elf"
+terrain|terrain-soft)
+    elf="$out/$program/terrain.elf"
     expect="TinyCreature TERRAIN OK"
     lnd="${TINYCREATURE_LND:-$game/Data/Landscape/Land1.lnd}"
     [[ -f "$lnd" ]] || {
@@ -96,7 +99,7 @@ two-wire)
     ;;
 esac
 
-if [[ "$program" == terrain ]]; then
+if [[ "$program" == terrain* ]]; then
     # The board must draw what this PC drew from the same file.
     field() { tr ' ' '\n' <<<"$1" | sed -n "s/^$2=//p"; }
     board_line=$(grep -a "^$expect" "$log")

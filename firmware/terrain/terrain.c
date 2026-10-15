@@ -7,9 +7,10 @@
 // against the view, then walks the cells back to front, the rows farthest
 // from the camera's row first and in each row the columns farthest from its
 // column first, which on a height field leaves the nearer cell on top. Each
-// drawn triangle goes through one call, submit(), which culls back faces,
-// clips at the near plane and fills scanlines; that is the boundary a
-// fabric rasterizer will take over.
+// triangle goes through submit(), which clips it at the near plane, culls
+// back faces and triangles off the screen, and hands the rest to the
+// target: the fabric rasterizer, or tc_soft, which fills exactly what the
+// fabric fills.
 #include "terrain.h"
 
 #include <string.h>
@@ -21,6 +22,7 @@
 #define TAN_PITCH 4390  // tan(15 degrees), Q14
 #define LIFT      1920  // 120 units above the line to the centre
 #define BLOCK     16    // cells a side in a block
+#define GUARD     32000 // Q4: corners sent to a target stay within 2000 pixels
 
 struct vertex {
 	int32_t x, y, z;   // camera space, Q4
@@ -33,8 +35,7 @@ static struct vertex *vertices;
 static uint8_t *block_low, *block_high, *block_shown;
 static uint32_t verts_x, blocks_x, blocks_z, stamp;
 static int32_t cam_x, cam_y, cam_z, sin_yaw, cos_yaw, sin_pitch, cos_pitch;
-static uint8_t *frame_buffer;
-static uint32_t frame_stride;
+static const struct tc_target *out;
 static struct tc_stats *counts;
 
 static uint32_t read32(const uint8_t *p)
@@ -215,89 +216,99 @@ static struct vertex *vertex(uint32_t gx, uint32_t gz)
 	return v;
 }
 
-// An edge's x, Q4 with 16 more fraction bits, at row centres from its top
-// vertex (xa, ya) down to (xb, yb): the same edge gives the same x in both
-// triangles that share it.
-struct edge {
-	int64_t x, step;
-};
-
-static void edge_start(struct edge *e, int32_t xa, int32_t ya, int32_t xb,
-		       int32_t yb, int32_t row)
+void tc_soft_rows(void *ctx, uint32_t first, uint32_t end, uint8_t colour)
 {
-	int32_t dx = xb - xa, dy = yb - ya;
-	int64_t slope;
-	if (dy <= 0)
-		slope = 0;
-	else if (dx > -32768 && dx < 32768)
-		slope = (int32_t)((uint32_t)dx << 16) / dy;
-	else
-		slope = (int64_t)dx * 65536 / dy;
-	e->x = (int64_t)xa * 65536 + slope * (row * 16 + 8 - ya);
-	e->step = slope * 16;
+	struct tc_soft *soft = ctx;
+	for (uint32_t r = first; r < end && r < TC_HEIGHT; r++)
+		memset(soft->fb + r * soft->stride, colour, TC_WIDTH);
 }
 
-static void span(uint8_t *row, int64_t a, int64_t b, uint8_t colour)
+// fpga/raster.sv's rule: pixel (i, j) of the screen is filled when, at its
+// centre (16 i + 8, 16 j + 8), F = (by - ay)(px - ax) - (bx - ax)(py - ay)
+// is >= 0 for each edge a to b; only the bounding box of the corners'
+// pixel centres, clamped to the screen, is visited.
+void tc_soft_triangle(void *ctx, const int32_t *x, const int32_t *y, uint8_t colour)
 {
-	if (a > b) {
-		int64_t t = a;
-		a = b;
-		b = t;
-	}
-	// Pixel i is covered when its centre, 16 i + 8, is in [a, b).
-	int64_t first = ((a >> 16) + 7) >> 4, end = ((b >> 16) + 7) >> 4;
-	if (first < 0)
-		first = 0;
-	if (end > TC_WIDTH)
-		end = TC_WIDTH;
-	if (end > first) {
-		memset(row + first, colour, (size_t)(end - first));
-		counts->pixels += (uint32_t)(end - first);
-	}
-}
-
-// Fill a screen triangle, Q4 corners, with pixel centres inside it.
-static void fill(const int32_t *x, const int32_t *y, uint8_t colour)
-{
-	int i0 = 0, i1 = 1, i2 = 2, t;
-#define ORDER(a, b) \
-	if (y[a] > y[b] || (y[a] == y[b] && x[a] > x[b])) { t = a; a = b; b = t; }
-	ORDER(i0, i1);
-	ORDER(i1, i2);
-	ORDER(i0, i1);
-#undef ORDER
-	int32_t lo_x = x[0], hi_x = x[0];
+	struct tc_soft *soft = ctx;
+	soft->triangles++;
+	int32_t x_lo = x[0], x_hi = x[0], y_lo = y[0], y_hi = y[0];
 	for (int k = 1; k < 3; k++) {
-		lo_x = x[k] < lo_x ? x[k] : lo_x;
-		hi_x = x[k] > hi_x ? x[k] : hi_x;
+		x_lo = x[k] < x_lo ? x[k] : x_lo;
+		x_hi = x[k] > x_hi ? x[k] : x_hi;
+		y_lo = y[k] < y_lo ? y[k] : y_lo;
+		y_hi = y[k] > y_hi ? y[k] : y_hi;
 	}
-	if (hi_x < 0 || lo_x >= TC_WIDTH * 16)
+	int32_t i0 = (x_lo + 7) >> 4, i1 = (x_hi - 8) >> 4;
+	int32_t j0 = (y_lo + 7) >> 4, j1 = (y_hi - 8) >> 4;
+	i0 = i0 < 0 ? 0 : i0;
+	j0 = j0 < 0 ? 0 : j0;
+	i1 = i1 > TC_WIDTH - 1 ? TC_WIDTH - 1 : i1;
+	j1 = j1 > TC_HEIGHT - 1 ? TC_HEIGHT - 1 : j1;
+	if (i0 > i1 || j0 > j1)
 		return;
-	int32_t top = (y[i0] - 8 + 15) >> 4, mid = (y[i1] - 8 + 15) >> 4;
-	int32_t end = (y[i2] - 8 + 15) >> 4;
-	if (end <= 0 || top >= TC_HEIGHT || end <= top)
-		return;
-	counts->triangles++;
-	int32_t first = top < 0 ? 0 : top;
-	struct edge l, s;
-	edge_start(&l, x[i0], y[i0], x[i2], y[i2], first);
-	if (first < mid)
-		edge_start(&s, x[i0], y[i0], x[i1], y[i1], first);
-	else
-		edge_start(&s, x[i1], y[i1], x[i2], y[i2], first);
-	if (end > TC_HEIGHT)
-		end = TC_HEIGHT;
-	for (int32_t r = first; r < end; r++) {
-		if (r == mid && r > first)
-			edge_start(&s, x[i1], y[i1], x[i2], y[i2], r);
-		span(frame_buffer + (uint32_t)r * frame_stride, l.x, s.x, colour);
-		l.x += l.step;
-		s.x += s.step;
+	int64_t row[3], step_x[3], step_y[3];
+	for (int k = 0; k < 3; k++) {
+		int32_t dx = x[(k + 1) % 3] - x[k], dy = y[(k + 1) % 3] - y[k];
+		row[k] = (int64_t)dy * (16 * i0 + 8 - x[k]) -
+			 (int64_t)dx * (16 * j0 + 8 - y[k]);
+		step_x[k] = (int64_t)dy * 16;
+		step_y[k] = -(int64_t)dx * 16;
 	}
+	for (int32_t j = j0; j <= j1; j++) {
+		uint8_t *line = soft->fb + (uint32_t)j * soft->stride;
+		int64_t e0 = row[0], e1 = row[1], e2 = row[2];
+		for (int32_t i = i0; i <= i1; i++) {
+			if ((e0 | e1 | e2) >= 0) {
+				line[i] = colour;
+				soft->pixels++;
+			}
+			e0 += step_x[0];
+			e1 += step_x[1];
+			e2 += step_x[2];
+		}
+		for (int k = 0; k < 3; k++)
+			row[k] += step_y[k];
+	}
+}
+
+// Clip a convex polygon of n Q4 screen points, in place, to within GUARD of
+// the origin on both axes; returns the points left.
+static int clip_guard(int32_t *x, int32_t *y, int n)
+{
+	for (int side = 0; side < 4 && n; side++) {
+		int32_t cx[9], cy[9];
+		int m = 0;
+		int32_t sign = side & 2 ? -1 : 1;
+		for (int i = 0; i < n; i++) {
+			int j = (i + 1) % n;
+			// v is the coordinate this side bounds, signed so in is <= GUARD.
+			int64_t vp = sign * (int64_t)(side & 1 ? y[i] : x[i]);
+			int64_t vq = sign * (int64_t)(side & 1 ? y[j] : x[j]);
+			if (vp <= GUARD) {
+				cx[m] = x[i];
+				cy[m++] = y[i];
+			}
+			if ((vp <= GUARD) != (vq <= GUARD)) {
+				int64_t num = GUARD - vp, den = vq - vp;
+				cx[m] = x[i] + (int32_t)((int64_t)(x[j] - x[i]) * num / den);
+				cy[m] = y[i] + (int32_t)((int64_t)(y[j] - y[i]) * num / den);
+				if (side & 1)
+					cy[m] = sign * GUARD;
+				else
+					cx[m] = sign * GUARD;
+				m++;
+			}
+		}
+		n = m;
+		memcpy(x, cx, sizeof(int32_t) * (size_t)m);
+		memcpy(y, cy, sizeof(int32_t) * (size_t)m);
+	}
+	return n;
 }
 
 // Draw one triangle facing up, its corners counter-clockwise seen from
-// above: cull it if its back faces the camera, clip it at the near plane.
+// above: clip it at the near plane, then send each part that faces the
+// camera and reaches the screen.
 static void submit(const struct vertex *a, const struct vertex *b,
 		   const struct vertex *c, uint8_t colour)
 {
@@ -305,33 +316,61 @@ static void submit(const struct vertex *a, const struct vertex *b,
 	int behind = (a->z < NEAR) + (b->z < NEAR) + (c->z < NEAR);
 	if (behind == 3)
 		return;
-	struct vertex out[4];
+	int32_t px[9], py[9];
 	int n = 0;
 	if (!behind) {
-		for (int i = 0; i < 3; i++)
-			out[n++] = *in[i];
+		for (int i = 0; i < 3; i++) {
+			px[n] = in[i]->sx;
+			py[n++] = in[i]->sy;
+		}
 	} else {
 		for (int i = 0; i < 3; i++) {
 			const struct vertex *p = in[i], *q = in[(i + 1) % 3];
-			if (p->z >= NEAR)
-				out[n++] = *p;
+			if (p->z >= NEAR) {
+				px[n] = p->sx;
+				py[n++] = p->sy;
+			}
 			if ((p->z >= NEAR) != (q->z >= NEAR)) {
 				int64_t num = NEAR - p->z, den = q->z - p->z;
-				struct vertex *v = &out[n++];
-				v->x = p->x + (int32_t)((q->x - p->x) * num / den);
-				v->y = p->y + (int32_t)((q->y - p->y) * num / den);
-				v->z = NEAR;
-				project(v);
+				struct vertex v;
+				v.x = p->x + (int32_t)((q->x - p->x) * num / den);
+				v.y = p->y + (int32_t)((q->y - p->y) * num / den);
+				v.z = NEAR;
+				project(&v);
+				px[n] = v.sx;
+				py[n++] = v.sy;
 			}
 		}
 	}
+	for (int i = 0; i < n; i++)
+		if (px[i] < -GUARD || px[i] > GUARD || py[i] < -GUARD || py[i] > GUARD) {
+			n = clip_guard(px, py, n);
+			break;
+		}
 	for (int k = 1; k + 1 < n; k++) {
-		int32_t x[3] = {out[0].sx, out[k].sx, out[k + 1].sx};
-		int32_t y[3] = {out[0].sy, out[k].sy, out[k + 1].sy};
+		int32_t x[3] = {px[0], px[k], px[k + 1]};
+		int32_t y[3] = {py[0], py[k], py[k + 1]};
 		int64_t cross = (int64_t)(x[1] - x[0]) * (y[2] - y[0]) -
 				(int64_t)(y[1] - y[0]) * (x[2] - x[0]);
-		if (cross < 0)
-			fill(x, y, colour);
+		if (cross >= 0)
+			continue;
+		int32_t x_lo = x[0], x_hi = x[0], y_lo = y[0], y_hi = y[0];
+		for (int i = 1; i < 3; i++) {
+			x_lo = x[i] < x_lo ? x[i] : x_lo;
+			x_hi = x[i] > x_hi ? x[i] : x_hi;
+			y_lo = y[i] < y_lo ? y[i] : y_lo;
+			y_hi = y[i] > y_hi ? y[i] : y_hi;
+		}
+		// No pixel centre on the screen in its box: the rasterizer would
+		// fill nothing, so it is not sent.
+		if (((x_lo + 7) >> 4) > ((x_hi - 8) >> 4) || x_hi < 8 ||
+		    x_lo + 7 >= TC_WIDTH * 16 || ((y_lo + 7) >> 4) > ((y_hi - 8) >> 4) ||
+		    y_hi < 8 || y_lo + 7 >= TC_HEIGHT * 16)
+			continue;
+		// Front faces wind clockwise on the screen (y down), which is the
+		// order that makes the rasterizer's edge functions >= 0 inside.
+		out->triangle(out->ctx, x, y, colour);
+		counts->triangles++;
 	}
 }
 
@@ -403,13 +442,12 @@ static uint32_t farther(int32_t *lo, int32_t *hi, int32_t c)
 	return (uint32_t)(*hi)--;
 }
 
-void tc_draw(uint8_t *fb, uint32_t stride, uint32_t frame, uint32_t frames,
+void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 	     struct tc_stats *stats)
 {
-	frame_buffer = fb;
-	frame_stride = stride;
+	out = target;
 	counts = stats;
-	stats->triangles = stats->pixels = 0;
+	stats->triangles = 0;
 	stamp++;
 
 	// One orbit, swinging in to 40% and back out twice on the way round.
@@ -425,16 +463,23 @@ void tc_draw(uint8_t *fb, uint32_t stride, uint32_t frame, uint32_t frames,
 	sin_pitch = isin(PITCH);
 	cos_pitch = icos(PITCH);
 
-	// The sky above the horizon, the sea below it.
+	// The sky above the horizon, the sea below it, a run of rows at a time.
 	int32_t horizon = TC_HEIGHT / 2 - FOCAL * sin_pitch / cos_pitch;
-	for (int32_t r = 0; r < TC_HEIGHT; r++) {
-		uint32_t c;
-		if (r < horizon)
+	uint32_t run = 0, run_colour = 0;
+	for (int32_t r = 0; r <= TC_HEIGHT; r++) {
+		uint32_t c = 0;
+		if (r == TC_HEIGHT)
+			c = 0x100;
+		else if (r < horizon)
 			c = TC_SKY_COLOUR + (uint32_t)(r * TC_RAMP / horizon);
 		else
 			c = TC_SEA_COLOUR +
 			    (uint32_t)((r - horizon) * TC_RAMP / (TC_HEIGHT - horizon));
-		memset(fb + (uint32_t)r * stride, (int)c, TC_WIDTH);
+		if (r && c != run_colour) {
+			target->rows(target->ctx, run, (uint32_t)r, (uint8_t)run_colour);
+			run = (uint32_t)r;
+		}
+		run_colour = c;
 	}
 
 	cull_blocks();

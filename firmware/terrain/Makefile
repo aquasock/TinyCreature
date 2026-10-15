@@ -7,8 +7,9 @@
 #   make TINYNES=<dir> BUILD=<dir>          $(BUILD)/terrain.elf
 #   make TINYNES=<dir> BUILD=<dir> host     $(BUILD)/host/terrain_host
 #
-# FRAMES=<n> replaces the 600 frames of one orbit; give such builds their own
-# BUILD=<dir>.
+# FRAMES=<n> replaces the 600 frames of one orbit, and FABRIC=0 draws with
+# tc_soft into the SDRAM buffers instead of the fabric rasterizer; give such
+# builds their own BUILD=<dir>.
 
 TINYNES ?= $(abspath ../../build/tang32-src)
 ifeq ($(wildcard $(TINYNES)/firmware/rt/rt.mk),)
@@ -17,7 +18,8 @@ endif
 
 APP      := terrain
 SOURCES  := main.c terrain.c $(TINYNES)/firmware/boot/load.c
-CPPFLAGS += -I$(TINYNES)/firmware/boot $(if $(FRAMES),-DFRAMES=$(FRAMES))
+CPPFLAGS += -I$(TINYNES)/firmware/boot $(if $(FRAMES),-DFRAMES=$(FRAMES)) \
+            $(if $(FABRIC),-DFABRIC=$(FABRIC))
 
 include $(TINYNES)/firmware/rt/rt.mk
 

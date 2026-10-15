@@ -10,8 +10,9 @@ renderer built in the FPGA's fabric.
 with the game's files (below). It retains the complete world, renders it at 320
 by 180 in a retro pixel style, and has a 47.2 MiB headless startup peak. The
 first 32 MiB Tang image builds in the open flow, meets timing, and has passed on
-the board, first with an animated test landscape and then drawing the game's
-real Land 1 terrain over HDMI from the AE350.
+the board, first with an animated test landscape, then drawing the game's real
+Land 1 terrain from the AE350, and now through a first rasterizer in the
+FPGA's fabric.
 
 ## Tang 32 MiB bring-up
 
@@ -39,9 +40,13 @@ zero late line fetches. The user saw the moving 2D landscape and accepted it.
 The reproducible build pins TinyNES at
 f5011dd374cfc65f4f17616fec97c903a66b6cc8 and applies
 patches/tinynes-tang32.patch. It expects the same xPack RISC-V GCC, OSS CAD
-Suite, nextpnr fork, and Apicula fork used by TinyNES. The first route at seed
-11 achieved 82.41 MHz on the 75 MHz bus and 100.92 MHz on the 74.25 MHz pixel
-clock.
+Suite, nextpnr fork, and Apicula fork used by TinyNES. Every core build
+synthesises once and places and routes seeds 1 to 8 in parallel, keeping the
+clean seed with the fastest bus clock; a seed is clean when TinyNES's build
+script accepts it. `build/tang32/seeds.tsv` lists each seed's result and
+`TINYCREATURE_SEEDS` replaces the list. The first image routed at seed 11 at
+82.41 MHz on the 75 MHz bus and 100.92 MHz on the 74.25 MHz pixel clock; the
+image with the rasterizer kept seed 4 at 80.45 and 98.16 MHz.
 
 The later 64 MiB configuration will add the separate J10 SDRAM bus as a second
 32 MiB bank. The current memory map and controller remain the 32 MiB J9
@@ -63,7 +68,9 @@ rasterizer will take over. The same source builds for the PC as
 `terrain_host`, so the board's frame CRC can be checked against it.
 
     bash tools/build_tang32.sh
+    bash tools/test_tang32_raster.sh        # the rasterizer in simulation
     bash tools/run_tang32.sh terrain        # or: two-wire terrain
+    bash tools/run_tang32.sh terrain-soft   # the same frames in software
 
 The run converts the land, prints the PC's totals, loads the program and the
 land file, and fails unless the board reports `TinyCreature TERRAIN OK` with
@@ -77,6 +84,31 @@ and filled 32,505 pixels per frame, took a mean 38.1 ms and at most 42.8 ms to
 draw a frame on the AE350's software path, and so showed one frame every three
 vertical blanks, 20 frames per second, with zero late line fetches. That
 draw time is the CPU baseline the fabric renderer has to beat.
+
+## The fabric rasterizer
+
+`fpga/raster.sv` sits at `0xe8018000`, in the upper half of the video unit's
+bus window. It takes `ROWS` and `TRI` commands through a 512-word FIFO, sets
+up each triangle's three edge functions with a radix-4 sequential multiplier,
+and fills the pixels whose centres all three functions place inside, one a
+clock over the clamped bounding box. It draws into two 320 by 180 frame
+buffers of its own in single-clock block RAM, which the video unit shows
+through the same line-fetch handshake as the SDRAM, and the CPU reads a buffer
+back through two registers. `tc_soft` in `terrain.c` is its exact model, so
+`terrain_host` predicts every pixel. `tools/test_tang32_raster.sh` drives two
+real Land 1 frames' commands through it in simulation and compares the result
+byte for byte, through the read-back registers and the line fetch.
+
+On the board the rasterizer drew all 600 frames as the PC model did, frame
+CRC `4a893c8b` from 20,085 triangles and 33,072 pixels a frame, with zero
+late line fetches. It was idle by the time each frame had been sent, but the
+CPU still took a mean 37.9 ms to send a frame, against 42.4 ms for the same
+frames filled in software (`terrain-soft`), so both showed a frame every
+three vertical blanks. Measured on the board, sending a triangle's four
+command words cost 23 CPU cycles within the frame loop, while a cached store
+that misses into the SDRAM cost about 620 cycles a 32-byte line. The CPU's
+time goes on cache misses in its walk over about 1.1 MB of vertex records,
+not on drawing.
 
 ## openblack on a PC
 

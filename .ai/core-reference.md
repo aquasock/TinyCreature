@@ -63,6 +63,14 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
   name: "FPGA rasterizers"
   description: "Existing open FPGA graphics pipelines considered as references for this project's renderer: what they implement and how fast they are."
 
+- topic_id: AE
+  name: "The AE350 on this project's Tang32 core"
+  description: "What this project has measured of the AE350 and its bus ports in its own core, beyond what TinyNES's reference records: address reach and access costs."
+
+- topic_id: TOOL
+  name: "Open toolchain behaviour"
+  description: "How Yosys, nextpnr and Apicula treat this project's designs, where that differs from what a reader would assume."
+
 - topic_id: PROV
   name: "Provenance and attribution"
   description: "The licences and notices that follow from the code this project builds on or carries."
@@ -80,6 +88,8 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | How is a .lnd landscape laid out, and how does openblack colour a terrain vertex? | OB | OB-004 |
 | What did Black & White need to run? | GAME | GAME-001 |
 | Which open FPGA rasterizer implements an OpenGL-style fixed-function pipeline, and how fast is it? | GFX | GFX-001 |
+| Which EXTS addresses reach the fabric, and what do bus and SDRAM accesses cost the A25? | AE | AE-001, AE-002 |
+| Does Yosys map multiplies to the GW5A's DSP blocks? | TOOL | TOOL-001 |
 | Where are the board, AE350, SDRAM, HDMI and toolchain facts? | (TinyNES) | TinyNES DEV-008, DEV-011 to DEV-013, BRD-010, BRD-011, PSX-005, TOOL-018 |
 
 ---
@@ -95,6 +105,9 @@ OB-003: "openblack a243c6b2 built on this PC and run on the user's patched Black
 OB-004: "openblack a243c6b2 reads a .lnd as a 1052-byte header with a 32 by 32 block lookup table, low-resolution textures, 2520-byte blocks of 17 by 17 eight-byte cells, 3076-byte countries, 0x20002-byte 256 by 256 B5G5R5A1 materials, then 64 KiB noise and bump maps; a cell outside every block is all zero but fullWater; a vertex's materials come from its country at (altitude + noise) mod 256"
 GAME-001: "Black & White (2001) for Windows needed at least a 350 MHz Pentium II or K6-2, 64 MB of RAM, an 8 MB Direct3D (DirectX 7) card and 500 to 600 MB of disk; the Mac version a 333 MHz G3, 128 MB and an 8 MB OpenGL 1.2 card"
 GFX-001: "Rasterix (github.com/ToNi3141/Rasterix) is a Verilog FPGA rasterizer with a mostly OpenGL 1.3 fixed-function pixel pipeline, up to two texture units and register combiners, vertex work in software, reported at 100 Mpixel/s and 200 Mtexel/s at 100 MHz; its licence has not been read"
+AE-001: "In the Tang32 core the AE350's EXTS port carries 0xe8018000 to 0xe801ffff to the fabric: the raster unit decoded there answers its ID and runs; 0xe8020000 and above are untested"
+AE-002: "Measured on the Tang32 core at 750 MHz: an uncached EXTS write costs about 120 A25 cycles back to back and a register read about 102, four posted writes amid other work about 23, and a cached store missing into the SDRAM about 78 a word, about 620 a 32-byte line"
+TOOL-001: "Yosys 0.69+260's synth_gowin infers DSP multipliers only for -family gw1n and gw2a; for gw5a every multiply becomes LUT and carry logic"
 ```
 
 ---
@@ -179,6 +192,43 @@ GFX-001: "Rasterix (github.com/ToNi3141/Rasterix) is a Verilog FPGA rasterizer w
     - "https://github.com/ToNi3141/Rasterix README"
     - "https://github.com/ToNi3141/RasteriCEr README"
   verification: "Read online on 2026-10-14 (core-log entry 1) through search results, not from the repository; SOURCED."
+
+- record_id: AE-001
+  kind: DEVICE
+  topic_id: AE
+  title: "EXTS addresses that reach the fabric in the Tang32 core"
+  status: VERIFIED
+  verified_date: 2026-10-15
+  statement: "TinyNES decodes the EXTS window in fabric from exts_addr[17:16], the UART at 0xe8000000 and its video unit at 0xe8010000, and nothing of its records establishes how far above that the AE350 forwards accesses to the EXTS port. In this project's core the raster unit decoded at exts_addr[17:16] == 01 with exts_addr[15] set, 0xe8018000 to 0xe801ffff, answered RASTER_ID 0x54435231, took 80,000 command writes a frame and served read-back reads on the board."
+  consequence: "fpga/raster.sv lives at 0xe8018000, in the upper half of the video unit's 64 KiB, rather than at 0xe8020000, which no build has yet shown to reach the fabric. A later unit placed at or above 0xe8020000 must first be checked with a single register read on the board."
+  sources:
+    - "This project's patches/tinynes-tang32.patch (ae350_soc.sv video_hit, raster_hit), fpga/raster.sv, firmware/terrain/main.c (RASTER_ID check)"
+  verification: "On this board on 2026-10-15 (core-log entry 9): the fabric and software terrain programs both passed their RASTER_ID check, and the fabric run drew 600 frames read back bit-exact through 0xe8018020 and 0xe8018024."
+
+- record_id: AE-002
+  kind: DEVICE
+  topic_id: AE
+  title: "A25 cycle costs of EXTS and cached SDRAM accesses in the Tang32 core"
+  status: VERIFIED
+  verified_date: 2026-10-15
+  statement: "With the A25 at 750 MHz, the bus at 75 MHz, both caches on and the Tang32 core's ahb_sdram on J9, a profiling build of the terrain program measured with mcycle: 4,096 back-to-back stores to the raster unit's FIFO register 491,227 cycles (about 120 each), 4,096 reads of one of its registers 420,348 (about 102 each), 4,096 word stores through the D-cache to a 16 KiB array not yet cached 319,549 (about 78 each, about 620 per 32-byte line), and the four FIFO stores of one triangle inside the frame loop a mean 23 cycles over 2.4 million triangles."
+  consequence: "Uncached EXTS stores are posted and overlap the CPU's other work, but drain at about one per 12 bus cycles, so a stream of them is limited to about 6 million words a second. A cache miss into the SDRAM costs on the order of a microsecond, so a renderer whose working set exceeds the 32 KiB D-cache (TinyNES DEV-013) is bound by misses rather than arithmetic: the terrain program's 1.1 MB vertex walk is why it took about 38 ms a frame with or without the fabric fill."
+  sources:
+    - "This project's firmware/terrain/main.c with the profiling loop described in core-log entry 9 (the throwaway build is not committed), fpga/raster.sv, TinyNES f5011dd fpga/ae350_soc/ahb_sdram.sv"
+  verification: "One profiling run on this board on 2026-10-15 (core-log entry 9), 120 frames; a single run, so the figures are representative, not bounds."
+
+- record_id: TOOL-001
+  kind: TOOLCHAIN
+  topic_id: TOOL
+  title: "No DSP inference for GW5A in Yosys"
+  status: VERIFIED
+  verified_date: 2026-10-15
+  statement: "yosys -p 'help synth_gowin' for Yosys 0.69+260 (git dcd59343b) in the OSS CAD Suite lists the DSP steps techmap +/mul2dsp.v and +/gowin/dsp_map.v only for -family gw1n or gw2a; synthesising this project's raster unit for gw5a used no MULT12X12, MULTALU27X18 or MULTADDALU12X12 cells."
+  consequence: "Multiplies in this project's GW5A fabric are LUT and carry logic, so fpga/raster.sv builds its triangle setup products with a sequential radix-4 multiplier rather than relying on inferred DSP blocks; instantiating the DSP primitives by hand would need its own hardware check under Apicula."
+  sources:
+    - "Yosys 0.69+260 help synth_gowin; ~/oss-cad-suite/share/yosys/gowin/dsp_map.v"
+    - "This project's build/tang32/nextpnr.log device utilisation (not committed)"
+  verification: "Read and observed on 2026-10-15 (core-log entry 9): the Tang32 image with the raster unit reports 0 of each DSP cell type."
 ```
 
 ---

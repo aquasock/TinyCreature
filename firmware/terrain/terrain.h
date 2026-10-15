@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
  *
- * TinyCreature's first terrain renderer: a TCL1 landscape
- * (tools/convert_land.py) drawn as flat-coloured triangles into a 320x180
- * indexed frame buffer, back to front, in integer arithmetic only, so that
- * the AE350 and a PC draw identical frames. The same source builds for both.
+ * TinyCreature's terrain renderer: a TCL1 landscape (tools/convert_land.py)
+ * walked back to front and sent as flat-coloured screen triangles to a
+ * target, either the fabric rasterizer (fpga/raster.sv) or tc_soft, its
+ * exact model in software, in integer arithmetic only, so that the AE350
+ * and a PC draw identical frames. The same source builds for both.
  */
 #ifndef TINYCREATURE_TERRAIN_H
 #define TINYCREATURE_TERRAIN_H
@@ -31,11 +32,30 @@ struct tc_land {
 	const uint8_t *cells;        /* cells_x * cells_z * 3: flags, colours */
 };
 
-/* What one frame drew: triangles handed to the rasterizer after culling,
- * and the pixels it filled, overdraw included. */
+/* Where a frame goes. rows fills rows first to end - 1 with one colour;
+ * triangle fills a triangle given as three Q4 screen corners, each
+ * coordinate within -32768 to 32767, in the order fpga/raster.sv requires.
+ * Both are exactly the fabric rasterizer's ROWS and TRI commands. */
+struct tc_target {
+	void (*rows)(void *ctx, uint32_t first, uint32_t end, uint8_t colour);
+	void (*triangle)(void *ctx, const int32_t *x, const int32_t *y, uint8_t colour);
+	void *ctx;
+};
+
+/* The software rasterizer: fpga/raster.sv's fill rule, pixel for pixel,
+ * into fb, whose rows are stride bytes apart. It counts what the fabric
+ * counts in its TRIS and PIXELS registers. */
+struct tc_soft {
+	uint8_t *fb;
+	uint32_t stride;
+	uint32_t triangles, pixels;
+};
+void tc_soft_rows(void *soft, uint32_t first, uint32_t end, uint8_t colour);
+void tc_soft_triangle(void *soft, const int32_t *x, const int32_t *y, uint8_t colour);
+
+/* What one frame sent: triangles, after culling. */
 struct tc_stats {
 	uint32_t triangles;
-	uint32_t pixels;
 };
 
 /* Check a TCL1 file's header and body CRC and point land into it; returns
@@ -50,9 +70,8 @@ uint32_t tc_palette(const struct tc_land *land, unsigned index);
 size_t tc_work_bytes(const struct tc_land *land);
 void tc_init(const struct tc_land *land, void *work);
 
-/* Draw frame number frame of frames, one orbit of the island, into fb,
- * whose rows are stride bytes apart. */
-void tc_draw(uint8_t *fb, uint32_t stride, uint32_t frame, uint32_t frames,
+/* Send frame number frame of frames, one orbit of the island, to target. */
+void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 	     struct tc_stats *stats);
 
 /* IEEE CRC-32, continued from crc (0 to start). */
