@@ -6,9 +6,10 @@ Console 138K, as a core for TinyTang: the game's engine from
 reimplementation, running on the FPGA's AE350 RISC-V processor, with a 3D
 renderer built in the FPGA's fabric.
 
-**Status: openblack builds and runs on a PC with the game's files** (below);
-nothing runs on the Tang yet. The project starts by measuring what the game
-asks of the hardware, before any FPGA work.
+**Status: openblack builds and runs on a PC with the game's files** (below),
+and its first repeatable resource profile is complete. The unmodified engine
+needs about 361 MiB even with bgfx's Noop renderer, so it cannot be moved
+directly into 64 MiB. Nothing runs on the Tang yet.
 
 ## openblack on a PC
 
@@ -17,6 +18,7 @@ tools/fetch_openblack.sh      # openblack at a pinned commit, with its vcpkg
 cmake -S third_party/openblack -B build/openblack --preset ninja-multi-vcpkg
 cmake --build build/openblack --config Release
 build/openblack/bin/Release/openblack -g "<install>/Black & White" -V
+tools/profile_openblack.sh "<install>/Black & White"
 ```
 
 `<install>` is the game installed and patched to 1.2: openblack reads its
@@ -25,6 +27,32 @@ run under Wine; a prefix of its own, inside `build/`, keeps it apart from
 `~/.wine`. On the user's copy the landscape draws correctly, while villagers
 and the creature are missing and the log lists script functions openblack has
 not implemented yet.
+
+## PC resource profile
+
+`tools/profile_openblack.sh` runs three startup, no-vsync and realtime cases at
+1280 by 720 with logging disabled and OpenAL Soft's null driver. It compares
+bgfx's Noop and Vulkan backends and writes its generated measurements under
+`build/profile-openblack/`.
+
+The profile on the development PC at openblack `a243c6b2` measured:
+
+| Backend | Mean peak RSS | Mean peak PSS | Mean peak private memory | Threads |
+|---|---:|---:|---:|---:|
+| Noop | 360.76 MiB | 357.08 MiB | 356.70 MiB | 4 |
+| Vulkan | 531.87 MiB | 487.30 MiB | 463.33 MiB | 10 |
+
+The Vulkan no-vsync runs used a mean 0.861 ms of CPU time per steady frame on
+this PC. At normal realtime cadence, where openblack also runs its 100 ms game
+turns, the median was 14.45 ms per frame. That realtime number includes Vulkan
+driver and render-thread work and is not an estimate for the AE350.
+
+The Noop result establishes that the current asset and engine representation
+is already far beyond 64 MiB before a real renderer is included. An SDRAM-only
+port therefore requires a substantial asset streaming and memory-layout
+redesign; merely enabling the second SDRAM chip is insufficient. The next
+software measurement must identify the owners of the headless footprint before
+choosing that redesign or the DDR3 controller.
 
 ## What it builds on
 
@@ -40,13 +68,22 @@ not implemented yet.
 
 ## What it needs before it can work
 
-- Memory: the game wants about 64 MB plus graphics memory, more than the
-  dock's 32 MB SDRAM, so the module's 1 GiB DDR3 is needed, and there is no
-  open-flow DDR3 controller for it yet.
+- Memory: the fitted J9 SDRAM module has two 32 MiB chips, but the existing
+  controller can address only one because the second chip-select signal has
+  not been identified. The measured headless engine footprint is about
+  357 MiB of private memory, so a 64 MiB design needs extensive asset streaming
+  and more compact in-memory formats. The module's 1 GiB DDR3 is the direct
+  memory path, but it has no open-flow controller yet.
 - A renderer: a fixed-function rasterizer in the FPGA, with vertex work on the
   AE350.
 - A way to bring hundreds of megabytes of game data from the card faster than
   the 2 Mbaud link TinyNES uses.
+
+The source audit found that a single-threaded bgfx target requires removing its
+target-side `multithreaded` vcpkg feature. Removing ImGui cleanly requires an
+openblack build option that substitutes a no-op `DebugGuiInterface` and omits
+the Debug sources, ImGui shaders, package and `imgui_user` library. Openblack's
+own engine and component sources do not create C++ threads.
 
 ## Game data
 
