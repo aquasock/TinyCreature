@@ -16,13 +16,16 @@
 #define TC_HEIGHT 180
 
 /* Palette entries the renderer owns: 0 is never drawn, 1 to 8 the sky from
- * the top down to the horizon, 9 to 16 the sea from the horizon down; the
- * land file's colours start at TC_LAND_COLOUR. */
+ * the top down to the horizon, 16 the one blue the sea now draws, 17 and 18
+ * the cursor, and 9 to 15 the tall sprite's ramp -- what is left of the sea's
+ * eight-entry ramp after entry 23 gave it up. The land file's colours start at
+ * TC_LAND_COLOUR. */
 #define TC_SKY_COLOUR  1
 #define TC_CURSOR_IDLE 17
 #define TC_CURSOR_HELD 18
 #define TC_CURSOR_EDGE  0
 #define TC_SEA_COLOUR  9
+#define TC_SPRITE_FIRST TC_SEA_COLOUR   /* the ramp the sprite's cells name */
 #define TC_LAND_COLOUR 19
 #define TC_RAMP        8
 

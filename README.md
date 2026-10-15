@@ -137,6 +137,30 @@ as two entries of its own; their outline comes out the land's nearest
 near-black. Flying to a clicked point is not implemented; it would want a
 screen-to-land raycast.
 
+A tall sprite stands on the island's middle: `tools/convert_sprite.py` stacks
+one of the tile set's two-tile creatures into 32 by 64, trims it to the art,
+tints it and quantises it to the seven palette entries the sea gave up when it
+became one blue, and writes a C header the build generates and never commits,
+so the art stays out of the repository as the landscape does. `tc_palette`
+gives those entries the ramp and the shading table admits them beside the
+cursor's two, which is what keeps them off the land: a neutral grey ramp
+claims about a tenth of the pixels Land 2 draws, because the land's palest,
+least saturated colours are nearer a grey than to the land's own entries,
+while a saturated one claims none -- so with the ramp admitted and the sprite
+absent all six scripted lands still draw the frame CRCs they drew before it
+existed. The sprite is drawn the way the cursor is, a run of one colour a row
+as a rectangle, and from inside the cell walk at the cell it stands on, so
+nearer land paints over it and farther land stays behind. Its height is six
+cells of world and it obeys the camera, which makes it about fifteen pixels at
+the orbit's reach and larger as the wheel comes in; its two-pixel cells are
+under a pixel each at that reach, so it is a smudge until you come in, which a
+coarser cell table chosen by screen size would fix. It costs 360 triangles and
+0.74 ms a frame on the board, inside the three-blank hold, so `VBLMIN` and
+`VBLMAX` are still both 3. That same 0.74 ms is what a population would cost:
+a hundred mosaic sprites is about 74 ms, so a village wants textures in the
+fabric rather than more triangles, and the palette room a texture needs wants
+the land's 237 entries re-fitted.
+
 The run converts the land, prints the PC's totals, loads the program and the
 land file, and fails unless the board reports `TinyCreature TERRAIN OK` with
 the same land CRC, triangle and pixel means and frame CRC as the PC. Set

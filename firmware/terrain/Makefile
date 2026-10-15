@@ -9,7 +9,14 @@
 #
 # FRAMES=<n> replaces the 600 frames of one orbit, and FABRIC=0 draws with
 # tc_soft into the SDRAM buffers instead of the fabric rasterizer; give such
-# builds their own BUILD=<dir>.
+# builds their own BUILD=<dir>. SPRITE names the tall sprite, SPRITE_CELL its
+# cell size in source pixels, SPRITE_TINT the colour its mask is tinted, and
+# SPRITE_DIR the directory holding the two tiles. The tint is saturated here
+# because a neutral ramp is not available to it: the land's palette is dense
+# between 25 and 75 degrees of hue, and its palest, least saturated colours are
+# nearer to a grey than to the land's own entries, so a grey ramp claims about
+# a tenth of the island's pixels on two of the six lands. A saturated ramp cost
+# none of them.
 
 TINYNES ?= $(abspath ../../build/tang32-src)
 ifeq ($(wildcard $(TINYNES)/firmware/rt/rt.mk),)
@@ -27,11 +34,36 @@ OPT ?= -O3
 
 include $(TINYNES)/firmware/rt/rt.mk
 
+# The tall sprite the renderer plants: Dungeon Crawl Stone Soup's two-tile
+# creatures, converted here and never committed, because the tiles are that
+# project's art. The header is a build product, so the object that includes it
+# waits for the rule that writes it.
+SPRITE      ?= okawaru
+SPRITE_DIR  ?= $(HOME)/Downloads/Dungeon Crawl Stone Soup Full/emissaries
+SPRITE_CELL ?= 2
+SPRITE_TINT ?= 6688cc
+SPRITE_DRAW ?= 1
+# The parameters are part of the header's name, so that changing one builds a
+# header and a binary rather than reusing the last one's.
+SPRITE_H    := $(BUILD)/sprite/$(SPRITE)-c$(SPRITE_CELL)-t$(SPRITE_TINT).h
+SPRITE_TOOL := $(abspath ../../tools/convert_sprite.py)
+SPRITE_CPPFLAGS := -I$(BUILD)/sprite -DTC_SPRITE_HEADER='"$(notdir $(SPRITE_H))"' \
+                   -DTC_SPRITE_DRAW=$(SPRITE_DRAW)
+
+CPPFLAGS += $(SPRITE_CPPFLAGS)
+
+$(SPRITE_H): $(SPRITE_TOOL) $(wildcard $(SPRITE_DIR)/$(SPRITE)_top.png)
+	@mkdir -p $(dir $@)
+	@python3 $(SPRITE_TOOL) "$(SPRITE_DIR)" $(SPRITE) --cell $(SPRITE_CELL) \
+		--tint $(SPRITE_TINT) --out $@
+
+$(call objects,terrain.c): $(SPRITE_H)
+
 HOST_CC ?= gcc
 host: $(BUILD)/host/terrain_host
 
-$(BUILD)/host/terrain_host: terrain.c host.c terrain.h $(MAKEFILE_LIST)
+$(BUILD)/host/terrain_host: terrain.c host.c terrain.h $(SPRITE_H) $(MAKEFILE_LIST)
 	@mkdir -p $(dir $@)
-	$(HOST_CC) -O2 -std=gnu11 -Wall -Wextra -Werror -o $@ terrain.c host.c
+	$(HOST_CC) -O2 -std=gnu11 -Wall -Wextra -Werror $(SPRITE_CPPFLAGS) -o $@ terrain.c host.c
 
 .PHONY: host
