@@ -830,3 +830,34 @@ The leaks are the open work and their shape is known: 96 pixels, from groups who
 - User Test: NOT RUN
 
 ---
+
+## 26 COMMIT Unreleased 2026-10-15T14:36:18-07:00
+
+#### Coming From:
+
+Unreleased af62129
+
+#### Purpose:
+
+Put the renderer back to what it was before the far-field merge, on the user's judgement that a level of detail at distance is the wrong approach to this renderer's problems.
+
+#### Outcome:
+
+The user, having flown the merge, the fog and the ground in turn, called the whole direction wrong and asked for the renderer as it was before it. What that means exactly is commit 1500f52, the state entry 23 left: the cursor, the sea's single blue, the release fix and the shading table's own assignments, with no merge, no fog and no ground. Both files the cycle touches were taken from it, firmware/terrain/terrain.c and README.md, and the log was not, so entries 24 and 25 remain as the record of what was tried and what it measured. The check that the revert is exact is the strongest this project has: the six scripted lands and both recorded sessions draw the frame CRCs they drew at entry 23, Land 1's 5b022d0d from land CRC 205046bf at 20,085 triangles and 33,072 pixels, byte for byte, from a renderer whose merge, ground plane and bounding attempts are absent rather than disabled. The board PASSes the scripted run at that same CRC with LATE=0 and zero late line fetches. The price is the one the merge was paying for, and it is visible in the same run: the mean period goes from 32,477 us to 38,012 and VBLMAX from 2 to 3, so the orbit runs at about 26 frames a second with occasional frames shown a blank late, where the merge held a steady 30. Nothing else is lost, because the merge's cycle touched nothing else: the core was never rebuilt, fpga/raster.sv is untouched, and the shading table assignments that the near-plane clip fan reads, which the fog's removal had taken out and entry 25 restored, are part of 1500f52 and so are in place. Two pieces of knowledge from the abandoned work are worth keeping and live only in the log now, since the code that carried them is gone. The land's palette is a single narrow band: of its 237 entries, 153 are yellow-brown and 84 green, every one between 25 and 75 degrees of hue, with no grey, no blue and nothing outside it. And the reason none of the three ways of stopping the merge's slivers earned its place is that the win and the sliver are one mechanism: the saving comes from drawing a group as two triangles instead of thirty-two, and the sliver from those two triangles cutting the corners off land that is never flat enough to make the cut harmless at block granularity, while at four-cell granularity the win itself shrinks to the point that the flattening test which removes the slivers also removes the merge. AddressSanitizer and UndefinedBehaviorSanitizer are clean on the reverted renderer. The core-syntax audit re-read .ai/core.md and .ai/core-syntax.md, inspected the complete .ai/ diff, confirmed .ai/core.md unchanged, checked that the reference's fast index and its records list the same ids in the same order with no retired ids, and validated this entry's six sections, sequential numbering, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The user has said he will name the next cycle. The texture quality he has complained of is the most likely candidate and its measurement is now in hand: the land is 237 entries inside a 50 degree hue band with nothing outside it, and the sea's ramp gave up seven entries, 9 to 15, that could be spent sharpening exactly that band, which is a change to tools/convert_land.py and the palette layout rather than to the renderer. If distance detail is ever wanted again the log holds the measured ground for it: four-cell groups with the straightness test off give 22 per cent fewer triangles and 111 screen pixels of sea where land should be, the test at half a pixel gives 18 pixels for 4 per cent, and three ways of buying the pixels back were each measured and rejected, the best of them covering 590 pixels of ocean for three frames a second. Flying to a clicked point remains the obvious next use of a pick that exists and is checked, and it wants the original's animation with it. The keyboard is still the stated next want, gated on TinyTang gaining keyboard forwarding from the Tiny89 work, with this program's decoder reading only frame type 0x16 as six bytes of mouse and discarding unknown types safely, so a new type is fine and a re-used one is not. The pipe guard in TinyTang is still the one defect either project carries, pointer_frame() holding the transmit lock while a host owns the link. Pinning a CRC per recorded input sequence in a tool is owed more strongly each cycle: entries 16 and 20 to 26 each leave driven-run figures that only the log records. The capture card attached to this machine returns pure black to it in every format it offers, so the board's own HDMI remains the judge and the host twin, whose frames match the board's by CRC, is how this project looks at what it has drawn. The Bullet world removal from the PC playground (entry 6) and the J10 second SDRAM bank (entry 7) remain open, and GAME-001 still describes the 64 MiB route as J9's second chip select rather than the J10 bank.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/terrain.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
