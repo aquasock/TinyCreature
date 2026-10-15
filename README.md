@@ -177,6 +177,23 @@ test off, 54 at one pixel and 18 at half a pixel, against 22, 8.6 and 4 per
 cent fewer triangles. It is off by default, the user having judged the
 shoreline good.
 
+Where a merged group borders water it lays its own ground first: two triangles
+at the group's own corners lowered to the height of the lowest land, so an
+edge of the patch that would have shown the sea shows a colour like the land's
+instead, the colour being the mean of the land's palette taken once at init.
+The quad is grown two pixels past the group because the ground is lower than
+the land and its projection is therefore a pixel or so away from the patch's,
+and that margin is small enough that it cannot reach open water. One plane as
+large as the island could, and did: at a shallow view it covered 16,066 pixels
+of ocean where this covers 1,318. The sea is drawn as a screen-space backdrop
+of rows while a ground plane is a world-space quad, so at a shallow angle a
+large quad's projection lands on the near ocean and replaces it. Measured on
+the board, the ground costs 40 triangles and 185 pixels a frame and the orbit
+holds every frame in two vertical blanks, a steady 30 frames a second, with
+the CPU's FIFO stalls at 7,553 where the single plane had them at 53,264. It
+does not remove the slivers: they fall from 111 pixels to 96, because the
+ground's projection is a pixel off the patch's at the depths groups merge at.
+
 ## The fabric rasterizer
 
 `fpga/raster.sv` sits at `0xe8018000`, in the upper half of the video unit's

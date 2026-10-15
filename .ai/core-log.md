@@ -799,3 +799,34 @@ The user has named the next cycle as optional, and the one thing it would buy is
 - User Test: PASS
 
 ---
+
+## 25 COMMIT Unreleased 2026-10-15T14:32:20-07:00
+
+#### Coming From:
+
+Unreleased 64d8fae
+
+#### Purpose:
+
+Stop the far-field merge's leaks from showing the sea, without covering the sea itself.
+
+#### Outcome:
+
+The user, watching the board, reported that the merge's slivers had become visible again now that the fog is gone, and proposed the fix: a ground plane in the land's own colour, laid under the island a little above the water line, so that anything the merge fails to draw shows a colour like the land rather than the sea's blue. Measuring the land's own palette first bore him out better than he claimed: of the 237 entries, 153 are yellow-brown and 84 green, every one between 25 and 75 degrees of hue, with no grey, no blue and nothing else at all, so the land's entire colour range is a single narrow band. The first build was his plane literally: two triangles whose extent is the land that actually draws, at the height of the lowest land, with the colour taken as the mean of the palette in the five bits a channel the renderer works in, answered with the entry nearest it. That removed every leak -- 111 pixels to 0 -- and covered 12,157 pixels of water inside the island's extent, which is what he had asked for. It also failed, and he found how: zoomed out, the ocean turned brown, and at a shallow angle he could see above the brown back into the distant sea. Reproduced on the host with the middle button dragged to its pitch limit and the wheel turned forty clicks out, the plane covered 16,066 pixels of ocean and the sea's own pixels fell from about forty thousand to 24,463; the frame's own measurement was worse, the CPU's FIFO stalls rising from 7,750 to 53,264 because the fabric was busy filling that plane, the worst frame going from 32,853 us to 34,222 and the period from 32,477 to 34,707, which is 30.8 frames a second down to 28.8. The reason is structural rather than a matter of tuning: the sea is drawn as a screen-space backdrop of rows, while a ground plane is a world-space quad, so at a shallow angle the quad's projection lands on top of the near ocean and replaces it, and beyond its far edge the rows show again. The second build keeps the colour and the height and drops the extent: a merged group that borders water lays its own ground under itself first, two triangles at the group's own four corners lowered to the lowest land, drawn immediately before its patch. The mask can then only ever appear under a group, never across the sea. Measured against the same grazing view, the ground's pixels fell from 16,066 to 576 and the sea's rose from 24,463 to 39,560, and on the board the stalls returned to 7,553 with a period of 33,313 us, VBLMIN 2 and VBLMAX 2, that is every frame in exactly two vertical blanks and a steady 30.0 frames a second, for 40 triangles and 185 pixels a frame more than the patches alone. The leaks are not fixed: they fall from 111 to 96, because the ground sits at the lowest land and its projection is therefore about a pixel away from the patch's at the depths groups merge at, and a margin of two pixels rounded the ground back only part of the way. Those leaks are 26 more than the user was told to expect, and are the next thing to try: the ground is grown past the group from its own middle, and the test that decides whether a group needs one looks only at the four cells directly beside it, so a group at a diagonal shore may be missed. A defect of this cycle's own making was found while auditing rather than by a crash: the script that removed the fog last cycle sliced out two lines that were not fog, the assignments of the shading table pointers, and those are read by the near-plane clip fan. That path never runs in the orbit, which is why every frame CRC still matched and nothing ever faulted, but zooming in is what reaches it, and it would have dereferenced a null pointer on the board. They are restored. AddressSanitizer and UndefinedBehaviorSanitizer are clean. The board PASSes with LATE=0 and a frame CRC matching terrain_host, and fpga/raster.sv is untouched, so no seed sweep was needed. The core-syntax audit re-read .ai/core.md and .ai/core-syntax.md, inspected the complete .ai/ diff, confirmed .ai/core.md unchanged, checked that the reference's fast index and its records list the same ids in the same order with no retired ids, and validated this entry's six sections, sequential numbering, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The leaks are the open work and their shape is known: 96 pixels, from groups whose ground quad is either not laid or laid a pixel off, so the two things to try are the diagonal neighbours in the test that decides whether a group borders water and a margin that follows the group rather than the screen middle. The user has not judged this build yet; he flies every build, and his report will say whether a steady 30 with 96 pixels is better than 111 with the occasional frame at 60. The texture quality he has complained of is untouched, and its lever is unchanged: the sea's ramp gave up seven palette entries, 9 to 15, that the land could fit its vertices to, and the measurement of the land's hue band now says exactly what they would be spent on, the band being 50 degrees wide with nothing outside it. Flying to a clicked point is the obvious next use of a pick that exists and is checked, and it wants the original's animation with it. The keyboard is still the stated next want, gated on TinyTang gaining keyboard forwarding from the Tiny89 work, with this program's decoder reading only frame type 0x16 as six bytes of mouse and discarding unknown types safely, so a new type is fine and a re-used one is not. The pipe guard in TinyTang is still the one defect either project carries, pointer_frame() holding the transmit lock while a host owns the link. Pinning a CRC per recorded input sequence in a tool is owed more strongly each cycle: entries 16 and 20 to 25 each leave driven-run figures that only the log records, and this entry adds the grazing-view figures, 16,066 against 1,318, which is why the host could confirm the user's report without the capture card, whose HDMI input still returns pure black to this machine in every format it offers. The Bullet world removal from the PC playground (entry 6) and the J10 second SDRAM bank (entry 7) remain open, and GAME-001 still describes the 64 MiB route as J9's second chip select rather than the J10 bank.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/terrain.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
