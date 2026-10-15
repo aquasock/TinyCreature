@@ -961,3 +961,33 @@ Three ways to spend the 15.7 ms the profile found, in the order the measurement 
 - User Test: NOT RUN
 
 ---
+
+## 30 COMMIT Unreleased 2026-10-15T16:31:35-07:00
+
+#### Coming From:
+
+Unreleased 762c766
+
+#### Purpose:
+
+Attack the 13.9 ms the profile left in the cell walk and the triangle tests, and find out whether the AE350's remaining cost is reachable from software at all.
+
+#### Outcome:
+
+Entry 29 split a 29.6 ms frame into 9.0 ms of walk, 4.9 ms of triangle tests and 15.7 ms of command words, and the user chose to spend this cycle on the first two. Three things were measured and the answer is that neither yields to software as written. First, the vertex work inside the walk was timed with a temporary mark and counted: 18,690 vertices a frame at 293 cycles each, 7.3 ms, a quarter of the frame. That count is nearly every vertex in the grid -- 18,769 of them exist -- so the per-generation stamp, which exists to avoid recomputing a vertex the walk has already touched, saves nothing at all: the walk covers the island, so every vertex is computed once a frame whatever the order. Second, the theory that the depth order was the problem was tested by walking the cells row-major instead: `PHWALK=29314` against 29607, one per cent, so the alternating traversal is nearly free and that theory is dead. Third, and against the expectation that motivated it, computing every vertex in row order before the walk -- the same arithmetic, with the altitude and the colours read the way they lie in memory and the records written forward -- made the frame a third *slower*, `DRAW=40668us` against 30831, with the walk's own vertex work falling from 7308 to 3929 us and the pass costing far more than it saved: it writes 150 KB of records that the walk then has to fetch again, and the walk's calls, which had been touching each record immediately after writing it, now find it evicted. That is a locality lesson in the opposite direction from the one the cycle started with, and it is why the pass was reverted rather than tuned. All three experiments were checkable because the host twin draws the same wrong image and still matches the board frame for frame, and the reversions are exact: with the temporary marks removed the build reproduces entry 29 to the byte, 75,440 bytes of text, `DRAW=29662us`, `PHWALK=29607us`, `CELLS=18158`, `VBLMIN` and `VBLMAX` both 3 and `CRC=361ce46d`, and the host twin draws `361ce46d` as well. What the cycle therefore leaves is a measurement rather than a change: the CPU's remaining cost is reaching memory, not arithmetic -- 293 cycles for a vertex whose own work is a handful of multiplies and a divide, and 238 cycles for a triangle whose tests are a cross product and a dozen compares -- and both of the cheap ways to make those reaches shorter, reordering the traversal and precomputing the vertices, are now measured and refuted. The one number from outside the walk is worth keeping too: the same 80,340 command words a frame cost 9,023 us written to the SDRAM and 550 us to flush, against 15,744 us through the fabric's FIFO, so a command list saves about a fifth of a frame and not the order of magnitude its arithmetic suggests. The user flew nothing this cycle and nothing in front of him changed, which is why the user test is not run rather than passed. The core was not rebuilt and `fpga/raster.sv` is untouched, so no seed sweep was needed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that this cycle's only `.ai` change is this entry, checked that the reference's fast index and its records list the same eleven ids in the same order with none retired, validated this entry against the template, ordering, prose, Status, numbering and 100-entry rules, and confirmed that the project-control change agrees with the workflow and rewrites no settled history.
+
+#### Next Steps:
+
+The software pass is measured out, so the frame's remaining levers are the ones the profile put a price on. A cell-shaped command is the smallest and the best measured: a terrain cell is two triangles sharing four corners, six words against eight, which is 4.7 ms of the 15.7 the words cost, and it is a small change to `fpga/raster.sv` plus the emitter. A command list in SDRAM that the fabric fetches is larger -- 6.1 ms measured, plus a streamer between the SDRAM's video read port and the raster's FIFO, which the patch shows is free exactly while the raster shows its own buffers -- and its real value is the SDRAM read channel it leaves the fabric holding, which is the first piece a texture path needs. One software mystery is worth a probe before either: 238 cycles a triangle for a cross product and a dozen compares is not arithmetic, so the tests are either stalling on instruction fetch or paying something the phase marks do not separate, and a count of how many triangles each test rejects would say whether the work is even useful. Open from before and unchanged: the palette re-fit, which is the gate on anything prettier and on the texture path; the second SDRAM bank (entry 7), which is content and a bus for the fabric rather than the display list; the keyboard, gated on TinyTang gaining keyboard forwarding from the Tiny89 work; flying to a clicked point, which has an implemented and checked pick and wants the original's animation; the pipe guard in TinyTang, `pointer_frame()` holding the transmit lock while a host owns the link; pinning a CRC per recorded input sequence in a tool, still owed; the capture card, which returns pure black to this machine in every format it offers; the Bullet world removal from the PC playground (entry 6); and GAME-001, which still describes the 64 MiB route as J9's second chip select rather than the J10 bank.
+
+#### Files Modified:
+
+- README.md
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

@@ -176,7 +176,25 @@ cycles when other work sits between them. Walking the cells row-major instead
 of back to front moved the walk by one per cent, so the depth order is nearly
 free and the cost is the interface rather than the traversal: that is what a
 command list the fabric fetches for itself would take, and it is why the
-CPU's time is best spent by not sending the commands at all.
+CPU's time is best spent by not sending the commands at all. What such a list
+would cost was then measured on the board: the same 80,340 words written to the
+SDRAM for a frame cost 9,023 us, which is 84 cycles a word against the fabric's
+196, and the flush a fabric reader would need for them cost another 550 us. So
+a command list saves about a fifth of a frame rather than the order of
+magnitude its arithmetic suggests, and the words themselves are the cost either
+way: the same frame read by a cell-shaped command, which needs 6 words for two
+triangles where four-word triangles need 8, would save 4.7 ms for far less
+work. Two things this cycle's software pass then tried, and neither helped.
+Walking the cells row-major rather than back to front, which should have made
+the vertex records cheap to reach, moved the walk by one per cent, so the depth
+order is nearly free. And computing every vertex in row order before the walk
+-- the same arithmetic, with the terrain's own layout under it -- made the
+frame a third slower, 40.7 ms against 30.8, because the pass writes 150 KB of
+records that the walk then has to fetch again. The walk's vertex work is
+7.3 ms, 18,690 vertices at 293 cycles each, and that is nearly every vertex in
+the grid, so the stamp saves no work; what costs is reaching them rather than
+the arithmetic, and both of the ways that promised cheaper reaches have now
+been measured and do not.
 
 The run converts the land, prints the PC's totals, loads the program and the
 land file, and fails unless the board reports `TinyCreature TERRAIN OK` with
