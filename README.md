@@ -6,8 +6,25 @@ Console 138K, as a core for TinyTang: the game's engine from
 reimplementation, running on the FPGA's AE350 RISC-V processor, with a 3D
 renderer built in the FPGA's fabric.
 
-**Status: nothing is built yet.** The project starts by measuring what the
-game asks of the hardware, before any FPGA work.
+**Status: openblack builds and runs on a PC with the game's files** (below);
+nothing runs on the Tang yet. The project starts by measuring what the game
+asks of the hardware, before any FPGA work.
+
+## openblack on a PC
+
+```sh
+tools/fetch_openblack.sh      # openblack at a pinned commit, with its vcpkg
+cmake -S third_party/openblack -B build/openblack --preset ninja-multi-vcpkg
+cmake --build build/openblack --config Release
+build/openblack/bin/Release/openblack -g "<install>/Black & White" -V
+```
+
+`<install>` is the game installed and patched to 1.2: openblack reads its
+`Data` and `Scripts` folders. On Linux the installer and patches 1.1 and 1.2
+run under Wine; a prefix of its own, inside `build/`, keeps it apart from
+`~/.wine`. On the user's copy the landscape draws correctly, while villagers
+and the creature are missing and the log lists script functions openblack has
+not implemented yet.
 
 ## What it builds on
 
