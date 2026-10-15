@@ -670,3 +670,34 @@ Two feel questions are the user's to settle. The first is the press that misses 
 - User Test: PASS
 
 ---
+
+## 21 COMMIT Unreleased 2026-10-15T11:05:31-07:00
+
+#### Coming From:
+
+Unreleased 63e46e6
+
+#### Purpose:
+
+Make the hand sticky when it takes the earth with the left button, the way it is with the middle button's pivot: the hand holds a piece of land, and the land it holds stays with it while the camera moves.
+
+#### Outcome:
+
+The user asked for this and had the mechanism the wrong way round, and the recording says he was right about the behaviour and I was wrong about the reading. openblack's recorded left drag, `test/camera/scenarios/DragUpDown.json`, is 400 frames of GRABBING_LAND with the button held, and across all of them `lastGrabMouseHitPoint` takes exactly one value, (1000, 0, 1108.6): the hand holds one piece of land for the whole gesture. Meanwhile the camera's origin moves, 1120 to 1142, and the aim's own raycast sweeps from -368.5 to -346. At the press, that held point sits 12 units in front of the camera and 14.6 degrees below the aim, while the screen centre's own raycast lands 1488 units away, so the hand is nowhere near under the pointer: it is a thing in the world holding a world point, and its screen position is whatever the projection says. The pointer sits dead centre throughout. What this corrects is the account I gave the user earlier the same day, that the original's hand is the pointer and the land moves to keep up; the data says the hand is the held land and the camera is what moves. The implementation follows the measurement. A left press on the land takes the point under the hand with `land_pick`, the pick the middle press already uses, and keeps it as a world point; while the button is held the hand is drawn where that point projects, and because the hand, both picks and the drag all read one cursor, the cursor is set to that projection too, or the hand would be drawn in one place and the picks happen in another. On release the hand is left holding where the land went and the mouse moves it on from there, which is what the original does with its hand. What the mouse still moves is the camera, so the land keeps following the hand with the pull the user tuned in entry 16, `TC_DRAG_DIVISOR` and all. Two bugs were found on the way and both are worth keeping. `last_buttons = buttons` had ended up between the middle press's edge test and the left press's, so the left edge compared the current buttons against themselves and the grab was either never taken or taken on every report; it is now the last thing `tc_mouse` does, after every edge is read. And the camera's derivation from the focus, angle, tilt and distance was in two places, `tc_draw`'s driven branch and the copy entry 20 put in `tc_init`, which is a bug waiting for a third; it is now one function, `camera_from_angles`, called by the frame, by the init and by the input, the last because a grab has to project the point it holds through the camera the report was applied to rather than the frame before it, or the hand trails the land by a frame. The verification is the strongest kind this project has, a control: every one of the six scripted lands draws the frame CRC it drew before, most importantly Land 1's `da75b4c1`, and a build with the left press disabled reproduces entry 20 to the byte, `TRIS=19834 PIXELS=31113 CRC=fc9b7256`, which proves the refactor moved nothing and the grab is the only change. The recorded session's own numbers moved, from that `19834` to `20155` triangles and `31113` to `28503` pixels, and the reason is the design working rather than a fault: that session presses the middle button again at frame 240, and the middle press now pivots on the piece of land the hand is holding rather than where the mouse had drifted to by then. The hand's own contribution is unchanged at 114 triangles a frame, measured by splitting the count in a throwaway build. AddressSanitizer and UndefinedBehaviorSanitizer are clean on the scripted, recorded and pressed runs. The core was not rebuilt: this is the AE350 program alone. Over two-wire the board drew the scripted run to `CRC=da75b4c1`, unchanged, and the recorded drag to `TRIS=20155 PIXELS=28503 CRC=b92f03e8`, which is `terrain_host`'s frame CRC for the same session, so the pick and the projected hand run identically on the AE350; both runs reported zero late line fetches, a mean 28.6 ms and at most 36.8 ms a frame, a 37.5 ms period. The user flew it and passed it. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged, checked that the reference's fast index and its records list the same ids in the same order, and validated this entry's six sections, sequential numbering, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The user has said he will name the next cycle, so this is a handover rather than a plan. Open and in his hands: whether a middle press that misses the island should stop rotating the camera, which is the original's rule, or keep turning about the focus it had, which is what this camera has done since entry 16; and whether a new pivot should ease in over about a second the way the original's does, where this jumps there as it presses. Flying to a clicked point is now cheap, because the pick it needs exists and is checked, and it wants the animation the original uses with it, so it should be taken with the next camera change rather than on its own. The keyboard is still the stated next want and is still gated on TinyTang gaining keyboard forwarding from the Tiny89 work, with this program's decoder reading only frame type 0x16 as six bytes of mouse and discarding unknown types safely, so a new type is fine and a re-used one is not. The pipe guard in TinyTang is still the one defect either project carries, `pointer_frame()` holding the transmit lock while a host owns the link. Pinning a CRC per recorded input sequence in a tool is owed more strongly each cycle: entries 16 and 20 both left driven-run figures that only the log records, and this entry adds a third, `b92f03e8`, to a list a tool should be checking. The level-of-detail idea stays parked with a measured price beside it, the unused Bullet world removal from the PC playground (entry 6) and the J10 second SDRAM bank (entry 7) remain open, and GAME-001 still describes the 64 MiB route as J9's second chip select rather than the J10 bank.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/terrain.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

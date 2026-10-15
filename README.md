@@ -110,7 +110,12 @@ height field the renderer draws, once per press, and a press that misses the
 island leaves the camera turning about the focus it had. While the middle
 button is held the hand is drawn at the middle of the screen, which is where
 the aim puts the land it took, and it follows the mouse again when the button
-comes up. Four
+comes up. A left press on the land takes hold of it the same way: the piece
+of land under the hand becomes a world point the hand is holding, and while
+the button is held the hand is drawn where that point projects, so it travels
+with the land it took rather than staying under the mouse, and when the button
+comes up the hand is left holding where the land went while the mouse moves it
+on from there. Four
 constants in `firmware/terrain/terrain.h` are the whole feel --
 `TC_TURN_PER_COUNT`, `TC_PITCH_PER_COUNT`, `TC_ZOOM_PER_COUNT` and
 `TC_DRAG_DIVISOR` -- and `tools/run_tang32_feel.sh` builds for the mouse, loads
@@ -119,7 +124,8 @@ seconds a change, with no core rebuild and no TinyTang flash. A hand is drawn
 where the pointer is, this project's own shape and not the game's, filled in
 the palest sky and outlined in the deepest sea -- the program's own two
 colours, the only pair that suits every land -- so that a left drag has
-something on screen to hold the land with. Flying to a clicked point is not
+something on screen to hold the land with -- where the pointer is, and where
+the land it has taken is while it holds it. Flying to a clicked point is not
 implemented; it would want a screen-to-land raycast.
 
 The run converts the land, prints the PC's totals, loads the program and the

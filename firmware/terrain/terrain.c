@@ -50,6 +50,11 @@ static uint32_t verts_x, blocks_x, blocks_z, generation;
 // Q4 world units
 static int32_t cam_x, cam_y, cam_z, sin_yaw, cos_yaw, sin_pitch, cos_pitch;
 static uint8_t last_buttons;   // what the mouse's buttons were last report
+/* A left grab: the piece of land the hand took, and whether it is holding
+ * one. The point is a world point and stays put; the hand is drawn where it
+ * projects. */
+static int left_grab;
+static int32_t grab_x, grab_y, grab_z;
 // The cursor: a hand drawn in two colours, its outline the deepest sea and
 // its fill the palest sky, which are the program's own colours and so are the
 // same on every land. It is what the mouse moves and what a left drag takes
@@ -314,6 +319,8 @@ static int32_t height(uint32_t altitude)
 static int32_t isin(uint32_t a);
 static int32_t icos(uint32_t a);
 
+static void camera_from_angles(void);
+
 struct tc_shade tc_init(const struct tc_land *l, void *work)
 {
 	land = l;
@@ -342,13 +349,7 @@ struct tc_shade tc_init(const struct tc_land *l, void *work)
 	// pick a middle press makes and the drag's own arithmetic both read them:
 	// without this the first report of a run works from a camera at the world
 	// origin with no rotation at all.
-	sin_yaw = isin((uint32_t)cam_turn);
-	cos_yaw = icos((uint32_t)cam_turn);
-	sin_pitch = isin((uint32_t)cam_pitch);
-	cos_pitch = icos((uint32_t)cam_pitch);
-	cam_x = cam_focus_x - (int32_t)((int64_t)(cam_dist * cos_pitch >> 14) * sin_yaw >> 14);
-	cam_z = cam_focus_z - (int32_t)((int64_t)(cam_dist * cos_pitch >> 14) * cos_yaw >> 14);
-	cam_y = cam_focus_y + (int32_t)((int64_t)cam_dist * sin_pitch >> 14);
+	camera_from_angles();
 	cam_driven = 0;
 	last_buttons = 0;
 	// The cursor's shape, and where it starts: the middle of the screen.
@@ -858,6 +859,28 @@ static int land_pick(int32_t sx, int32_t sy, int32_t *px, int32_t *py, int32_t *
 	return 0;
 }
 
+// Put the camera where the focus, the angle, the tilt and the distance say,
+// clear of the ground it is looking at. Every driven frame does this, and so
+// does the input: a grab has to project the point it holds through the camera
+// the report was applied to, not the frame before it, or the hand trails the
+// land by a frame.
+static void camera_from_angles(void)
+{
+	sin_yaw = isin((uint32_t)cam_turn);
+	cos_yaw = icos((uint32_t)cam_turn);
+	sin_pitch = isin((uint32_t)cam_pitch);
+	cos_pitch = icos((uint32_t)cam_pitch);
+	int32_t horiz = (int32_t)((int64_t)cam_dist * cos_pitch >> 14);
+	cam_x = cam_focus_x - (int32_t)((int64_t)horiz * sin_yaw >> 14);
+	cam_z = cam_focus_z - (int32_t)((int64_t)horiz * cos_yaw >> 14);
+	cam_y = cam_focus_y + (int32_t)((int64_t)cam_dist * sin_pitch >> 14);
+	// The camera stays clear of the ground it is looking at, which is what
+	// keeps a drag over a hill from burying it (core-reference OB-005).
+	int32_t clearance = ground(cam_x, cam_z) + 160;
+	if (cam_y < clearance)
+		cam_y = clearance;
+}
+
 void tc_mouse(uint8_t buttons, int32_t dx, int32_t dy, int32_t wheel)
 {
 	/* The camera the scripted orbit left in the same variables, so that the
@@ -907,7 +930,27 @@ void tc_mouse(uint8_t buttons, int32_t dx, int32_t dy, int32_t wheel)
 			cam_dist = depth;
 		}
 	}
-	last_buttons = buttons;
+
+	/* A left press on the land takes hold of it. The point under the hand is
+	 * the thing the hand is holding, and while the button stays down the hand
+	 * is drawn where that point projects, so it slides with the land it took
+	 * and reads as holding it. The original's hand is a thing in the world
+	 * holding one piece of it for a whole drag -- openblack's recorded left
+	 * drag has the same grabbed point on all 400 of its held frames -- and not
+	 * a pointer that follows the mouse: its screen position is whatever the
+	 * projection says. What the mouse moves is still the camera, so the land
+	 * follows the hand the way the tuned drag has it. */
+	if (left_grab && !(buttons & TC_MOUSE_LEFT))
+		left_grab = 0;
+	if ((buttons & TC_MOUSE_LEFT) && !(last_buttons & TC_MOUSE_LEFT)) {
+		int32_t px, py, pz;
+		if (land_pick(cursor_x, cursor_y, &px, &py, &pz)) {
+			grab_x = px;
+			grab_y = py;
+			grab_z = pz;
+			left_grab = 1;
+		}
+	}
 
 	/* While the middle button is held the hand stays on the middle of the
 	 * screen, which is the finger holding the earth: the piece of land it
@@ -968,6 +1011,33 @@ void tc_mouse(uint8_t buttons, int32_t dx, int32_t dy, int32_t wheel)
 			cam_dist = (int32_t)((land->cells_x > land->cells_z ?
 					      land->cells_x : land->cells_z) * CELL * 2);
 	}
+
+	/* The hand goes where the land it holds is drawn, which is the whole of
+	 * the grab: it is the land that is held, not the mouse. The camera is put
+	 * where this report left it before the point is projected, so the hand and
+	 * the land it is holding are in step within the frame rather than a frame
+	 * apart. */
+	if (left_grab) {
+		int32_t ax, ay, az, sx, sy;
+		camera_from_angles();
+		to_camera(grab_x, grab_y, grab_z, &ax, &ay, &az);
+		if (az > NEAR) {
+			project_xy(ax, ay, az, &sx, &sy);
+			if (sx < 0)
+				sx = 0;
+			if (sy < 0)
+				sy = 0;
+			if (sx > (TC_WIDTH - 1) * 16)
+				sx = (TC_WIDTH - 1) * 16;
+			if (sy > (TC_HEIGHT - 1) * 16)
+				sy = (TC_HEIGHT - 1) * 16;
+			cursor_x = sx;
+			cursor_y = sy;
+		}
+	}
+	/* Which buttons these were, once every edge above has been read, so that
+	 * the next report knows what this one was. */
+	last_buttons = buttons;
 }
 
 // One run of the cursor as the two triangles a rectangle needs, wound the way
@@ -1022,19 +1092,7 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 		cam_focus_z = cam_z + (int32_t)((int64_t)radius * cos_yaw >> 14);
 		cam_focus_y = cam_y - (int32_t)((int64_t)radius * TAN_PITCH >> 14);
 	} else {
-		sin_yaw = isin((uint32_t)cam_turn);
-		cos_yaw = icos((uint32_t)cam_turn);
-		sin_pitch = isin((uint32_t)cam_pitch);
-		cos_pitch = icos((uint32_t)cam_pitch);
-		int32_t horiz = (int32_t)((int64_t)cam_dist * cos_pitch >> 14);
-		cam_x = cam_focus_x - (int32_t)((int64_t)horiz * sin_yaw >> 14);
-		cam_z = cam_focus_z - (int32_t)((int64_t)horiz * cos_yaw >> 14);
-		cam_y = cam_focus_y + (int32_t)((int64_t)cam_dist * sin_pitch >> 14);
-		// The camera stays clear of the ground it is looking at, which is what
-		// keeps a drag over a hill from burying it (core-reference OB-005).
-		int32_t clearance = ground(cam_x, cam_z) + 160;
-		if (cam_y < clearance)
-			cam_y = clearance;
+		camera_from_angles();
 	}
 
 	// The sky above the horizon, the sea below it, a run of rows at a time.
