@@ -404,3 +404,33 @@ The cell walk is the only large target left: outside the triangle submission and
 - User Test: PASS
 
 ---
+
+## 13 COMMIT Unreleased 2026-10-15T06:08:36-07:00
+
+#### Coming From:
+
+Unreleased e60cd5c
+
+#### Purpose:
+
+Attribute what remains of the cell walk, which entry 12 left as the last large target, and decide from measurement whether to keep cutting it.
+
+#### Outcome:
+
+Three throwaway builds on the board answered this, and the answer is that the walk is not what its instruction count suggests. An attribution tree over the walk reported 25.51M cycles a frame, of which `draw_cell` is 23.69M over 21,041 calls, or 1,126 cycles each: its own work 553 of those, `vertex` 248 over 3.45 calls, and `submit` 321 over 1.7 calls, while a cell that is visited and not drawn costs about 41, so the loop and the block test are not the problem. A model of the A25's cache (32 KiB, 4-way, 32-byte lines, TinyNES DEV-013) replayed over the walk's real accesses -- instrumenting the host twin to record every touch of the vertex records, cells, altitude and block flags, 293,019 a frame -- finds only 8,282 misses, 2.8 percent, identically under LRU and random replacement, which is 5.1M cycles or about a quarter of the frame: the walk is not memory-bound. A null-target build, the same walk with only the rasterizer emission removed, then took `DRAW` from 27,736 to 16,889 us, so sending a frame's commands costs 10,847 us, 39 percent of it, for 80,340 words at about 101 A25 cycles each. That last figure matches AE-002's 120 cycles for a back-to-back uncached store and contradicts the 23 cycles for four stores entry 9 recorded, which is the number the planning retired triangular packing on: the packing question is open again, and the older figure is the one to distrust. The reason the store path dominates is the resolution: at 320 by 180 the whole island is about 1.4 cells to a pixel when the camera is out, so the renderer sends 20,085 triangles to fill 33,072 pixels, 1.6 pixels a triangle at roughly 540 cycles each including its four command words, or 330 cycles for every pixel drawn. So no arithmetic change will pay -- this cycle's three estimates over-predicted by three to ten times each -- and the only lever that crosses the display's one-blank 16.66 ms budget is drawing fewer and larger primitives, which is the level-of-detail idea the user has chosen to keep unspent for now. The user parked the walk here at 30 frames a second, asked for the project to move towards a game, and asked whether the camera could be moved with a mouse; the investigation of that is the next entry, and the input hardware facts are as TinyNES records them: four Wii Classic Controllers read over I2C on PMOD0 and exposed to the AE350 at 0xe8040000 (TinyNES PMOD-007, WII-001), which this core's patch removes, the platform's keyboard path enumerated and discarded (TinyNES NEST-002), and the dock's two USB-A ports sitting on FPGA pins (TinyNES BRD-003). No core in these projects has read a mouse. Nothing was committed by this cycle: every build was a throwaway, the shipped source is unchanged, and no frame CRC moved. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged, checked that the reference's fast index and its records list the same ids in the same order, and validated this entry's six sections, sequential numbering, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+Turn the terrain orbit into something a person drives. The core reads no input at all today, so the first question is which input path to build, and there are three with very different costs: the Wii Classic Controller path this core's patch removed, which TinyNES proved on this bench and which needs the pad blocks and their register restored and a core rebuild; the console link, which is already open on the board and could carry camera commands from a host-side mouse into the AE350's UART with no change to the fabric at all, at the price of staying tethered to the PC; and a USB host in the fabric for the dock's USB-A ports, which nothing here has done and which is the only way to a mouse on the board itself. Whichever is chosen, the camera becomes state the firmware owns and the frame stops being a fixed 600-frame orbit, which changes what `terrain_host` and the frame CRC mean and needs its own cycle. The stress harness that would have caught entry 10's clip-path defect in seconds, and that this cycle's hangs and mis-estimates argue for again, still lives outside the repository. The unused Bullet world removal from the PC playground (entry 6) and the J10 second SDRAM bank (entry 7) remain open, and GAME-001 still describes the 64 MiB route as J9's second chip select rather than the J10 bank.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---
