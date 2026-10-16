@@ -116,6 +116,11 @@ module raster_tb;
             while ($fscanf(f, "%h\n", w) == 1) begin
                 if (rest == 0 && w[31:28] == 4'd1) begin
                     tris_sent[slot] = tris_sent[slot] + 1; rest = 3;
+                end else if (rest == 0 && w[31:28] == 4'd4) begin
+                    // A textured triangle: one triangle to the counters, as
+                    // the emitter counts it, and twelve words after its
+                    // opcode -- three corners and nine plane numbers.
+                    tris_sent[slot] = tris_sent[slot] + 1; rest = 12;
                 end else if (rest != 0)
                     rest = rest - 1;
                 write(15'h00, w);
@@ -154,6 +159,10 @@ module raster_tb;
                 want = {expected(slot, 4*k+3), expected(slot, 4*k+2),
                         expected(slot, 4*k+1), expected(slot, 4*k)};
                 read(15'h0024, q);
+                if (frame_file) begin
+                    $fwrite(frame_file, "%02x %02x %02x %02x\n",
+                            q[7:0], q[15:8], q[23:16], q[31:24]);
+                end
                 if (q !== want) begin
                     if (bad < 6)
                         $display("FAIL: buffer %0d word %0d got %h want %h", slot, k, q, want);
@@ -243,10 +252,14 @@ module raster_tb;
     reg [31:0] nz0, nz1;
     integer want_nz0, want_nz1;
     integer dump_file = 0;
+    integer frame_file = 0;
+    reg [8*256-1:0] frame_path;
     reg [8*256-1:0] dump_path;
     initial begin
         if ($value$plusargs("dump=%s", dump_path))
             dump_file = $fopen(dump_path, "w");
+        if ($value$plusargs("framedump=%s", frame_path))
+            frame_file = $fopen(frame_path, "w");
         if (!$value$plusargs("cmd0=%s", cmd0) || !$value$plusargs("cmd1=%s", cmd1) ||
             !$value$plusargs("fb0=%s", fb0) || !$value$plusargs("fb1=%s", fb1) ||
             !$value$plusargs("pal=%s", pal_path) ||

@@ -1589,3 +1589,40 @@ The fabric is the other half and its shape is now fixed by the model. `fpga/rast
 - User Test: NOT RUN
 
 ---
+
+## 49 COMMIT Unreleased 2026-10-16T03:17:05-07:00
+
+#### Coming From:
+
+Unreleased 8a3f1eb
+
+#### Purpose:
+
+Put the textured triangle into the fabric, to the model entry 48 wrote and checked, so that a card's faces are filled by the hardware rather than by the columns cut to stand in for it.
+
+#### Outcome:
+
+`fpga/raster.sv` takes a textured triangle now: a thirteen-word command -- the opcode and the tile, three Q4 corners, and the nine plane numbers the caller worked out -- gathered by the same assembler the cards use, set up with the same radix-4 sequence, and filled by stepping the three planes a pixel at a time, dividing u and v by the interpolated reciprocal of depth over ten quotient bits each with one restoring divider, and writing the texel the quotient names as an art palette entry, clamped into the tile. A textured pixel costs about twenty-five clocks against the shaded fill's two, which the card's own load pays for easily and which a crowd would feel first. `tests/raster_tb.sv` replays two real frames whose commands carry textured triangles and requires the fabric's read-back to match `terrain_host` byte for byte: it passes for the pin's card alone (`5ecaf39c` and `d354885d`) and for the shelf of sixty-four (`43f0792b` and `6ff5ff22`), and the shaded triangles and the columns' cards still pass unchanged at `e6ed2c5e` and `50e71284`. Four defects of this cycle's own making were found, and every one of them by that word-for-word comparison rather than by reading the HDL. The first was that the triangle before leaked its last-pixel flag and its write-enable into a textured one, which skips the palette walk that clears them, so a textured triangle ended after a single pixel and its face was never drawn. The second was that the planes' steps were given per Q4 unit while the fill adds a step once a pixel, so every plane walked sixteen times too slowly. The third was that the planes were given at a corner while the fill starts its accumulators at the first pixel of the triangle's clamped bounding box, which is a whole-frame offset; the rule is written down twice, once as `tex_origin` in terrain.c and once in the fabric's own S_BOX and S_CLAMP, because the two cannot share code. The fourth is entry 37's lesson a second time: the tile store needs three clocks, not two, because its address register is itself a register, so two clocks write each pixel the previous pixel's texel -- invisible wherever two adjacent pixels share a texel and a mottled texture everywhere else, and invisible to the emitter's counters, which agreed with the twin throughout. The core was rebuilt: synthesised once with eight seeds placed and routed in parallel, six of them clean and two not, seeds 7 and 8 missing the 75 MHz bus clock at 70.79 and 72.75 MHz while their pixel clocks passed at 88.56 and 97.51, which is why the pixel-clock line alone is not the check a seed should be judged on. Seed 2 was kept on the bus clock, 81.78 MHz against the 75 required and 94.99 against 74.25, giving `ae350_soc.fs` SHA-256 `db57e932e7a5469ca0e8e987c1d31f9a4237472305fa441f3caab7d7030175a8` and `ae350_soc.bin`, 4,873,196 bytes, SHA-256 `f9f9e2ea15e1f4975e68596d792143438b5cfcf66790b0dec7da92e775498c67`; the device fills 19,335 of 138,240 LUT4 with 3,190 ALU, 10,538 DFF and 157 of 340 BSRAM, so the command and its divider cost about a thousand lookup tables and no block RAM at all, the tile store being the one the cards already read. The routing finished but the build script's own last steps -- writing the seed table, choosing the best and copying its artifacts -- were replayed by hand, because the harness's job control moved the background build's process group and killed the script after its wait; the table and the choice above are that script's own python and awk run over its own seed directories, not a second implementation of them. Nothing was deployed: the user asked for the board to be left alone while he was using it, so this cycle ends with the fabric verified in simulation and the core built, and the board is the next entry. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that this cycle's only `.ai` change is this entry, checked that the reference's fast index and its records list the same eleven ids in the same order with none retired, validated this entry against the template, ordering, prose, Status, numbering and 100-entry rules, and confirmed that the project-control change agrees with the workflow and rewrites no settled history.
+
+#### Next Steps:
+
+The board is the one step left and the user's word gates it: `CARD_TEX=1` with the cards and the tiles on and the card standing at 80,90, then the pinned and orbit gates against the twin with zero late line fetches, then his judgement of the picture he first called distorted. If he accepts it, `CARD_TEX` becomes the default and the columns, `TC_CARD_COLUMN_PX` and the `CARD` command itself can retire, which would also free the card fill's own state and its three clocks; the art's tile store stays, since the textured fill reads it. Two numbers this cycle did not measure and the next one should: what a textured pixel really costs on the board, since twenty-five clocks is arithmetic on the fill's states rather than a measurement, and what that does to entry 40's ladder, since the fill is what limits a crowd and this makes it limit sooner. Beyond that the queue stands: cards that turn and tilt, which two triangles now make possible for the first time; a texture path from SDRAM rather than the tile store; planting a pin where the cursor is on a button; the store's size; a crowd that moves; `tools/fetch_tiles.sh`; the projection's left-right mirroring, which every scripted frame CRC would move if it were corrected; the fabric's card fill indexing its store without clamping, latent while no card reaches texel 32; the Makefile's host target not depending on the generated tile header; the ninth bit of the framebuffer; the palette's other half; the cell-shaped command and the display list; the keyboard, gated on TinyTang; flying to a clicked point; the pipe guard in TinyTang; a CRC pinned per recorded input sequence; the capture card; the Bullet world removal (entry 6); and GAME-001.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/Makefile
+- firmware/terrain/terrain.c
+- firmware/terrain/terrain.h
+- fpga/raster.sv
+- tests/raster_tb.sv
+- tools/run_tang32_feel.sh
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---

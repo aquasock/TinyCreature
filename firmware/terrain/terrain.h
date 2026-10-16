@@ -63,25 +63,25 @@ struct tc_card {
 
 /* A textured triangle: three Q4 screen corners, one tile of the art, and the
  * three planes the fill interpolates -- the tile's u, its v and the reciprocal
- * of the camera-space depth -- each as its value at the first corner and its
- * step a Q4 screen unit across and down. The fill steps those planes, adds,
- * and writes the texel the quotient of the first two by the third names, which
- * is what makes the mapping projective rather than affine; the caller works
- * the planes out because the fabric has no divider at setup and does not need
- * one if it is handed the coefficients.
+ * of the camera-space depth -- each as its value at the first pixel the fill
+ * visits, and its step a whole pixel across and a whole row down. The fill
+ * steps those planes, adds, and writes the texel the quotient of the first two
+ * by the third names, which is what makes the mapping projective rather than
+ * affine; the caller works the planes out because the fabric has no divider at
+ * setup and does not need one if it is handed the coefficients.
  *
  * A corner's numerator is (u << TC_TEX_SCALE) / z and its denominator
  * (1 << TC_TEX_SCALE) / z, so the quotient is the texel coordinate in Q4 with
  * the scale cancelled. u and v are Q4 texels of the tile, z is Q4 camera-space
  * units, and TC_TEX_SCALE is what keeps the steps and the products the fill
- * takes with them inside 32 bits: at twenty bits a card at ten cells has a
- * denominator near 100 and one at two hundred cells a denominator above 5,
- * so the quotient resolves better than a sixteenth of a texel at both. */
+ * takes with them inside 32 bits. The steps are per pixel, not per Q4 unit,
+ * because that is what the fill adds: a step given per Q4 unit and added once
+ * a pixel walks a plane sixteen times too slowly. */
 #define TC_TEX_SCALE 20
 struct tc_tex {
 	uint32_t tile;             /* which tile of the art */
 	int32_t x[3], y[3];        /* Q4 screen corners, in the fill's order */
-	int32_t u0, ux, uy;        /* tile u at corner 0, per Q4 across, per Q4 down */
+	int32_t u0, ux, uy;        /* tile u at the first pixel, per pixel, per row */
 	int32_t v0, vx, vy;        /* tile v the same way */
 	int32_t r0, rx, ry;        /* 1/z the same way */
 };

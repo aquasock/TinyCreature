@@ -1428,7 +1428,8 @@ void tc_soft_tex(void *soft, const struct tc_tex *t)
 		top = t->y[k] < top ? t->y[k] : top;
 		bottom = t->y[k] > bottom ? t->y[k] : bottom;
 	}
-	int32_t i0 = lo >> 4, i1 = hi >> 4, j0 = top >> 4, j1 = bottom >> 4;
+	int32_t i0 = (lo + 7) >> 4, i1 = (hi - 8) >> 4;
+	int32_t j0 = (top + 7) >> 4, j1 = (bottom - 8) >> 4;
 	if (i0 < 0)
 		i0 = 0;
 	if (j0 < 0)
@@ -1437,6 +1438,7 @@ void tc_soft_tex(void *soft, const struct tc_tex *t)
 		i1 = TC_WIDTH - 1;
 	if (j1 > TC_HEIGHT - 1)
 		j1 = TC_HEIGHT - 1;
+	/* The planes are given at this pixel, so the loop measures from it. */
 	s->triangles++;
 	for (int32_t j = j0; j <= j1; j++) {
 		int32_t py = j * 16 + 8;
@@ -1452,7 +1454,7 @@ void tc_soft_tex(void *soft, const struct tc_tex *t)
 			}
 			if (f[0] < 0 || f[1] < 0 || f[2] < 0)
 				continue;
-			int32_t dx = px - t->x[0], dy = py - t->y[0];
+			int32_t dx = i - i0, dy = j - j0;
 			int64_t num_u = (int64_t)t->u0 + (int64_t)dx * t->ux +
 					(int64_t)dy * t->uy;
 			int64_t num_v = (int64_t)t->v0 + (int64_t)dx * t->vx +
@@ -1706,24 +1708,56 @@ static unsigned card_columns(int32_t width)
 	return (unsigned)n;
 }
 
-/* The plane through three screen points and the values at them, as the value
- * at the first point and its step a Q4 unit across and down. The determinant is
- * twice the triangle's own area, and the caller's winding keeps it off zero. */
+/* The first pixel the fill visits, which is where a plane is given: the
+ * bounding box of the three corners in pixel centres, clamped to the screen.
+ * It is the rule fpga/raster.sv derives in its own S_BOX and S_CLAMP, written
+ * here because the fill starts its accumulators there and the caller has to
+ * hand the planes over at the same pixel. A mismatch is a whole-frame error,
+ * so the testbench's word-for-word check is what holds the two together. */
+static void tex_origin(const int32_t *x, const int32_t *y, int32_t *px,
+		       int32_t *py)
+{
+	int32_t xmin = x[0], ymin = y[0];
+	for (unsigned k = 1; k < 3; k++) {
+		xmin = x[k] < xmin ? x[k] : xmin;
+		ymin = y[k] < ymin ? y[k] : ymin;
+	}
+	int32_t i0 = (xmin + 7) >> 4, j0 = (ymin + 7) >> 4;
+	if (i0 < 0)
+		i0 = 0;
+	if (j0 < 0)
+		j0 = 0;
+	*px = i0;
+	*py = j0;
+}
+
+/* The plane through three screen points and the values at them, as the value at
+ * the fill's first pixel and its steps a whole pixel across and a whole row
+ * down. The determinant is twice the triangle's own area, and the caller's
+ * winding keeps it off zero. */
 static void tex_plane(const int32_t *x, const int32_t *y, const int64_t *v,
-		      int32_t *v0, int32_t *vx, int32_t *vy)
+		      int32_t i0, int32_t j0, int32_t *v0, int32_t *vx,
+		      int32_t *vy)
 {
 	int64_t d1x = x[1] - x[0], d1y = y[1] - y[0];
 	int64_t d2x = x[2] - x[0], d2y = y[2] - y[0];
 	int64_t det = d1x * d2y - d2x * d1y;
 	int64_t a1 = v[1] - v[0], a2 = v[2] - v[0];
-	*v0 = (int32_t)v[0];
 	if (det == 0) {
+		*v0 = (int32_t)v[0];
 		*vx = 0;
 		*vy = 0;
 		return;
 	}
-	*vx = (int32_t)((a1 * d2y - a2 * d1y) / det);
-	*vy = (int32_t)((a2 * d1x - a1 * d2x) / det);
+	/* The gradient a Q4 unit, then the step a pixel, which is sixteen of
+	 * them: the fill adds a step a pixel and a step a row, and a step left
+	 * per Q4 unit walks a plane sixteen times too slowly. */
+	int64_t gx = (a1 * d2y - a2 * d1y) / det;
+	int64_t gy = (a2 * d1x - a1 * d2x) / det;
+	*vx = (int32_t)(gx * 16);
+	*vy = (int32_t)(gy * 16);
+	*v0 = (int32_t)(v[0] + ((int64_t)(i0 * 16 + 8 - x[0]) * gx) +
+			((int64_t)(j0 * 16 + 8 - y[0]) * gy));
 }
 
 /* A quad as the two triangles the fill draws it with, from four Q4 screen
@@ -1961,9 +1995,11 @@ static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 					V[n] = ((int64_t)p->tv[ord[c[n]]] << TC_TEX_SCALE) / z;
 					R[n] = ((int64_t)1 << TC_TEX_SCALE) / z;
 				}
-				tex_plane(t.x, t.y, U, &t.u0, &t.ux, &t.uy);
-				tex_plane(t.x, t.y, V, &t.v0, &t.vx, &t.vy);
-				tex_plane(t.x, t.y, R, &t.r0, &t.rx, &t.ry);
+				int32_t i0, j0;
+				tex_origin(t.x, t.y, &i0, &j0);
+				tex_plane(t.x, t.y, U, i0, j0, &t.u0, &t.ux, &t.uy);
+				tex_plane(t.x, t.y, V, i0, j0, &t.v0, &t.vx, &t.vy);
+				tex_plane(t.x, t.y, R, i0, j0, &t.r0, &t.rx, &t.ry);
 				out->tex(out->ctx, &t);
 				counts->triangles++;
 			}

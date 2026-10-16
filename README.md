@@ -291,6 +291,31 @@ rectangle fill always did and what keeps the art reading the way the user
 accepted it. Whether the projection itself should be corrected is its own
 question, and every scripted frame would move if it were.
 
+The fabric fills it now. `fpga/raster.sv` takes a thirteen-word textured triangle
+-- the opcode and the tile, three Q4 corners, and the nine plane numbers -- and
+its fill steps the three planes a pixel at a time, divides u and v by the
+interpolated reciprocal of depth over ten quotient bits each, and writes the
+texel that names, clamped into the tile. The divides are a restoring divider at
+ten clocks a quotient, which makes a textured pixel about twenty-five clocks
+against the shaded fill's two; the card's own load pays for that easily, five or
+six thousand pixels a frame being about two milliseconds where the fabric is
+idle by the time the CPU finishes, and it is what a crowd would feel first. Two
+things had to be the same on both sides, and both are written down in two places
+because the fabric and the caller cannot share code: the planes are given at the
+first pixel of the triangle's clamped bounding box, which `tex_origin` in
+terrain.c writes down against the fabric's own S_BOX and S_CLAMP, and the store
+needs three clocks, because its address register is itself a register. Three
+clocks is entry 37's lesson twice over: at two, each pixel reads the previous
+one's texel, which is invisible wherever two pixels share a texel and a mottled
+texture everywhere else -- and the emitter's own counters agreed with the twin
+throughout, so only the word-for-word frame comparison could see it.
+
+`tests/raster_tb.sv` replays two real frames whose commands carry textured
+triangles and requires the fabric's read-back to match `terrain_host` byte for
+byte, which it does both for a card alone and for the shelf of sixty-four, and
+it still does for the shaded triangles and the cards the columns draw. `TEX=0`
+remains the default until the board has flown the triangles.
+
 A tall sprite stands on the island's middle: `tools/convert_sprite.py` stacks
 one of the tile set's two-tile creatures into 32 by 64, trims it to the art,
 tints it and quantises it to the seven palette entries the sea gave up when it

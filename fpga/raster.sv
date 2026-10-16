@@ -231,7 +231,7 @@ module raster #(
 
     // ---- Command assembler: the next command is gathered while the
     // engine draws the last ----
-    reg [2:0] issued = 0, got = 0, len = 1;
+    reg [3:0] issued = 0, got = 0, len = 1;
     reg q_valid = 0;
     reg cmd_full = 0;
     assign pop = !cmd_full && !fifo_empty && issued < len;
@@ -246,6 +246,11 @@ module raster #(
     reg [7:0] cmd_tile = 0;
     reg signed [15:0] cmd_x [0:3];
     reg signed [15:0] cmd_y [0:3];
+    // A textured triangle's nine plane numbers, after its three corners: the
+    // value of each plane at the first pixel of the clamped bounding box and
+    // its step a Q4 unit across and down, for u, v and the reciprocal of the
+    // camera-space depth in that order.
+    reg signed [31:0] cmd_p [0:8];
     wire take;
     always @(posedge clk or negedge resetn) begin
         if (!resetn) begin
@@ -269,13 +274,24 @@ module raster #(
                     end else if (fifo_q[31:28] == 4'd3) begin
                         cmd_tile <= fifo_q[23:16];
                         len <= 5; got <= 1;
+                    end else if (fifo_q[31:28] == 4'd4) begin
+                        cmd_tile <= fifo_q[23:16];
+                        len <= 13; got <= 1;
                     end else begin
                         cmd_full <= 1; got <= 0; issued <= 0; len <= 1;
                     end
                 end else begin
-                    cmd_x[got - 1] <= fifo_q[15:0];
-                    cmd_y[got - 1] <= fifo_q[31:16];
-                    if (got == (cmd_op == 4'd3 ? 3'd4 : 3'd3)) begin
+                    // A textured triangle's three corner words are read the
+                    // way a triangle's are, and its nine plane words after
+                    // them, whole.
+                    if (cmd_op == 4'd4 && got > 4'd3) begin
+                        cmd_p[got - 4] <= fifo_q;
+                    end else begin
+                        cmd_x[got - 1] <= fifo_q[15:0];
+                        cmd_y[got - 1] <= fifo_q[31:16];
+                    end
+                    if (got == (cmd_op == 4'd3 ? 4'd4 :
+                                cmd_op == 4'd4 ? 4'd12 : 4'd3)) begin
                         cmd_full <= 1; got <= 0; issued <= 0; len <= 1;
                     end else
                         got <= got + 1'b1;
@@ -328,8 +344,41 @@ module raster #(
     // ---- Engine ----
     localparam S_IDLE = 0, S_ROWS = 1, S_BOX = 2, S_CLAMP = 3, S_LOAD = 4,
                S_EDGE = 5, S_TRIPLE = 6, S_MUL = 7, S_FIN = 8, S_PAL = 9,
-               S_SCAN = 10, S_DRAIN = 11, S_CARD = 12;
+               S_SCAN = 10, S_DRAIN = 11, S_CARD = 12,
+               S_TEXDIV = 13, S_TEXW = 14;
     reg [3:0] state = S_IDLE;
+
+    // ---- A textured triangle's own state ----
+    // The three planes the fill steps -- the tile's u, its v and the
+    // reciprocal of the camera-space depth -- each as its value at the first
+    // pixel of the triangle's clamped bounding box and its step a Q4 unit
+    // across and down, all worked out by the caller. The fill adds, divides
+    // the first two by the third, and writes the texel that names; the
+    // quotient is what makes the mapping projective where a weight of the
+    // corners would make it affine and wrong between them.
+    reg tex_on = 0;
+    reg [5:0] tex_tile = 0;
+    reg signed [31:0] tex_a = 0, tex_b = 0, tex_c = 0;
+    reg signed [31:0] tex_arow = 0, tex_brow = 0, tex_crow = 0;
+    reg signed [31:0] tex_as = 0, tex_bs = 0, tex_cs = 0;
+    reg signed [31:0] tex_aj = 0, tex_bj = 0, tex_cj = 0;
+    // This pixel's three planes, latched before the step moves them on.
+    reg signed [31:0] tn_a = 0, tn_b = 0, tn_c = 0;
+    reg signed [31:0] tex_rem = 0, tex_q = 0;
+    reg [3:0] tex_bit = 0;
+    reg tex_second = 0;
+    reg [1:0] tex_w = 0;
+    reg signed [11:0] tex_uu = 0, tex_vv = 0;
+    wire signed [31:0] tex_aden = tn_c >= 0 ? tn_c : -tn_c;
+    wire tex_set = tex_rem >= (tex_aden <<< tex_bit);
+    wire signed [31:0] tex_q_next = tex_set ? (tex_q | (32'd1 <<< tex_bit)) : tex_q;
+    wire signed [31:0] tex_rem_next = tex_set ? tex_rem - (tex_aden <<< tex_bit) : tex_rem;
+    wire signed [11:0] tex_u_texel = tex_uu >>> 4;
+    wire signed [11:0] tex_v_texel = tex_vv >>> 4;
+    wire [4:0] tex_tu = tex_u_texel < 0 ? 5'd0 :
+                        (tex_u_texel > 12'sd31 ? 5'd31 : tex_u_texel[4:0]);
+    wire [4:0] tex_tv = tex_v_texel < 0 ? 5'd0 :
+                        (tex_v_texel > 12'sd31 ? 5'd31 : tex_v_texel[4:0]);
 
     // ---- A card's own state ----
     // The rectangle, the running pixel, the two Q8 texel accumulators and
@@ -481,7 +530,8 @@ module raster #(
             S_IDLE:
                 if (take) begin
                     colour <= cmd_colour;
-                    if (cmd_op == 4'd1) begin
+                    tex_on <= 1'b0;
+                    if (cmd_op == 4'd1 || cmd_op == 4'd4) begin
                         for (k = 0; k < 3; k = k + 1) begin
                             vx[k] <= cmd_x[k]; vy[k] <= cmd_y[k];
                         end
@@ -489,6 +539,25 @@ module raster #(
                         c1_e <= cmd_c1;
                         c2_e <= cmd_c2;
                         tris <= tris + 1'b1;
+                        if (cmd_op == 4'd4) begin
+                            // A textured triangle: the corners are read the
+                            // way a shaded one's are and the nine plane
+                            // numbers follow them, straight into the
+                            // accumulators the fill steps, which start at
+                            // the value the caller gave for the first pixel.
+                            tex_on <= 1'b1;
+                            tex_tile <= cmd_tile[5:0];
+                            tex_a <= cmd_p[0]; tex_as <= cmd_p[1]; tex_aj <= cmd_p[2];
+                            tex_b <= cmd_p[3]; tex_bs <= cmd_p[4]; tex_bj <= cmd_p[5];
+                            tex_c <= cmd_p[6]; tex_cs <= cmd_p[7]; tex_cj <= cmd_p[8];
+                            // The row accumulators start where the first
+                            // pixel's value does: leaving them from the last
+                            // triangle sends the planes somewhere else at the
+                            // first row's end.
+                            tex_arow <= cmd_p[0];
+                            tex_brow <= cmd_p[3];
+                            tex_crow <= cmd_p[6];
+                        end
                         state <= S_BOX;
                     end else if (cmd_op == 4'd2 && cmd_first < cmd_end &&
                                  cmd_end <= H) begin
@@ -630,7 +699,17 @@ module raster #(
                           (acc_x[0] - acc_y[0] + acc_x[1] - acc_y[1] +
                            acc_x[2] - acc_y[2]);
                 pal_step <= 0;
-                state <= S_PAL;
+                // The leftovers of the triangle before: a textured triangle
+                // skips the palette walk and would otherwise start with the
+                // last pixel's flag and write-enable still standing, which
+                // ends it after one pixel and lets it write a stale one.
+                last_p <= 0;
+                we1_r <= 0;
+                // A textured triangle has no palette walk to do: its texel is
+                // written as an entry of the art's own palette, so it goes
+                // straight to the scan with the planes the caller left at the
+                // bounding box's first pixel.
+                state <= tex_on ? S_SCAN : S_PAL;
             end
             S_PAL: begin
                 // The three corners' palette entries, in the five bits a
@@ -659,7 +738,7 @@ module raster #(
                 // entry comes back a clock later, so the pixel written here
                 // is the one before: its colour was addressed in the last
                 // cycle, and it is written once, in the first phase.
-                if (phase && we1_r) begin
+                if (phase && we1_r && !tex_on) begin
                     we <= 1; waddr <= a1_r; wdata <= lut_q[7:0];
                 end
                 if (!phase) begin
@@ -667,7 +746,13 @@ module raster #(
                     bw_r <= bw;
                     covered_r <= covered;
                     addr_r <= addr;
-                    if (covered)
+                    // This pixel's planes, before the step moves them on: a
+                    // textured triangle divides the ones belonging to the
+                    // pixel it is writing, not the next one's.
+                    tn_a <= tex_a;
+                    tn_b <= tex_b;
+                    tn_c <= tex_c;
+                    if (covered && !tex_on)
                         pixels <= pixels + 1'b1;
                     if (i == i1) begin
                         if (j == j1)
@@ -680,19 +765,42 @@ module raster #(
                                 e_row[k] <= e_row[k] + step_y[k];
                                 e[k] <= e_row[k] + step_y[k];
                             end
+                            tex_arow <= tex_arow + tex_aj;
+                            tex_brow <= tex_brow + tex_bj;
+                            tex_crow <= tex_crow + tex_cj;
+                            tex_a <= tex_arow + tex_aj;
+                            tex_b <= tex_brow + tex_bj;
+                            tex_c <= tex_crow + tex_cj;
                         end
                     end else begin
                         i <= i + 1'b1; addr <= addr + 1'b1;
                         for (k = 0; k < 3; k = k + 1)
                             e[k] <= e[k] + step_x[k];
+                        tex_a <= tex_a + tex_as;
+                        tex_b <= tex_b + tex_bs;
+                        tex_c <= tex_c + tex_cs;
                     end
                 end else begin
-                    lut_addr <= mixed;
-                    we1_r <= covered_r;
-                    a1_r <= addr_r;
-                    if (last_p) begin
-                        state <= S_DRAIN;
-                        drain <= 2'd2;
+                    if (tex_on) begin
+                        // The texel this pixel names: the two numerators
+                        // divided by the interpolated reciprocal of depth,
+                        // ten quotient bits each.
+                        if (covered_r) begin
+                            tex_rem <= tn_a >= 0 ? tn_a : -tn_a;
+                            tex_q <= 0;
+                            tex_bit <= 4'd9;
+                            tex_second <= 1'b0;
+                            state <= S_TEXDIV;
+                        end else if (last_p)
+                            state <= S_IDLE;
+                    end else begin
+                        lut_addr <= mixed;
+                        we1_r <= covered_r;
+                        a1_r <= addr_r;
+                        if (last_p) begin
+                            state <= S_DRAIN;
+                            drain <= 2'd2;
+                        end
                     end
                 end
                 phase <= ~phase;
@@ -709,6 +817,60 @@ module raster #(
                     state <= S_IDLE;
                 end else
                     drain <= drain - 1'b1;
+            end
+            S_TEXDIV: begin
+                // The quotient u = A/C, then v = B/C, ten bits each: the
+                // denominator shifted up against the remainder, which is the
+                // truncation towards zero the twin's own division gives. The
+                // sign goes on at the end, because the texel has to be the
+                // one the twin names when the numerator is negative too.
+                tex_q <= tex_q_next;
+                if (tex_bit == 4'd0) begin
+                    if (!tex_second) begin
+                        tex_uu <= (tn_a < 0) != (tn_c < 0) ? -tex_q_next[11:0]
+                                                          : tex_q_next[11:0];
+                        tex_second <= 1'b1;
+                        tex_rem <= tn_b >= 0 ? tn_b : -tn_b;
+                        tex_q <= 0;
+                        tex_bit <= 4'd9;
+                    end else begin
+                        tex_vv <= (tn_b < 0) != (tn_c < 0) ? -tex_q_next[11:0]
+                                                          : tex_q_next[11:0];
+                        tex_second <= 1'b0;
+                        tex_w <= 2'd0;
+                        state <= S_TEXW;
+                    end
+                end else begin
+                    tex_rem <= tex_rem_next;
+                    tex_bit <= tex_bit - 1'b1;
+                end
+            end
+            S_TEXW: begin
+                // Three clocks, the shape the card fill taught: one to give the
+                // store the address, one for its byte to land -- the address
+                // register is itself a register, so the memory sees the address
+                // a clock after it is written -- and the third to write it. Two
+                // clocks wrote each pixel the previous pixel's texel, which is
+                // invisible wherever two pixels share a texel and a mottled
+                // texture everywhere else.
+                if (tex_w == 2'd0) begin
+                    tile_raddr <= {tex_tile, 10'd0} + {5'd0, tex_tv, 5'd0} +
+                                  {10'd0, tex_tu};
+                    tex_w <= 2'd1;
+                end else if (tex_w == 2'd1) begin
+                    tex_w <= 2'd2;
+                end else begin
+                    we <= 1;
+                    waddr <= addr_r;
+                    wdata <= ART_FIRST_W + tile_q[7:0];
+                    pixels <= pixels + 1'b1;
+                    tex_w <= 2'd0;
+                    phase <= 1'b0;
+                    if (last_p)
+                        state <= S_IDLE;
+                    else
+                        state <= S_SCAN;
+                end
             end
             default: state <= S_IDLE;
             endcase
