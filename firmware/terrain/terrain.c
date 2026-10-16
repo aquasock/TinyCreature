@@ -1482,7 +1482,14 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 		phase_at = t;
 	}
 
-	/* The four cards, standing in a row beside the sprite, one tile each,
+	/* How many cards to stand on the land, and the side of the square they stand
+ * in. One a tile by default, which is the shelf that shows the art; more than
+ * the art holds re-uses tiles, which is what a crowd is. */
+#ifndef TC_CARDS_N
+#define TC_CARDS_N 64
+#endif
+
+/* The four cards, standing in a row beside the sprite, one tile each,
 	 * drawn where the sprite is drawn so that the land in front of that
 	 * cell still paints over them. A card is three cells tall and as wide
 	 * as it is tall, and the steps it hands the fill are the tile's 32
@@ -1490,13 +1497,20 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 	 * have. */
 #if TC_CARDS
 	if (out->card != NULL) {
-		for (uint32_t i = 0; i < ART_TILES; i++) {
-			/* A shelf of them, eight to a row, three cells apart,
-			 * standing on the ground by the island's middle. */
-			int32_t wx = (int32_t)(sprite_gx + 2 + (i % 8) * 3) * CELL +
-				     CELL / 2;
-			int32_t wz = (int32_t)(sprite_gz - 10 + (i / 8) * 3) * CELL +
-				     CELL / 2;
+		uint32_t side = 1;
+		while (side * side < (uint32_t)TC_CARDS_N)
+			side++;
+		for (uint32_t i = 0; i < (uint32_t)TC_CARDS_N; i++) {
+			/* A square of them, three cells apart, standing on the
+			 * ground by the island's middle. Past the art's last tile
+			 * they start again from the first, which is how a crowd of
+			 * one kind is drawn. */
+			int32_t gx = sprite_gx - (int32_t)(side * 3 / 2) +
+				     (int32_t)(i % side) * 3;
+			int32_t gz = sprite_gz - (int32_t)(side * 3 / 2) +
+				     (int32_t)(i / side) * 3;
+			int32_t wx = gx * CELL + CELL / 2;
+			int32_t wz = gz * CELL + CELL / 2;
 			int32_t x, y, z, sx0, sy0, sx1, sy1;
 			to_camera(wx, sprite_y, wz, &x, &y, &z);
 			if (z < NEAR)
@@ -1531,7 +1545,7 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 			if (ci0 >= ci1 || cj0 >= cj1)
 				continue;
 			const int32_t bx0 = sx0 - w / 2, by0 = sy1;
-			card.tile = i;
+			card.tile = i % ART_TILES;
 			card.i0 = (uint32_t)ci0;
 			card.i1 = (uint32_t)ci1;
 			card.j0 = (uint32_t)cj0;

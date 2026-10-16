@@ -55,7 +55,9 @@ SPRITE_CPPFLAGS := -I$(BUILD)/sprite -DTC_SPRITE_HEADER='"$(notdir $(SPRITE_H))"
 # and the host twin or they would be asked for different frames; run_cards.sh
 # and the run scripts pass it.
 CARDS       ?= 0
-COMMON_CPPFLAGS := $(SPRITE_CPPFLAGS) -DTC_CARDS=$(CARDS)
+CARDS_N     ?= 64
+COMMON_CPPFLAGS := $(SPRITE_CPPFLAGS) -DTC_CARDS=$(CARDS) \
+                   -DTC_CARDS_N=$(CARDS_N)
 
 # The art's tiles: a generated header, off by default because the art is
 # fetched rather than committed, so a fresh clone builds. TILES=1 wants the

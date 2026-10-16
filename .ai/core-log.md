@@ -1287,3 +1287,35 @@ The store's size is the decision this cycle ran into: sixty-four tiles is what t
 - User Test: NOT RUN
 
 ---
+
+## 40 COMMIT Unreleased 2026-10-15T17:56:24-07:00
+
+#### Coming From:
+
+Unreleased b4f7a22
+
+#### Purpose:
+
+Measure what a card costs instead of projecting it, by running the same scripted frames with a ladder of card counts standing on the island.
+
+#### Outcome:
+
+The cost is 1.36 microseconds a card and it is linear, and the ladder was taken on the board against the twin rather than modelled. `terrain.c` gained `TC_CARDS_N`, the number of cards to stand on the land, and lays them in a square grid centred on the island's middle, one tile each until the art's last tile and then starting again from the first -- which is what a crowd of one kind is, and what makes a count above the store's sixty-four meaningful. The Makefile passes it beside `CARDS` and `TILES`, so the program, the twin and the testbench are built from the same number. The five rungs, sixty-four, one hundred, five hundred, a thousand and two thousand cards, each ran the six hundred framed orbit and each passed against the host: the frame takes 30,045, 30,264, 30,951, 31,687 and 32,671 microseconds, the worst frame 35,965 to 37,759, the mean period 50,002 to 50,003 microseconds throughout, the drawn pixels 35,831 to 95,356, and the frame CRCs differ at every rung as they must and match the host at every rung, which is the check that 2,000 cards are the same picture on the board as in the model. Two things in the numbers were not predicted and both matter. The first is that the cost is linear at 1.36 microseconds a card -- 2,626 microseconds over 1,936 extra cards -- against the 1.3 this cycle projected from five command words at 196 cycles each, so the arithmetic that stands behind the projection is now checked rather than trusted. The second is that the fabric starts pushing back as the count rises: `STALLS`, the bus cycles the CPU waits on a full rasterizer FIFO, climbs from 15,212 at sixty-four cards to 91,942 at two thousand, which is 123 microseconds a frame. That is the cards' fill, three clocks a pixel, draining slower than the command stream feeds it, so the limiting cost of a crowd is the filling and not the sending. One thing the ladder also shows is not about the cards at all: `VBLMAX` is 4 at every rung including sixty-four, where the earlier one-a-tile shelf had 3. That is the flip-phase slip entry 29 recorded once in six hundred frames, and the change that brought it out is the layout, because a centred grid is where the scripted orbit's closest passes see more of the cards. The mean is unaffected -- the period is 50.00 microseconds, twenty frames a second, with `LATE=0` at every rung. The wall is extrapolation and not measurement: ten thousand cards would be 13.6 ms of sending and about 12 ms of filling, so the cliff is somewhere near there, and a five thousand rung would settle it if it is ever wanted. The five-rung ladder's last state is what the Tang is showing now, a grid of two thousand cards, and the user has not reported on it. The core was not rebuilt: nothing in this cycle touched the fabric. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that this cycle's only `.ai` change is this entry, checked that the reference's fast index and its records list the same eleven ids in the same order with none retired, validated this entry against the template, ordering, prose, Status, numbering and 100-entry rules, and confirmed that the project-control change agrees with the workflow and rewrites no settled history.
+
+#### Next Steps:
+
+The store's size is still the decision the pivot has not made: sixty-four tiles is what the unit holds, Meph's sheet has 255, and the choice is a store of 256 -- 131 of the device's 340 block RAM blocks against the 125 the renderer already uses -- or a working set chosen per scene, which a game does anyway. A five thousand card rung would put a measured number on the wall instead of an extrapolation, and is a single build and run if the cliff ever matters. Beyond that the fabric work the pivot still wants is cards that turn and tilt, which this fill cannot do because it is axis-aligned by design, and a texture path reading from SDRAM rather than BSRAM, which is what the display list's read channel was justified by. A `tools/fetch_tiles.sh` beside `fetch_openblack.sh` and `fetch_tang32.sh` would make the art reproducible from a clone rather than fetched by hand. The user has not judged the tiles or the ladder on the board. Open from before and unchanged: the ninth bit of the framebuffer, unused and worth a second 256-entry bank if 64 entries for art proves too few; the palette's other half, which is how much of the pool a world that is not Land 1 should take; the cell-shaped command and the display list, both priced and both declined for now; the keyboard, gated on TinyTang gaining keyboard forwarding from the Tiny89 work; flying to a clicked point; the pipe guard in TinyTang; pinning a CRC per recorded input sequence in a tool, which this cycle's five new frame CRCs argue for again; the capture card; the Bullet world removal (entry 6); and GAME-001.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/Makefile
+- firmware/terrain/terrain.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

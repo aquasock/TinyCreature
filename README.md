@@ -194,7 +194,17 @@ has them: `TILES=1` runs `tools/convert_tiles.py` over Meph's sheet and the
 header it writes names the tiles and the sixty-four palette entries at 192,
 while a build without the art still draws four synthetic tiles so the path can
 be exercised with nothing fetched. The unit's store holds sixty-four tiles and
-Meph's sheet has 255, so the header takes the first sixty-four of them.
+Meph's sheet has 255, so the header takes the first sixty-four of them. What a
+card costs is measured rather than projected: with 64, 100, 500, 1,000 and
+2,000 of them standing on the island the frame takes 30.0, 30.3, 31.0, 31.7 and
+32.7 ms, which is 1.36 us a card, the worst frame goes from 36.0 to 37.8 ms,
+the period stays at 50.00 ms, and every rung still matches the twin on the
+frame CRC. What grows faster than the count is the fill: the CPU's stalls on a
+full FIFO climb from 15,000 to 92,000 bus cycles a frame, so at some point the
+fabric's filling, not the CPU's sending, is what limits a crowd. Ten thousand
+cards would be 13.6 ms of sending and about 12 ms of filling, which puts the
+wall near there -- extrapolated, not measured. The count is `TC_CARDS_N`, and
+one a tile is the default shelf.
 
 A build that times its own phases with the core's cycle counter reports the
 mean cells a frame drew and the time it spent in the sky and sea rows, the
