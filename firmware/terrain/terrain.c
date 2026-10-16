@@ -264,7 +264,7 @@ const char *tc_land_open(struct tc_land *out, const uint8_t *file, size_t bytes)
 		return "CRC";
 	if (!l.cells_x || !l.cells_z || l.cells_x % BLOCK || l.cells_z % BLOCK)
 		return "GRID";
-	if (l.first != TC_LAND_COLOUR || l.first + l.colours > 256)
+	if (l.first != TC_LAND_COLOUR || l.first + l.colours > TC_ART_FIRST)
 		return "PALETTE";
 	size_t vertices = (size_t)(l.cells_x + 1) * (l.cells_z + 1);
 	size_t cells = (size_t)l.cells_x * l.cells_z;

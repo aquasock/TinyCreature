@@ -26,6 +26,11 @@
 #define TC_CURSOR_EDGE  0
 #define TC_SEA_COLOUR  9
 #define TC_SPRITE_FIRST TC_SEA_COLOUR   /* the ramp the sprite's cells name */
+/* Entries 192 to 255 are the art's: one 64-colour palette every tile this
+ * project draws is quantised into, loaded beside the land's and read by the
+ * fabric's textured quads. The land takes what is left, 19 to 191. */
+#define TC_ART_FIRST   192
+#define TC_ART_COLOURS 64
 #define TC_LAND_COLOUR 19
 #define TC_RAMP        8
 

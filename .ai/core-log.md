@@ -1053,3 +1053,35 @@ The textured quad command is next, and this cycle changed its shape: instead of 
 - User Test: N/A
 
 ---
+
+## 33 COMMIT Unreleased 2026-10-15T17:00:15-07:00
+
+#### Coming From:
+
+Unreleased 2859567
+
+#### Purpose:
+
+Lay the palette out for the art the pivot needs -- the land fitted to 173 entries and entries 192 to 255 given to one 64-colour art palette -- as the ground the textured-quad command will draw from.
+
+#### Outcome:
+
+The user asked whether 64 is a size artists actually work in, so it was checked rather than asserted: Lospec carries AAP-64 and Endesga 64 at 64 colours, DawnBringer 32 at 32, and PICO-8, Sweetie 16, DawnBringer 16 and Commodore 64 at 16, with the ZX Spectrum and Apple II at 15; the NES's 64-entry master palette is this entry's recall and was not verified, because the lookup for it returned nothing. That makes 64 a standard size, and the arithmetic then closes exactly: nineteen entries for the renderer's own -- nothing, the sky's eight, the sea's one, the cursor's two and the sprite ramp's seven -- plus 173 for the land plus 64 for the art is 256. The two tables that justify the split are now measured. Meph's 255 tiles, holding 16,544 colours, fit 16, 32, 64 and 128 entries at 37.36, 23.23, 19.31 and 17.10 weighted mean error, so the curve has flattened by the time it reaches 64 and doubling to 128 buys 2.2 units of error. Land 1's 817 vertex colours fit 192, 176, 173 and 168 entries at 2.85, 4.03, 4.06 and 4.22, so the nineteen entries the art takes cost the island about one and a half per cent of its colour and nothing else. `tools/convert_land.py` now defaults to 173 and its comment carries both tables, and `terrain.h` names the art's block as `TC_ART_FIRST` 192 and `TC_ART_COLOURS` 64. One safety net was added with the layout: `tc_land_open` used to accept a land palette reaching entry 255 and now refuses one that reaches `TC_ART_FIRST`, so a land converted with more colours than the layout has room for stops the run with `BAD TINYCREATURE PALETTE` instead of quietly drawing over the art's entries. The verification is the one this project uses for a palette change: all six scripted lands draw exactly the triangles and pixels they drew at 192 entries -- Land 1's 20,445 and 33,158, Land 2's 23,649 and 25,273, Land 3's 16,775 and 32,942, Land 4's 26,809 and 34,882, Land 5's 30,840 and 24,937, Land T's 12,389 and 21,631 -- so the refit moved colour and no geometry, and on the board the frame takes the same time it did, `DRAW=29661us` against 29669, with `VBLMIN` and `VBLMAX` both 3 and the host matching the board on Land 1's new frame CRC `566ccf4e`. Meph was also converted at the new size to see what it buys: 64 entries at 192 fit its sheet at 19.31 mean against the 45-entry pool's 20.12, so the art choice is a strict improvement on entry 32's plan rather than a trade. The build for the user's hands was deployed with a 200,000-frame budget and he has not judged the terrain's colour at this size, which is why the user test is not run rather than passed. The core was not rebuilt and `fpga/raster.sv` is untouched, so no seed sweep was needed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that this cycle's only `.ai` change is this entry, checked that the reference's fast index and its records list the same eleven ids in the same order with none retired, validated this entry against the template, ordering, prose, Status, numbering and 100-entry rules, and confirmed that the project-control change agrees with the workflow and rewrites no settled history.
+
+#### Next Steps:
+
+The textured-quad command is the fabric change the pivot rests on, and this cycle fixed the ground it stands on. Its shape: a command carrying four screen corners, a tile id and the sub-rectangle to take from it, with the texel indexing the art palette at 192 rather than the frame's; a tile store in BSRAM loaded once the way the palette and the shading table already are, which the renderer fills from the converted tiles; and a constant-increment UV stepper, which is all a screen-aligned card needs and needs no perspective correction and no colorkey. The order of work is fixed by this project's own discipline: `tc_soft` in `terrain.c` has to model the command exactly before the fabric implements it, because the fabric is checked against the twin and not the other way round, and `tests/raster_tb.sv` should gain a textured case at the same time. Only then a core rebuild and the eight-seed sweep, which this core's timing margin makes a real risk. The land refitted to 173 is in front of the user now; if its colour at this size reads worse than it did at 192, 176 is the next stop and the art's share drops to 61 rather than the whole design changing. Open from before and unchanged: the ninth bit of the framebuffer, which is unused and would buy a second 256-entry bank if 64 entries for art ever proves too few; the cell-shaped command and the display list, both priced and both declined for now; the palette's other half, which is how much of the pool a world that is not Land 1 should take; the keyboard, gated on TinyTang gaining keyboard forwarding from the Tiny89 work; flying to a clicked point; the pipe guard in TinyTang; pinning a CRC per recorded input sequence in a tool; the capture card; the Bullet world removal (entry 6); and GAME-001.
+
+#### Files Modified:
+
+- firmware/terrain/terrain.c
+- firmware/terrain/terrain.h
+- tools/convert_land.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

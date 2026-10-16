@@ -50,16 +50,19 @@ NOISE_BYTES = 0x10000
 CELLS_PER_BLOCK = 16
 # The palette is 256 entries and the program owns the first nineteen: 0 is
 # never drawn by the land, 1 to 8 are the sky's ramp, 9 to 16 the sea's, and
-# 17 and 18 are the cursor's two colours. The land takes the rest -- and it
-# takes 192 of the 237 it could, because the entries above 211 are the pool the
-# tile art this project is turning to must come from, and the land gives them
-# up cheaply. Fitting the island's 817 vertex colours to 237, 224, 192, 160,
-# 128, 96, 64 and 48 entries measures a weighted mean error of 2.04, 2.17,
-# 2.85, 6.19, 7.82, 10.01, 13.13 and 14.37 out of 255, with a worst vertex of
-# 25.3, 25.3, 30.3, 43.7, 60.4, 63.0, 79.9 and 84.4: the first forty-five
-# entries go for about one per cent of colour, and the next thirty-two cost
-# more than those forty-five did. --colours moves it, and took that table.
-TERRAIN_COLOURS = 192
+# 17 and 18 are the cursor's two colours. Above them sit two blocks: entries
+# 192 to 255 are the art's, one 64-colour palette every tile is quantised into
+# and the fabric's textured quads read, and entries 19 to 191 are the land's.
+#
+# The land takes 173 of the 237 it could rather than all of them, because the
+# art needs the top 64 and the land gives them up cheaply. Fitting Land 1's 817
+# vertex colours to 192, 176, 173 and 168 entries measures a weighted mean
+# error of 2.85, 4.03, 4.06 and 4.22 out of 255 with a worst vertex of 30.3,
+# 36.6, 36.6 and 36.6 -- about one and a half per cent of range for the
+# nineteen entries the art takes -- where fitting to 160, 128, 96, 64 and 48
+# costs 6.19, 7.82, 10.01, 13.13 and 14.37. --colours moves it, and took both
+# of those tables.
+TERRAIN_COLOURS = 173
 FIRST_COLOUR = 19
 WATER = 0x10 | 0x40  # hasWater, fullWater
 SPLIT = 0x80
