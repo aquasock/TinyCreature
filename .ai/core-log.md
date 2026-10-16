@@ -1185,3 +1185,35 @@ Find which side shifts. The cheapest decisive test is a frame whose cards stand 
 - User Test: NOT RUN
 
 ---
+
+## 37 COMMIT Unreleased 2026-10-15T17:17:59-07:00
+
+#### Coming From:
+
+Unreleased 3459079
+
+#### Purpose:
+
+Find which side of entry 36's seventeen wrong words was wrong, and make the fabric's card fill match its model byte for byte.
+
+#### Outcome:
+
+The fabric was wrong, for a reason worth remembering, and the fix is one clock. Entry 36 left seventeen words of the first frame differing, the fabric's bytes reading one column to the left of the model's, and it could not say which renderer was at fault. The first thing this cycle did was settle that without new code: frame 0's four cards were read out of the command file and found to cover pixels x 142 to 157 and y 96 to 99, which is exactly the region the wrong words fall in, so the discrepancy was the card fill itself and not, as entry 36 guessed, anything to do with the emissary's rows. Then the testbench was given a dump of every word that differs with its byte address, because six printed words do not show a pattern and seventeen do: they read `dbd8d5d3` against `dedbd8d5` and the like, which is the same four bytes shifted by one pixel. That is a one-clock problem and it is the classic one for this chip. The store is a block RAM, so its data arrives the clock after its address is presented, and `tile_raddr` is itself a register that changes on the same edge the data is taken, so the answer a two-phase fill writes in its second phase belongs to the address from the phase before. `tc_soft_card` had no such delay, so the two fills disagreed by exactly one texel per pixel. The fill now takes three clocks a pixel: one to ask the store, one for the answer to land, and the third to write it, which is what the comment in `fpga/raster.sv` now says and why. Three clocks a pixel is 34 microseconds for a 32 by 32 card and about 3.4 ms for a hundred of them, which the fabric can afford because it is idle by the time the CPU finishes a frame. With that, the card path passes the check it was built for: the testbench replays two real Land 1 frames whose commands include four cards each, and both buffers read back matching `terrain_host` word for word, with frame CRCs `0104639d` and `d1385de6` -- the first of those the very value that was failing -- and no word of the fourteen thousand four hundred differs. The cards off path is unchanged and still passes, `e595892a` and `f02b19a1`, which is the check that this cycle touched nothing else. A trap from entry 36 was hit again and is worth repeating here: a stale host binary in the testbench's build directory makes the cards-off and cards-on runs fail identically, so the build directory is deleted before every run of this check that matters. The core was not rebuilt and `fpga/raster.sv`'s change is not in the Tang's image, so no seed sweep was run and the board still runs the previous core. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that this cycle's only `.ai` change is this entry, checked that the reference's fast index and its records list the same eleven ids in the same order with none retired, validated this entry against the template, ordering, prose, Status, numbering and 100-entry rules, and confirmed that the project-control change agrees with the workflow and rewrites no settled history.
+
+#### Next Steps:
+
+The card now works in simulation, so the rest of the pivot's fabric cycle is what remains. The program loads the tile store before its first frame, from the converted Meph tiles rather than the four drawn in the source, through the same `TILES_ADDR` and `TILES_DATA` path the testbench now exercises; the store is sized for sixty-four tiles, so the set will need either a larger store or a working set chosen per scene, and that sizing is the one decision the measurements have not yet made. Then the core rebuild and the eight-seed sweep, which is the risk this cycle has been heading towards: the card adds a state, a counter set, a third block RAM read port and a sixty-four kilobyte store to a design already at a third of the RAM, and this core's timing margin has rejected placements before. If the sweep fails, the store's size and the fill's three clocks are the two things to trade. The board gates owed from entries 34, 35 and 36 still need the console on the serial port; the three of them plus this one can be checked in a single session once it is attached. Open from before and unchanged: the ninth bit of the framebuffer, unused and worth a second 256-entry bank if 64 entries for art proves too few; the palette's other half, which is how much of the pool a world that is not Land 1 should take; the cell-shaped command and the display list, both priced and both declined for now; the keyboard, gated on TinyTang gaining keyboard forwarding from the Tiny89 work; flying to a clicked point; the pipe guard in TinyTang; pinning a CRC per recorded input sequence in a tool; the capture card; the Bullet world removal (entry 6); and GAME-001.
+
+#### Files Modified:
+
+- fpga/raster.sv
+- tests/raster_tb.sv
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---

@@ -151,6 +151,11 @@ module raster_tb;
                 if (q !== want) begin
                     if (bad < 6)
                         $display("FAIL: buffer %0d word %0d got %h want %h", slot, k, q, want);
+                    // Every one of them, with its byte address, when asked:
+                    // a handful of printed words does not show a pattern.
+                    if (dump_file)
+                        $fwrite(dump_file, "%0d %0d %08x %08x\n",
+                                slot, k * 4, q, want);
                     bad = bad + 1;
                     if (^q === 1'bx)
                         holes = holes + 1;
@@ -231,7 +236,11 @@ module raster_tb;
     reg [31:0] want_crc0, want_crc01, state0, state1;
     reg [31:0] nz0, nz1;
     integer want_nz0, want_nz1;
+    integer dump_file = 0;
+    reg [8*256-1:0] dump_path;
     initial begin
+        if ($value$plusargs("dump=%s", dump_path))
+            dump_file = $fopen(dump_path, "w");
         if (!$value$plusargs("cmd0=%s", cmd0) || !$value$plusargs("cmd1=%s", cmd1) ||
             !$value$plusargs("fb0=%s", fb0) || !$value$plusargs("fb1=%s", fb1) ||
             !$value$plusargs("pal=%s", pal_path) ||

@@ -342,7 +342,7 @@ module raster #(
     // The tile is latched from the assembler's field, not read from it: the
     // assembler has already started gathering the next command's words.
     reg [7:0] card_tile = 0;
-    reg card_phase = 0;
+    reg [1:0] card_phase = 0;
     assign take = cmd_full && state == S_IDLE;
     assign busy = !fifo_empty || pop || q_valid || cmd_full || got != 0 ||
                   state != S_IDLE || w_fifo;
@@ -517,20 +517,26 @@ module raster #(
                     end
                 end
             S_CARD: begin
-                // Two clocks a pixel: the store is asked at the texel's
-                // address while the counters stand, and the byte it answers
-                // with is written the next clock, as the counters move on.
-                if (!card_phase) begin
+                // Three clocks a pixel. The store is a block RAM, so its data
+                // arrives the clock after its address, and the address is a
+                // register that changes on the same edge the data is taken:
+                // one clock to ask, one for the answer to land, and the third
+                // to write it. Two clocks wrote each pixel the previous
+                // pixel's texel, which the testbench caught as the frame's
+                // bytes reading one column to the left.
+                if (card_phase == 2'd0) begin
                     tile_raddr <= {card_tile, 10'd0} +
                                   {5'd0, card_v[15:8], 5'd0} +
                                   {10'd0, card_u[15:8]};
-                    card_phase <= 1;
+                    card_phase <= 2'd1;
+                end else if (card_phase == 2'd1) begin
+                    card_phase <= 2'd2;
                 end else begin
                     we <= 1;
                     waddr <= card_addr;
                     wdata <= ART_FIRST_W + tile_q[7:0];
                     pixels <= pixels + 1'b1;
-                    card_phase <= 0;
+                    card_phase <= 2'd0;
                     if (card_i + 1'b1 < card_i1) begin
                         card_i <= card_i + 1'b1;
                         card_u <= card_u + card_du;
