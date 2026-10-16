@@ -1523,3 +1523,34 @@ What is left of the approximation is the column itself: it is still a rectangle,
 - User Test: NOT RUN
 
 ---
+
+## 47 COMMIT Unreleased 2026-10-16T02:24:48-07:00
+
+#### Coming From:
+
+Unreleased 1a80d8d
+
+#### Purpose:
+
+Fix the warping the user saw looking down on a card from the board, which was this project's own column split cutting each horizontal face along its depth instead of its width, so that such a face was drawn as its bounding rectangle again.
+
+#### Outcome:
+
+The user flew entry 46's build and reported that it looked 3D now but still warped when looking from above, with a screenshot of the board's 1280 by 720 output as evidence. Two things were established before any change. The first was that the card's art is mostly black of its own accord: tile 0 of the converted art, which the pin stands, has 771 of its 1024 pixels darker than level 20 and a background of entry `0d0c0c`, so the large black area the picture shows is the tile's own content and not a fill fault. The second was the cause, found by reproducing the view on the twin at 71 degrees of tilt with the pin's card yawed 30 degrees: the top face of the box, which is 30 by 3 units, projects into a long slanted parallelogram 36 pixels across, 33 tall and with rails only 14 pixels high, because at that tilt the ground plane's own direction carries a large vertical screen component, and `card_at`'s columns for that face swept along its depth rather than across its width, so each "column" spanned the whole width and its rectangle was the whole face: 38 by 24 pixels of solid black around a face that holds far less. The sweep is now read from the corner bits rather than from the pair that differs in v: the columns run across a face's width, and the width is u, bit 2, on every face but the two sides, whose normal is along u and whose width is therefore n. Measured against the card's true silhouette, painted from the same frame's own commands, the pin card at 71 degrees of tilt and 30 of yaw holds 645 pixels and was painted as 1,368 with 727 of them outside its outline as one rectangle, as 1,077 with 436 when the columns swept the wrong way, and as 724 with 90 sweeping across the width at three pixels a column, 687 with 58 at one, 704 with 72 at two and 746 with 107 at four. Everything on record holds: one column still reproduces entry 45's frames byte for byte, `6f3ff69d` unpinned and `8e9ba88f` pinned; a build drawing no cards still draws Land 1's scripted orbit at `566ccf4e`; and the pinned view from the front is unchanged at `8e9ba88f`, because its top face is a one-pixel sliver whose rectangle no sweep can move. The shelf's orbit moved from `62b662a6` to `ca9ccb11` with `TRIS` 20676 to 20643, because the shelf's cards' tops are now their true shapes rather than their rectangles. The fabric was checked again with `tests/raster_tb.sv` and passes, frame 0 unchanged at `e6ed2c5e` and frame 1 moving to `50e71284`, both read-backs matching `terrain_host` word for word. The board was given `build/feel/terrain.elf`, 445,444 bytes, MD5 `20fe90c358617acd362683d2b3996016` and SHA-256 `70304d633352fec4b76c22968f1d15a79aa5018a7a661e6e774d6027419eec22`, with the cards and the tiles on and the card standing at 80,90, the link handed back; the first attempt at loading it found the console's port absent, because the user's own work had reset and unplugged the board at that moment, and it went ahead once the port came back. The core was not rebuilt, every column being a command the fabric already had, so no seed sweep was needed. The user has not judged this on the board. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that this cycle's only `.ai` change is this entry, checked that the reference's fast index and its records list the same eleven ids in the same order with none retired, validated this entry against the template, ordering, prose, Status, numbering and 100-entry rules, and confirmed that the project-control change agrees with the workflow and rewrites no settled history.
+
+#### Next Steps:
+
+What is left is the approximation's last two terms, and both are now measured rather than guessed at. The first is the staircase: a column is still a rectangle, so a face's outline is the true one's steps, which from above cost 90 pixels outside a 645 pixel card at three pixels a column and 58 at one, against the whole-face rectangle's 727. The second is the affine texel stepping inside a column, which is the warp the user first guessed at and is now the smaller term, and which no cut of the face removes because a column's rows are still linear in screen y where the true mapping is projective. The exact answer to both is the textured triangle the record has called the next real renderer step since entry 45: a face becomes two triangles, its outline is exact, its texels can be stepped perspective-correct by interpolating 1/z, u/z and v/z, and it is the only form in which cards that turn and tilt can be drawn at all -- and it does not need a column count's worth of commands for a crowd, which is what the user is asking when he asks whether this needs the fabric. It does, for exactness and for cost; the columns are the cheap stop before it, and the user's own question is the case for taking that step next. Open and unchanged: the fabric's card fill indexes its tile store without clamping, latent because no card measured reaches texel 32; the Makefile's host target still does not depend on the generated tile header; planting a pin where the cursor is on a button; the store's size; a crowd that moves and the column count's effect on entry 40's ladder; cards that turn and tilt; a texture path from SDRAM; a five thousand card rung; `tools/fetch_tiles.sh`; the ninth bit of the framebuffer; the palette's other half; the cell-shaped command and the display list; the keyboard, gated on TinyTang; flying to a clicked point; the pipe guard in TinyTang; a CRC pinned per recorded input sequence; the capture card; the Bullet world removal (entry 6); and GAME-001. The user's verdict on the from-above view is what is owed next.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/terrain.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

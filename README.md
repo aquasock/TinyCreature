@@ -233,6 +233,17 @@ facing the camera the frame is unchanged to the byte. The columns' art runs
 across the face with the same texel step and the same origin on its left edge,
 so cutting a face up does not move the art sideways, while its rows are anchored
 to each column's own height instead of the tallest part of the face.
+Which way a face is cut matters as much as how finely. The columns run across
+the face's width, and the width is u on every face but the two sides, whose
+normal is along u and whose width is therefore n; a face cut the other way is
+drawn as its own bounding rectangle again. That is what the top of a card was
+before this was fixed, and it is what looking down on one showed: at seventy-one
+degrees of tilt the top of the box projects into a long slanted parallelogram,
+whose rectangle was 38 by 24 pixels of solid black around it, so the pins'
+card painted 1,368 pixels where its outline holds 645, with 727 of them outside
+it. Cut the wrong way the columns painted 1,077 and 436 of them outside; cut
+across the width at three pixels a column, 724 and 90; at one pixel, 687 and 58.
+
 `CARD_COLUMN_PX` is how many whole pixels of width one column covers, and 1000
 draws the single rectangle of before. A column is another `CARD` command, so
 what a face costs follows what it covers: the pin's front face is thirteen

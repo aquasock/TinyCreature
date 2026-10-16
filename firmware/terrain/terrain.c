@@ -1734,15 +1734,21 @@ static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 		p->bottom = bottom;
 		p->z = zsum / 4;
 		p->tile = f == 0 || f == 1 ? tile : TC_FACE_SOLID;
-		/* Which way this face is cut. The columns are parallel to the pair
-		 * of corners that differ in v -- bit 1, up -- and run from that
-		 * pair's edge to the other pair's, so the sweep is (c0,c1) and
-		 * (c2,c3). The three kinds of face are listed in two different
-		 * orders in face_corner, so the pairing is read off the bits
-		 * rather than assumed. */
+		/* Which way this face is cut. The columns run across the face's
+		 * width, and the width is u -- bit 2 -- on every face but the two
+		 * sides, whose normal is along u and whose width is therefore n.
+		 * That is what makes a column a thin strip of the face: a strip
+		 * that spanned the width instead would be as long as the face is
+		 * and its rectangle as big as the face's, which is what the top of
+		 * a card was drawn as from above, where a horizontal face projects
+		 * into a long slanted parallelogram and its rectangle is most of
+		 * the screen it covers. The sweep is (c0,c1) for one end of the
+		 * strip and (c2,c3) for the other, and the corner table lists a
+		 * face's four corners in two different orders, so the pairing is
+		 * read off the bits rather than assumed. */
 		unsigned k0 = face_corner[f][0], k1 = face_corner[f][1];
 		unsigned k2 = face_corner[f][2], k3 = face_corner[f][3];
-		if ((k0 ^ k1) & 2u) {
+		if ((k0 ^ k2) & 4u) {
 			p->c0 = (uint8_t)k0; p->c1 = (uint8_t)k2;
 			p->c2 = (uint8_t)k1; p->c3 = (uint8_t)k3;
 		} else {
