@@ -1357,3 +1357,33 @@ The readout is a diagnostic, and the most useful thing it proves is that this re
 - User Test: NOT RUN
 
 ---
+
+## 42 COMMIT Unreleased 2026-10-15T18:12:19-07:00
+
+#### Coming From:
+
+Unreleased 120191a
+
+#### Purpose:
+
+Record the user's acceptance of the build entry 41 deployed, which entry 41 could not do because its own entry was written before he flew it.
+
+#### Outcome:
+
+The user reported that everything works and passed on the build entry 41 left on the board, so entry 41's `User Test: NOT RUN` is superseded by this entry's `PASS` rather than rewritten, which is what the log's immutability rule requires. The artifact he accepted is `build/feel/terrain.elf`, 399,652 bytes, MD5 `785535ba4fa1014916d134633d7e4a5c` and SHA-256 `9ea2afd0727e700a1d00fa68088ac0bd6a8cd2ebc5dfffb4f43b3c5f163346ca`, built by `tools/run_tang32_feel.sh` with `CARDS=1 TILES=1` and the readout at its default on, a 200,000 frame budget, and left running on the Tang with the link handed back to the mouse. That one artifact carries three things the user had not judged: the readout this cycle's predecessor added, the sixty-four converted Meph tiles of entry 39, and the card shelf those tiles stand in, so his acceptance covers the readout where it was the open question and the tiles where entries 39 and 40 had left them unjudged in the same picture rather than separately. Nothing was built, deployed or changed in this cycle: no source file moved, the core was not rebuilt, and the board has been left as he accepted it, which is why the build and deployment stages are recorded as not applicable. What his acceptance settles for later work is that a driven frame carrying the readout's seventy odd rectangles of seven-segment digits is legible and unobtrusive on the display at 320 by 180 scaled four times, that the two colours that say which pair of numbers is the focus and which the eye read as intended without a label, and that the readout's sub-one-percent cost is not visible to the eye that has been flying this build all session. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that this cycle's only `.ai` change is this entry, checked that the reference's fast index and its records list the same eleven ids in the same order with none retired, validated this entry against the template, ordering, prose, Status, numbering and 100-entry rules, and confirmed that the project-control change agrees with the workflow and supersedes one value of a settled entry without rewriting it.
+
+#### Next Steps:
+
+With the readout accepted, the question of where the camera is during a flight is closed and the next work is the one entries 39 and 40 both ended on: the store's size, which is either 256 tiles of BSRAM at 131 of the device's 340 blocks or a working set chosen per scene, and then cards that turn and tilt and a texture path reading from SDRAM rather than BSRAM, which is what the display list's read channel was justified by. A five thousand card rung would put a measured number on the cost wall instead of entry 40's 13.6 ms extrapolation, and a `tools/fetch_tiles.sh` beside `fetch_openblack.sh` and `fetch_tang32.sh` would still make the art reproducible from a clone rather than fetched by hand. Open from before and unchanged: the ninth bit of the framebuffer; the palette's other half, which is how much of the pool a world that is not Land 1 should take; the cell-shaped command and the display list, both priced and both declined for now; the keyboard, gated on TinyTang gaining keyboard forwarding from the Tiny89 work; flying to a clicked point; the pipe guard in TinyTang; pinning a CRC per recorded input sequence in a tool; the capture card; the Bullet world removal (entry 6); and GAME-001.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: PASS
+
+---
