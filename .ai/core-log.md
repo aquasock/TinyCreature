@@ -1085,3 +1085,37 @@ The textured-quad command is the fabric change the pivot rests on, and this cycl
 - User Test: NOT RUN
 
 ---
+
+## 34 COMMIT Unreleased 2026-10-15T17:04:24-07:00
+
+#### Coming From:
+
+Unreleased 889d359
+
+#### Purpose:
+
+Make `tc_soft` model the textured quad the fabric is going to fill, and emit cards, so that the rasterizer can be written against a model that has already been checked.
+
+#### Outcome:
+
+The command's shape came out of the user's own constraint, that a card is screen-aligned rather than turning: an axis-aligned rectangle needs no edge functions and no barycentric weights, so a card is four words -- the opcode and the tile, the two corners, and the step in Q8 texels a pixel across and down -- where the mosaic it replaces spent 360 triangles on one emissary. The caller divides the steps out because the fabric has no divider, and the fill only accumulates, which is how the sprite hardware of the era stepped its texels too. One property of the design matters more than the word count: a card writes its texels as palette entries from `TC_ART_FIRST` up **without consulting the shading table at all**, because a texel is already an entry. That is why the art's sixty-four entries cannot take colour off the land the way the seven-entry grey sprite ramp did in entry 28 -- there is no nearest-entry search to lose -- and it is why the land's table is untouched by this cycle. `tc_soft_card` implements the command as the fabric must: a pixel is covered when its centre at 16i + 8 lies in the rectangle, which is the rule the triangle fill already uses; u and v are the accumulated steps, clamped to 31, and the texel is `v * 32 + u` of the named tile. Four synthetic 32 by 32 tiles are drawn at startup, a bordered ramp, an xor weave, a diagonal and a four-pixel checker, because the converter's output is not wired in yet and a synthetic pattern shows a stepping error where real art would only look plausible. The renderer stands four cards three cells apart beside the emissary, three cells tall, drawn from the same point in the walk as the sprite so that the land nearer the camera still paints over them. The gate is the target's `card` function rather than a build switch: the fabric target has none, because `fpga/raster.sv` cannot draw one yet, and the software path has one; the host takes it only when `TC_CARDS` is set, so that the board and the twin are always asked for the same frame. The verification is twofold. With the gate shut the build is byte-identical to entry 33 -- `TRIS=20445 PIXELS=33158 CRC=566ccf4e` -- so the art's palette and all of this code changed nothing that was already there. With it open, the same land draws `TRIS=20445`, unchanged because a card is a fill and not geometry, `PIXELS` 33158 to 33325, which is the 167 pixels the four cards cover, and frame CRC `0609cd9f`; and the cards' own patterns verify the stepping, because the checker tile lands square on the screen, repeating every four texels as its tile defines, which a stepping or an addressing error would have skewed. Their box is 11 by 23 framebuffer pixels, the four stacking vertically on screen because a row along world x projects that way under the camera's yaw. The board gate could not be run: `tools/run_tang32.sh` reports "No Tang serial port found (/dev/ttyUSB1 or /dev/ttyACM0)", so the console is not attached. This entry's deployment is therefore not run rather than passed, and the board's agreement on the unchanged default path is an inference from the host drawing the same frames rather than a measurement of the board drawing them. `tools/convert_tiles.py` also grew the tile pixels themselves, one palette-relative index a pixel, which is what a card reads; the mosaic cells it used to write are now behind `--mosaic`. The core was not rebuilt and `fpga/raster.sv` is untouched, so no seed sweep was needed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that this cycle's only `.ai` change is this entry, checked that the reference's fast index and its records list the same eleven ids in the same order with none retired, validated this entry against the template, ordering, prose, Status, numbering and 100-entry rules, and confirmed that the project-control change agrees with the workflow and rewrites no settled history.
+
+#### Next Steps:
+
+The fabric is next and the model it must match now exists: `fpga/raster.sv` gains the CARD command, a tile store in BSRAM loaded once the way the palette and the shading table already are, and the same accumulate-and-clamp stepping `tc_soft_card` performs, with `tests/raster_tb.sv` gaining a textured case so a mistake is a test failure rather than a dead board. Then a core rebuild and the eight-seed sweep, which this core's timing margin makes the real risk of the cycle. The converted Meph tiles replace the four synthetic ones once the path is proven, and the run scripts need the card switch passed to both the host and the board so that a board run with cards is compared against a twin that draws them. The board gate for this entry is still owed and needs only the console attached again. Open from before and unchanged: the ninth bit of the framebuffer, unused and worth a second 256-entry bank if 64 entries for art ever proves too few; the palette's other half, which is how much of the pool a world that is not Land 1 should take; the cell-shaped command and the display list, both priced and both declined for now; the keyboard, gated on TinyTang gaining keyboard forwarding from the Tiny89 work; flying to a clicked point; the pipe guard in TinyTang; pinning a CRC per recorded input sequence in a tool; the capture card; the Bullet world removal (entry 6); and GAME-001.
+
+#### Files Modified:
+
+- firmware/terrain/host.c
+- firmware/terrain/main.c
+- firmware/terrain/terrain.c
+- firmware/terrain/terrain.h
+- tools/convert_tiles.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---

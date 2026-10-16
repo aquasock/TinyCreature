@@ -48,12 +48,21 @@ struct tc_land {
  * triangle fills a triangle given as three Q4 screen corners, each
  * coordinate within -32768 to 32767, in the order fpga/raster.sv requires,
  * and shaded between the three palette entries colours holds, the first
- * corner's in bits 7:0 and the second's in 15:8. Both are exactly the fabric
- * rasterizer's ROWS and TRI commands. */
+ * corner's in bits 7:0 and the second's in 15:8; and card fills an
+ * axis-aligned rectangle with one tile of the art, taking its texels from
+ * tile (see tools/convert_tiles.py) and writing them as palette entries from
+ * TC_ART_FIRST up, one texel a pixel, the tile stretched to the rectangle.
+ * rect holds x0, y0, x1 and y1 in Q4 screen pixels and steps holds the
+ * texel steps in Q8 a pixel across and down, which the caller divides out
+ * because the fabric has no divider. Both are exactly the fabric
+ * rasterizer's ROWS, TRI and CARD commands. A target with no card function
+ * is one whose rasterizer cannot draw them yet. */
 struct tc_target {
 	void (*rows)(void *ctx, uint32_t first, uint32_t end, uint8_t colour);
 	void (*triangle)(void *ctx, const int32_t *x, const int32_t *y,
 			 uint32_t colours);
+	void (*card)(void *ctx, uint32_t tile, const int32_t *rect,
+		     const int32_t *steps);
 	void *ctx;
 	/* The board's cycle counter and the durations it measures into, both NULL
 	 * for the host twin: a profile is the board's alone, and the host's frames
@@ -92,6 +101,10 @@ struct tc_soft {
 void tc_soft_rows(void *soft, uint32_t first, uint32_t end, uint8_t colour);
 void tc_soft_triangle(void *soft, const int32_t *x, const int32_t *y,
 		      uint32_t colours);
+/* A card: an axis-aligned rectangle filled with one tile of the art, which
+ * is what fpga/raster.sv's CARD command will do. */
+void tc_soft_card(void *soft, uint32_t tile, const int32_t *rect,
+		  const int32_t *steps);
 
 /* What one frame sent: triangles, after culling, and the cells the walk drew. */
 struct tc_stats {

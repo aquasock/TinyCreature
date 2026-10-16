@@ -162,6 +162,9 @@ def main():
                         help="source pixels a mosaic cell covers (default 4)")
     parser.add_argument("--limit", type=int,
                         help="convert at most this many tiles")
+    parser.add_argument("--mosaic", action="store_true",
+                        help="also write the per-cell mosaic grids, which the "
+                             "renderer's flat-quad path plants")
     parser.add_argument("--preview", help="a PNG of the tiles as they will plant")
     args = parser.parse_args()
 
@@ -207,26 +210,45 @@ def main():
         lines.append(f"\t0x{r:02x}{g:02x}{b:02x}, /* {args.first + i} */")
     lines.append("};")
     lines.append("")
-    lines.append("/* One index a cell, tile by tile, row major, 0xff empty. */")
-    lines.append("static const uint8_t tc_tile_cells[] = {")
-    previews = []
-    planted = 0
+    lines.append("/* The tiles themselves, one palette-relative index a pixel, row")
+    lines.append(" * major, a tile at a time: what the textured quad command reads. */")
+    lines.append("static const uint8_t tc_tile_pixels[] = {")
     for (tx, ty), crop, _ in tiles:
-        grid = cell_grid(crop, args.cell, palette)
-        planted += sum(1 for v in grid if v != EMPTY)
-        row = TILE // args.cell
         lines.append(f"\t/* sheet {tx},{ty} */")
-        for y in range(row):
-            cells = grid[y * row:(y + 1) * row]
-            lines.append("\t" + ", ".join(
-                "0xff" if v == EMPTY else f"0x{v:02x}" for v in cells) + ",")
-        previews.append(grid)
+        for y in range(TILE):
+            row = []
+            for x in range(TILE):
+                pixel = crop.getpixel((x, y))
+                if pixel[3] == 0:
+                    # A card is opaque: what the art leaves transparent takes
+                    # the palette's darkest entry rather than nothing.
+                    row.append("0x00")
+                    continue
+                colour = (pixel[0], pixel[1], pixel[2])
+                row.append(f"0x{index[colour]:02x}")
+            lines.append("\t" + ", ".join(row) + ",")
     lines.append("};")
     lines.append("")
+    if args.mosaic:
+        lines.append("/* One index a cell, tile by tile, row major, 0xff empty. */")
+        lines.append("static const uint8_t tc_tile_cells[] = {")
+    row_cells = TILE // args.cell
+    for (tx, ty), crop, _ in tiles:
+        if not args.mosaic:
+            break
+        grid = cell_grid(crop, args.cell, palette)
+        lines.append(f"\t/* sheet {tx},{ty} */")
+        for y in range(row_cells):
+            cells = grid[y * row_cells:(y + 1) * row_cells]
+            lines.append("\t" + ", ".join(
+                "0xff" if v == EMPTY else f"0x{v:02x}" for v in cells) + ",")
+    if args.mosaic:
+        lines.append("};")
+        lines.append("")
     summary = (f"{args.sheet}: {len(tiles)} tiles of {TILE} by {TILE} pixels, "
                f"{len(weighted)} source colours fitted to {len(palette)} entries "
                f"at {args.first}, error {mean:.2f} mean and {worst:.1f} worst of "
-               f"255; cells of {args.cell} px, {planted} planted")
+               f"255")
     lines.append("/* " + summary.replace("*/", "* /") + " */")
     lines.append("")
     with open(args.out, "w") as out:
@@ -236,6 +258,7 @@ def main():
         side = TILE // args.cell
         scale = 4
         across = 16
+        previews = [cell_grid(crop, args.cell, palette) for _, crop, _ in tiles]
         down = (len(previews) + across - 1) // across
         image = Image.new("RGB", (across * side * scale, down * side * scale),
                           (0, 0, 0))

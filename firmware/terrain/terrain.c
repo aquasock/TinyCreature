@@ -303,6 +303,10 @@ static uint32_t mix(uint32_t a, uint32_t b, unsigned i, unsigned n)
 	return out;
 }
 
+/* The art's own palette, filled by art_build before the first frame: the
+ * entries from TC_ART_FIRST up, which a card writes directly. */
+static uint32_t art_palette[TC_ART_COLOURS];
+
 uint32_t tc_palette(const struct tc_land *l, unsigned index)
 {
 	/* The cursor's own two colours, taken from its art. */
@@ -317,6 +321,10 @@ uint32_t tc_palette(const struct tc_land *l, unsigned index)
 	if (index >= TC_SPRITE_FIRST &&
 	    index < TC_SPRITE_FIRST + TC_SPRITE_COLOURS)
 		return tc_sprite_ramp[index - TC_SPRITE_FIRST];
+	/* The art's own entries, which a card writes directly: nothing mixes
+	 * them, so they are not shading-table candidates. */
+	if (index >= TC_ART_FIRST && index < TC_ART_FIRST + TC_ART_COLOURS)
+		return art_palette[index - TC_ART_FIRST];
 	if (index >= TC_SEA_COLOUR && index < TC_SEA_COLOUR + TC_RAMP)
 		return mix(0x6aa0b4, 0x1c4a6a, index - TC_SEA_COLOUR, TC_RAMP - 1);
 	if (index >= l->first && index < l->first + l->colours)
@@ -425,6 +433,59 @@ static int32_t height(uint32_t altitude)
 // dozen pixels, which is what coming in on the wheel is for.
 #define TC_SPRITE_CELLS_TALL 6   // cells high, so 60 world units, 960 Q4
 #define TC_SPRITE_UNITS (TC_SPRITE_CELLS_TALL * CELL)
+
+/* The art, and the cards drawn from it. A card is an axis-aligned rectangle
+ * filled with one tile, its texels written as palette entries from
+ * TC_ART_FIRST up, one texel a pixel. Nothing is mixed and the shading table
+ * is never consulted, because a texel is already a palette entry: that is why
+ * the art's sixty-four entries cannot take colour off the land the way the
+ * grey sprite ramp did in entry 28, and why the land's table is untouched by
+ * this. The tiles here are drawn at startup rather than converted, which is
+ * enough to see the stepping work; tools/convert_tiles.py writes the real
+ * ones.
+ *
+ * The card command is four words: what the tile is and that it is a card, the
+ * two corners, and the texel steps across and down. The caller divides the
+ * steps out because the fabric has no divider; the fill only accumulates. */
+#define TC_ART_TILES 4
+#define TC_TILE_PIXELS 1024   /* 32 by 32 */
+#define TC_CARDS_MAX  16
+static uint8_t art_tiles[TC_ART_TILES * TC_TILE_PIXELS];
+
+static void art_build(void)
+{
+	/* A sixteen-step grey ramp, then three hues at their own levels, which
+	 * is enough to tell the tiles and the stepping apart on screen. */
+	for (int i = 0; i < 16; i++) {
+		uint32_t v = (uint32_t)(i * 17);
+		art_palette[i] = v << 16 | v << 8 | v;
+	}
+	for (int i = 16; i < TC_ART_COLOURS; i++) {
+		int k = i - 16;
+		art_palette[i] = (uint32_t)((k * 5 & 31) * 8) << 16 |
+				 (uint32_t)((k * 11 & 31) * 8) << 8 |
+				 (uint32_t)((k * 3 & 31) * 8);
+	}
+	for (int t = 0; t < TC_ART_TILES; t++) {
+		uint8_t *tile = &art_tiles[t * TC_TILE_PIXELS];
+		for (int y = 0; y < 32; y++)
+			for (int x = 0; x < 32; x++)
+				tile[y * 32 + x] = (uint8_t)(
+					t == 0 ? ((x == 0 || y == 0 || x == 31 || y == 31)
+						 ? 63 : (x >> 1 & 15) + 16)
+					: t == 1 ? ((x ^ y) & 31)
+					: t == 2 ? ((x + y) % TC_ART_COLOURS)
+					: (((x >> 2) + (y >> 2)) & 1 ? 63 : 32));
+	}
+}
+
+/* The tiles as the fill reads them, one palette-relative index a pixel. */
+static const uint8_t *art_tile(uint32_t tile)
+{
+	if (tile >= TC_ART_TILES)
+		return NULL;
+	return &art_tiles[tile * TC_TILE_PIXELS];
+}
 static uint32_t sprite_gx, sprite_gz;   // the cell it stands on
 static int32_t sprite_y;                // the ground there, Q4
 
@@ -494,6 +555,7 @@ struct tc_shade tc_init(const struct tc_land *l, void *work)
 	// The cursor's two shapes, and where it starts: the middle of the screen.
 	cursor_build(0);
 	cursor_build(1);
+	art_build();
 	sprite_place();
 	cursor_x = TC_WIDTH / 2 * 16;
 	cursor_y = TC_HEIGHT / 2 * 16;
@@ -1206,6 +1268,46 @@ static void hand_rect(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
 	counts->triangles++;
 }
 
+/* A card, as fpga/raster.sv will fill one: pixel centres inside the
+ * rectangle, a texel whose u and v are the accumulated steps, and the texel
+ * written as a palette entry from TC_ART_FIRST up. A pixel is covered when
+ * its centre, at 16i + 8, lies in the rectangle, which is the rule the
+ * triangle fill uses; the caller's step is in Q8 texels a pixel and the
+ * accumulator's top five bits are the texel, so nothing divides here. */
+void tc_soft_card(void *soft, uint32_t tile, const int32_t *rect,
+		  const int32_t *steps)
+{
+	struct tc_soft *s = soft;
+	const uint8_t *art = art_tile(tile);
+	if (art == NULL || rect[2] <= rect[0] || rect[3] <= rect[1])
+		return;
+	int32_t ix0 = floor_div(rect[0] - 8 + 15, 16);
+	int32_t ix1 = floor_div(rect[2] - 8 + 15, 16);
+	int32_t iy0 = floor_div(rect[1] - 8 + 15, 16);
+	int32_t iy1 = floor_div(rect[3] - 8 + 15, 16);
+	for (int32_t iy = iy0; iy < iy1; iy++) {
+		int32_t v = ((iy * 16 + 8 - rect[1]) * steps[1]) >> 12;
+		if (v < 0)
+			v = 0;
+		if (v > 31)
+			v = 31;
+		if (iy < 0 || iy >= TC_HEIGHT)
+			continue;
+		uint8_t *row = s->fb + (size_t)iy * s->stride;
+		for (int32_t ix = ix0; ix < ix1; ix++) {
+			int32_t u = ((ix * 16 + 8 - rect[0]) * steps[0]) >> 12;
+			if (u < 0)
+				u = 0;
+			if (u > 31)
+				u = 31;
+			if (ix < 0 || ix >= TC_WIDTH)
+				continue;
+			row[ix] = (uint8_t)(TC_ART_FIRST + art[v * 32 + u]);
+			s->pixels++;
+		}
+	}
+}
+
 // The sprite, as runs of one colour a row, each run the rectangle hand_rect
 // wants. Its base is the middle of the cell it stands on, at the ground
 // there, and its top is TC_SPRITE_UNITS above it: those two projections give
@@ -1345,6 +1447,35 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 		uint64_t t = out->now();
 		out->phase[TC_PHASE_WALK] = (uint32_t)(t - phase_at);
 		phase_at = t;
+	}
+
+	/* The four cards, standing in a row beside the sprite, one tile each,
+	 * drawn where the sprite is drawn so that the land in front of that
+	 * cell still paints over them. A card is three cells tall and as wide
+	 * as it is tall, and the steps it hands the fill are the tile's 32
+	 * texels across that width, which is the divide the fabric does not
+	 * have. */
+	if (out->card != NULL) {
+		for (uint32_t i = 0; i < TC_ART_TILES; i++) {
+			int32_t wx = (int32_t)(sprite_gx + 2 + i * 3) * CELL + CELL / 2;
+			int32_t wz = (int32_t)sprite_gz * CELL + CELL / 2;
+			int32_t x, y, z, sx0, sy0, sx1, sy1;
+			to_camera(wx, sprite_y, wz, &x, &y, &z);
+			if (z < NEAR)
+				continue;
+			project_xy(x, y, z, &sx0, &sy0);
+			to_camera(wx, sprite_y + 3 * CELL, wz, &x, &y, &z);
+			if (z < NEAR)
+				continue;
+			project_xy(x, y, z, &sx1, &sy1);
+			int32_t h = sy0 - sy1;
+			if (h < 16)
+				continue;
+			int32_t w = h;
+			int32_t rect[4] = {sx0 - w / 2, sy1, sx0 + w / 2, sy0};
+			int32_t steps[2] = {(32 << 8) * 16 / w, (32 << 8) * 16 / h};
+			out->card(out->ctx, i, rect, steps);
+		}
 	}
 
 	// The cursor goes last, so that it lies over everything else. Its middle

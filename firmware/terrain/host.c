@@ -200,7 +200,8 @@ int main(int argc, char **argv)
 	struct tc_soft soft = {.fb = &frame[0][0], .stride = TC_WIDTH,
 			       .pal5 = shade.pal5, .lut = shade.lut};
 	const struct tc_target target = {.rows = rows, .triangle = triangle,
-					.ctx = &soft};
+					.ctx = &soft,
+					.card = getenv("TC_CARDS") ? tc_soft_card : 0};
 	for (uint32_t i = 0; i < frames; i++) {
 		int chosen = 0;
 		char path[4096];

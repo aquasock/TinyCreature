@@ -358,9 +358,9 @@ int main(void)
 	uint64_t phase_sum[TC_PHASE_COUNT] = {0};
 	uint64_t cells = 0;
 	const struct tc_target target = FABRIC ?
-		(struct tc_target){fabric_rows, fabric_triangle, 0, phase_now, phase} :
-		(struct tc_target){tc_soft_rows, tc_soft_triangle, &soft, phase_now,
-				   phase};
+		(struct tc_target){fabric_rows, fabric_triangle, 0, 0, phase_now, phase} :
+		(struct tc_target){tc_soft_rows, tc_soft_triangle, tc_soft_card, &soft,
+				   phase_now, phase};
 	uint32_t late0 = TN_VIDEO_LATE, vbl0 = TN_VIDEO_FRAMES;
 	uint32_t stalls0 = FABRIC ? RASTER_STALLS : 0;
 	uint32_t crc = 0, lit = 0;
