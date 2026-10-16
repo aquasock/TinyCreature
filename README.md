@@ -313,8 +313,14 @@ throughout, so only the word-for-word frame comparison could see it.
 `tests/raster_tb.sv` replays two real frames whose commands carry textured
 triangles and requires the fabric's read-back to match `terrain_host` byte for
 byte, which it does both for a card alone and for the shelf of sixty-four, and
-it still does for the shaded triangles and the cards the columns draw. `TEX=0`
-remains the default until the board has flown the triangles.
+it still does for the shaded triangles and the cards the columns draw. The
+board fills them too: the orbit gate runs the shelf of sixty-four textured
+cards on the Tang and matches the twin frame for frame, `TRIS=20734`,
+`PIXELS=34677` and frame CRC `5f788c32` with zero late line fetches, and the
+user flew the pinned build and called it perfect. `CARD_TEX` is still zero by
+default, so a board build draws the columns unless it is asked for the
+triangles; flipping that default and retiring the columns, `CARD_COLUMN_PX` and
+the `CARD` command is its own small cycle.
 
 A tall sprite stands on the island's middle: `tools/convert_sprite.py` stacks
 one of the tile set's two-tile creatures into 32 by 64, trims it to the art,

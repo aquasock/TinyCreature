@@ -309,6 +309,27 @@ static void fabric_card(void *ctx, const struct tc_card *c)
 	RASTER_FIFO = c->v0 << 16 | c->u0;
 }
 
+// A textured triangle's thirteen words, which fpga/raster.sv reads as TEX: the
+// opcode with the tile, the three Q4 corners, and the nine plane numbers the
+// fill steps -- the tile's u, its v and the reciprocal of depth, each as its
+// value at the first pixel of the triangle's clamped bounding box and its step
+// a pixel across and a row down. All of it is worked out here, because the
+// fabric has no divider at setup and needs none when it is handed the
+// coefficients. A target with no tex function is one whose rasterizer cannot
+// fill one, and the program falls back to the columns.
+static void fabric_tex(void *ctx, const struct tc_tex *t)
+{
+	(void)ctx;
+	RASTER_FIFO = 4u << 28 | (t->tile & 0xffffu) << 16;
+	for (unsigned k = 0; k < 3; k++)
+		RASTER_FIFO = (uint32_t)(uint16_t)t->y[k] << 16 |
+			      (uint32_t)(uint16_t)t->x[k];
+	const int32_t n[9] = { t->u0, t->ux, t->uy, t->v0, t->vx,
+			       t->vy, t->r0, t->rx, t->ry };
+	for (unsigned k = 0; k < 9; k++)
+		RASTER_FIFO = (uint32_t)n[k];
+}
+
 // Give the fabric the shading tables: the palette in five bits a channel and
 // the table from a colour they make back to a land entry. This happens once,
 // before the first frame, and about a millisecond of a run. It is the same
@@ -402,8 +423,8 @@ int main(void)
 	uint64_t phase_sum[TC_PHASE_COUNT] = {0};
 	uint64_t cells = 0;
 	const struct tc_target target = FABRIC ?
-		(struct tc_target){fabric_rows, fabric_triangle, fabric_card, 0, 0,
-				   phase_now, phase} :
+		(struct tc_target){fabric_rows, fabric_triangle, fabric_card,
+				   fabric_tex, 0, phase_now, phase} :
 		(struct tc_target){tc_soft_rows, tc_soft_triangle, tc_soft_card,
 				   tc_soft_tex, &soft, phase_now, phase};
 	uint32_t late0 = TN_VIDEO_LATE, vbl0 = TN_VIDEO_FRAMES;

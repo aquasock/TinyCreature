@@ -85,10 +85,20 @@ make -C "$source_dir/firmware/apps/video_test" BUILD="$out/app" clean all
 make -C "$root/firmware/terrain" TINYNES="$source_dir" BUILD="$out/terrain" \
     CARDS="${TINYCREATURE_CARDS:-0}" TILES="${TINYCREATURE_TILES:-0}" \
     READOUT="${TINYCREATURE_READOUT:-1}" \
+    CARD_TEX="${TINYCREATURE_CARD_TEX:-0}" \
+    CARD_COLUMN_PX="${TINYCREATURE_CARD_COLUMN_PX:-3}" \
+    CARD_YAW="${TINYCREATURE_CARD_YAW:-0}" CARD_DEPTH="${TINYCREATURE_CARD_DEPTH:-48}" \
+    PIN_X="${TINYCREATURE_PIN_X:-0xffff}" PIN_Z="${TINYCREATURE_PIN_Z:-0xffff}" \
+    PIN_DIST="${TINYCREATURE_PIN_DIST:-3200}" PIN_PITCH="${TINYCREATURE_PIN_PITCH:-2731}" \
     clean all host
 make -C "$root/firmware/terrain" TINYNES="$source_dir" FABRIC=0 \
     CARDS="${TINYCREATURE_CARDS:-0}" TILES="${TINYCREATURE_TILES:-0}" \
     READOUT="${TINYCREATURE_READOUT:-1}" \
+    CARD_TEX="${TINYCREATURE_CARD_TEX:-0}" \
+    CARD_COLUMN_PX="${TINYCREATURE_CARD_COLUMN_PX:-3}" \
+    CARD_YAW="${TINYCREATURE_CARD_YAW:-0}" CARD_DEPTH="${TINYCREATURE_CARD_DEPTH:-48}" \
+    PIN_X="${TINYCREATURE_PIN_X:-0xffff}" PIN_Z="${TINYCREATURE_PIN_Z:-0xffff}" \
+    PIN_DIST="${TINYCREATURE_PIN_DIST:-3200}" PIN_PITCH="${TINYCREATURE_PIN_PITCH:-2731}" \
     BUILD="$out/terrain-soft" clean all
 
 sha256sum "$out/ae350_soc.fs" "$out/ae350_soc.bin" "$out/app/video_test.elf" \
