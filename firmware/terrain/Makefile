@@ -70,10 +70,16 @@ PIN_X       ?= 0xffff
 PIN_Z       ?= 0xffff
 PIN_DIST    ?= 3200
 PIN_PITCH   ?= 2731
+# A card is a box that keeps one facing: CARD_YAW is which way its front looks,
+# in the same 1/65536 of a turn the camera's angle uses, and CARD_DEPTH how
+# thick it is, in Q4 -- a tenth of its height by default.
+CARD_YAW    ?= 0
+CARD_DEPTH  ?= 48
 COMMON_CPPFLAGS := $(SPRITE_CPPFLAGS) -DTC_CARDS=$(CARDS) \
                    -DTC_CARDS_N=$(CARDS_N) -DTC_READOUT=$(READOUT) \
                    -DTC_PIN_X=$(PIN_X) -DTC_PIN_Z=$(PIN_Z) \
-                   -DTC_PIN_DIST=$(PIN_DIST) -DTC_PIN_PITCH=$(PIN_PITCH)
+                   -DTC_PIN_DIST=$(PIN_DIST) -DTC_PIN_PITCH=$(PIN_PITCH) \
+                   -DTC_CARD_YAW=$(CARD_YAW) -DTC_CARD_DEPTH=$(CARD_DEPTH)
 
 # The art's tiles: a generated header, off by default because the art is
 # fetched rather than committed, so a fresh clone builds. TILES=1 wants the

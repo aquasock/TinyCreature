@@ -1456,3 +1456,36 @@ The user said the cards have some bugs and named this one, so the next thing is 
 - User Test: NOT RUN
 
 ---
+
+## 45 COMMIT Unreleased 2026-10-15T18:50:43-07:00
+
+#### Coming From:
+
+Unreleased 0243b00
+
+#### Purpose:
+
+Make a card an object that stands and looks one way -- a box of six faces with a thin black edge -- instead of a picture that turns to face the camera, which is the shape the user described.
+
+#### Outcome:
+
+A card is now a box, which is six faces instead of one billboard. The user asked for it in those terms: six cards make one 3D card, the four edges solid black and about a tenth of the card's height thick, and the back a duplicate of the front's art for now. `card_at` became that box: `TC_CARD_YAW` is the one direction its front looks in the same 1/65536 of a turn the camera's angle uses, `TC_CARD_DEPTH` its thickness in Q4 -- 48, a tenth of three cells -- and the eight corners are built in the box's own frame from three axes, projected, and turned into the axis-aligned rectangle each face's four corners fall in, which is all this rasterizer's textured fill can draw. A face whose normal points away from the camera is dropped, the survivors are sorted farthest first and drawn in that order, the front and back through the card fill and the four edges through `hand_rect` as two triangles each. The edges come out black without a new palette entry: `hand_rect` with entry 0 reaches the shading table as pure black's colour plane and the table answers with entry 9, which the palette dump shows is `#000000` -- the same route the cursor's outline already takes, and the reason no land colour moved. What the box measures, one card at 80,90 with the camera twenty cells back and the pin's own ground under it, is the front face's art at 1,444 pixels in a 38 by 38 rectangle facing the camera, 1,107 in a 27 by 41 at 45 degrees, which is 38 times the cosine and what a leaving face should do, nothing at all at 90 degrees where the card is edge-on and both faces are, and 1,189 back from behind where the duplicate art shows. The silhouette is exact rather than approximately right: art and edge together are 1,320 pixels inside a 30 by 44 rectangle at 45 degrees, and 30 by 44 is 1,320, so the six rectangles tile the box with no gap and no overlap; the edge is a one pixel band across the top when the card faces the camera, which is its thickness seen from fifteen degrees above, and a three pixel strip beside the face at 45. The consequence of a card keeping one facing is now the point rather than a defect: the camera sees it edge-on and then from behind as it circles the island, and the shelf's sixty-four cards all look the same way. Two things were changed alongside it and are worth naming: each shelf card now stands on the ground of its own cell rather than on the sprite's, and the shelf's cards are boxes like the pin's. The rasterizer's simulation was run and passed unchanged, which is the check that the land and the sprite are untouched, and both board gates passed with the twin, with the CRCs re-pinned to `6f3ff69d` unpinned against `21a74c13` and `8e9ba88f` pinned against `bc66529e`; `TRIS` rose 164, which is the eighty-two solid faces the sixty-four cards show between them, and `CELLS` stayed at 18,158. The cost is more commands per card, three or four fills where there was one, which the ladder of entry 40 puts at a few microseconds a card rather than 1.36 -- nothing at sixty-four cards, and worth re-measuring before a crowd of thousands. The build for the user's hands was deployed pinned as before, `build/feel/terrain.elf`, 421,496 bytes, MD5 `25a621aadd3a517fe9d06135d8934a0a` and SHA-256 `020d7ac55a4d0bacdc3c8164a4ae60d609dee063d1c2457cb59d7c1907aeaa2a`, cards and tiles on, the card still standing at 80,90 and now facing the camera the build opens on, 200,000 frames, the link handed back. The core was not rebuilt: every face is drawn with commands the fabric already had. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that this cycle's only `.ai` change is this entry, checked that the reference's fast index and its records list the same eleven ids in the same order with none retired, validated this entry against the template, ordering, prose, Status, numbering and 100-entry rules, and confirmed that the project-control change agrees with the workflow and rewrites no settled history.
+
+#### Next Steps:
+
+The rectangle each face is drawn as is exact for the silhouette and about right for the seams, so what is left of the approximation is the faces' true shapes: at a steep angle a face is a trapezoid, and it is drawn as the rectangle around it, which the user will see first when he is close to a card and off to one side of its facing. Making that exact is the fabric's job and is the same work the record has been calling the next real renderer step: a textured triangle, after which a face is two of them and can be any quadrilateral at all, which is also what cards that tilt and the wobble he described earlier need. The back is a duplicate of the front, as he said it could be for now, and a mirrored or separate back is a small change in the same place. Beyond that the world's queue stands as it was: planting a pin where the cursor is on a button, which the middle press's pick already has the arithmetic for; the store's size, either 256 BSRAM tiles at 131 of 340 blocks or a working set per scene; a crowd that moves, whose per-card cost this cycle raised and which wants the ladder re-run before it is designed; the ninth bit of the framebuffer; the palette's other half; the cell-shaped command and the display list; the keyboard, gated on TinyTang; flying to a clicked point; the pipe guard in TinyTang; a CRC pinned per recorded input sequence; the capture card; the Bullet world removal (entry 6); and GAME-001. The user has not yet judged the box on the board.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/Makefile
+- firmware/terrain/terrain.c
+- tools/run_tang32_feel.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

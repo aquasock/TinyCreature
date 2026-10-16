@@ -1540,68 +1540,196 @@ static void draw_sprite(void)
 #endif
 }
 
-/* One card, standing on the land at a world position: three cells tall and as
- * wide as it is tall, its base at wy and its top three cells up, filled with
- * one tile of the art. The rectangle's pixel range, clamped to the screen, and
- * the fields the fabric wants are worked out here because it has no divider:
- * the steps in Q8 texels a pixel, and what the first pixel of each row and
- * column stands at. A pixel centre is 16i + 8, which is the rule both fills
- * use. The shelf and the pin both come through here, so there is one copy of
- * this arithmetic. */
+/* A card is an object rather than a picture: a box three cells wide, three
+ * cells tall and a tenth of that deep, standing on the ground at a world
+ * position and looking one way -- TC_CARD_YAW, in the same 1/65536 of a turn
+ * the camera's angle uses. Its six faces are drawn as the axis-aligned
+ * rectangles their corners project into, which is all this rasterizer's
+ * textured fill can draw: the art on the front, the same art on the back for
+ * now, and the four edges a thin near-black, which is what gives a card a side
+ * and a top as the camera moves round it. A face that looks away from the
+ * camera is dropped, and the rest are drawn farthest first, so the nearer ones
+ * paint over the farther ones the way every other quad in this renderer does.
+ * The consequence of a card keeping one facing is that the camera sees it
+ * edge-on and then from behind as it circles the island, which is what a thing
+ * standing there would do and not what a billboard does. */
+#ifndef TC_CARD_YAW
+#define TC_CARD_YAW 0        /* looking along +z */
+#endif
+#define TC_CARD_UNITS (3 * CELL)   /* three cells tall, three cells wide */
+#ifndef TC_CARD_DEPTH
+#define TC_CARD_DEPTH 48           /* a tenth of the height, in Q4 */
+#endif
+#define TC_FACE_SOLID 0xffffffffu
+
+/* The box's eight corners: corner c has bit 2 for +u, bit 1 for +v and bit 0
+ * for +n, where u runs across the face, v up and n out of its front. */
+static void card_corners(int32_t wx, int32_t wy, int32_t wz, uint32_t yaw,
+			 int32_t *cx, int32_t *cy, int32_t *cz)
+{
+	int32_t sn = isin(yaw), cs = icos(yaw);
+	int32_t hw = TC_CARD_UNITS / 2, hh = TC_CARD_UNITS / 2;
+	int32_t hd = TC_CARD_DEPTH / 2;
+	/* The three axes, a unit long in Q4: u is (cos, 0, -sin), v up, n is
+	 * (sin, 0, cos). */
+	int32_t ux = (int32_t)((int64_t)cs * 16 >> 14);
+	int32_t uz = (int32_t)(-(int64_t)sn * 16 >> 14);
+	int32_t nx = (int32_t)((int64_t)sn * 16 >> 14);
+	int32_t nz = (int32_t)((int64_t)cs * 16 >> 14);
+
+	for (unsigned c = 0; c < 8; c++) {
+		int32_t su = (c & 4) ? 1 : -1;
+		int32_t sv = (c & 2) ? 1 : -1;
+		int32_t sw = (c & 1) ? 1 : -1;
+		cx[c] = wx + su * ((ux * hw) >> 4) + sw * ((nx * hd) >> 4);
+		cy[c] = wy + hh + sv * hh;
+		cz[c] = wz + su * ((uz * hw) >> 4) + sw * ((nz * hd) >> 4);
+	}
+}
+
 static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 {
 	if (out->card == NULL)
 		return;
-	int32_t x, y, z, sx0, sy0;
-	to_camera(wx, wy, wz, &x, &y, &z);
-	if (z < NEAR)
-		return;
-	project_xy(x, y, z, &sx0, &sy0);
-	/* A card is three cells of world drawn as a rectangle that always faces the
-	 * camera, so how big it is on the screen depends on how far away it is and
-	 * not on how the camera is tilted. Its height is what three cells across
-	 * the view project to at the depth it stands at -- three cells, times the
-	 * projection's own 4096, over the depth, which is project_xy's arithmetic
-	 * with an x of three cells. Taking the height from the world's vertical
-	 * axis instead, which is what this did, projected a vertical segment: that
-	 * length foreshortens by the cosine of the tilt, so a card shrank as the
-	 * camera came down on it -- 1,188 pixels across at the orbit's fifteen
-	 * degrees and 36 at the tilt's seventy-nine, which is the shrink the user
-	 * saw -- and vanished at the top of the tilt. */
-	int32_t h = (int32_t)((((int64_t)3 * CELL) << 12) / z);
-	if (h < 16)
-		return;
-	int32_t w = h;
-	/* The rectangle runs from the card's base, where the ground under it
-	 * projects, up by its height: a billboard, so its top is not a projected
-	 * world point but the base less the size the depth gives it. */
-	const int32_t top = sy0 - h;
-	struct tc_card card;
-	int32_t ci0 = floor_div(sx0 - w / 2 - 8 + 15, 16);
-	int32_t ci1 = floor_div(sx0 + w / 2 - 8 + 15, 16);
-	int32_t cj0 = floor_div(top - 8 + 15, 16);
-	int32_t cj1 = floor_div(sy0 - 8 + 15, 16);
-	if (ci0 < 0)
-		ci0 = 0;
-	if (cj0 < 0)
-		cj0 = 0;
-	if (ci1 > TC_WIDTH)
-		ci1 = TC_WIDTH;
-	if (cj1 > TC_HEIGHT)
-		cj1 = TC_HEIGHT;
-	if (ci0 >= ci1 || cj0 >= cj1)
-		return;
-	const int32_t bx0 = sx0 - w / 2, by0 = top;
-	card.tile = tile;
-	card.i0 = (uint32_t)ci0;
-	card.i1 = (uint32_t)ci1;
-	card.j0 = (uint32_t)cj0;
-	card.j1 = (uint32_t)cj1;
-	card.du = (uint32_t)((32 << 12) / w);
-	card.dv = (uint32_t)((32 << 12) / h);
-	card.u0 = (uint32_t)(((ci0 * 16 + 8 - bx0) * (int32_t)card.du) >> 4);
-	card.v0 = (uint32_t)(((cj0 * 16 + 8 - by0) * (int32_t)card.dv) >> 4);
-	out->card(out->ctx, &card);
+	int32_t bx[8], by[8], bz[8];
+	card_corners(wx, wy, wz, TC_CARD_YAW, bx, by, bz);
+
+	/* The four corners of each face, and which way it looks: the front out
+	 * along the yaw, the back against it, the right and left across the face,
+	 * the top and bottom up and down. */
+	static const uint8_t face_corner[6][4] = {
+		{1, 3, 5, 7}, {0, 2, 4, 6}, {4, 5, 6, 7},
+		{0, 1, 2, 3}, {2, 3, 6, 7}, {0, 1, 4, 5},
+	};
+	static const int8_t face_axis[6] = {2, 2, 0, 0, 1, 1};
+	static const int8_t face_sign[6] = {1, -1, 1, -1, 1, -1};
+
+	struct card_face {
+		int32_t i0, i1, j0, j1;             /* pixels, ends one past the last */
+		int32_t left, right, top, bottom;   /* the same rectangle in Q4 screen */
+		int32_t z;                          /* how far away its middle is */
+		uint32_t tile;                      /* TC_FACE_SOLID for the edges */
+	};
+	struct card_face face[6];
+	unsigned used = 0;
+
+	for (unsigned f = 0; f < 6; f++) {
+		int32_t mx = 0, my = 0, mz = 0;
+		for (unsigned k = 0; k < 4; k++) {
+			unsigned c = face_corner[f][k];
+			mx += bx[c];
+			my += by[c];
+			mz += bz[c];
+		}
+		mx /= 4;
+		my /= 4;
+		mz /= 4;
+		/* The middle in camera space, and one step along the face's own
+		 * normal from it: the camera is that space's origin, so the face
+		 * is visible when the normal points back towards it. */
+		int32_t ox, oy, oz, px, py, pz;
+		to_camera(mx, my, mz, &ox, &oy, &oz);
+		if (oz < NEAR)
+			continue;
+		int32_t ax = 0, ay = 0, az = 0;
+		int32_t sn = isin(TC_CARD_YAW), cs = icos(TC_CARD_YAW);
+		if (face_axis[f] == 0) {
+			ax = face_sign[f] * (int32_t)((int64_t)cs * CELL >> 14);
+			az = face_sign[f] * (int32_t)(-(int64_t)sn * CELL >> 14);
+		} else if (face_axis[f] == 1) {
+			ay = face_sign[f] * CELL;
+		} else {
+			ax = face_sign[f] * (int32_t)((int64_t)sn * CELL >> 14);
+			az = face_sign[f] * (int32_t)((int64_t)cs * CELL >> 14);
+		}
+		to_camera(mx + ax, my + ay, mz + az, &px, &py, &pz);
+		px -= ox;
+		py -= oy;
+		pz -= oz;
+		if ((int64_t)px * ox + (int64_t)py * oy + (int64_t)pz * oz >= 0)
+			continue;
+		/* The rectangle its four corners project into. A corner past the
+		 * near plane is taken as on it, which keeps a card that is half
+		 * behind the camera from flickering out of the picture. */
+		int32_t lo = 0x7fffffff, hi = -0x7fffffff;
+		int32_t top = 0x7fffffff, bottom = -0x7fffffff;
+		int32_t zsum = 0;
+		for (unsigned k = 0; k < 4; k++) {
+			unsigned c = face_corner[f][k];
+			int32_t x, y, z, sx, sy;
+			to_camera(bx[c], by[c], bz[c], &x, &y, &z);
+			if (z < NEAR)
+				z = NEAR;
+			project_xy(x, y, z, &sx, &sy);
+			lo = sx < lo ? sx : lo;
+			hi = sx > hi ? sx : hi;
+			top = sy < top ? sy : top;
+			bottom = sy > bottom ? sy : bottom;
+			zsum += z;
+		}
+		int32_t i0 = floor_div(lo - 8 + 15, 16);
+		int32_t i1 = floor_div(hi - 8 + 15, 16);
+		int32_t j0 = floor_div(top - 8 + 15, 16);
+		int32_t j1 = floor_div(bottom - 8 + 15, 16);
+		if (i0 < 0)
+			i0 = 0;
+		if (j0 < 0)
+			j0 = 0;
+		if (i1 > TC_WIDTH)
+			i1 = TC_WIDTH;
+		if (j1 > TC_HEIGHT)
+			j1 = TC_HEIGHT;
+		if (i0 >= i1 || j0 >= j1 || hi <= lo || bottom <= top)
+			continue;
+		struct card_face *p = &face[used++];
+		p->i0 = i0;
+		p->i1 = i1;
+		p->j0 = j0;
+		p->j1 = j1;
+		p->left = lo;
+		p->right = hi;
+		p->top = top;
+		p->bottom = bottom;
+		p->z = zsum / 4;
+		p->tile = f == 0 || f == 1 ? tile : TC_FACE_SOLID;
+	}
+
+	/* Farthest first, so a near face paints over the one behind it. */
+	for (unsigned a = 0; a < used; a++)
+		for (unsigned b = a + 1; b < used; b++)
+			if (face[b].z > face[a].z) {
+				struct card_face t = face[a];
+				face[a] = face[b];
+				face[b] = t;
+			}
+
+	for (unsigned a = 0; a < used; a++) {
+		const struct card_face *p = &face[a];
+		if (p->tile == TC_FACE_SOLID) {
+			/* A solid face is two triangles, the way the cursor's runs
+			 * are. Palette entry 0 is what the shading table answers
+			 * with the land's own nearest to black, which is also what
+			 * the cursor's outline comes out. */
+			hand_rect(p->i0 * 16 + 8, p->j0 * 16 + 8,
+				  (p->i1 - 1) * 16 + 8, (p->j1 - 1) * 16 + 8,
+				  TC_CURSOR_EDGE);
+			continue;
+		}
+		int32_t w = p->right - p->left, h = p->bottom - p->top;
+		struct tc_card card;
+		card.tile = p->tile;
+		card.i0 = (uint32_t)p->i0;
+		card.i1 = (uint32_t)p->i1;
+		card.j0 = (uint32_t)p->j0;
+		card.j1 = (uint32_t)p->j1;
+		card.du = (uint32_t)((32 << 12) / w);
+		card.dv = (uint32_t)((32 << 12) / h);
+		card.u0 = (uint32_t)(((p->i0 * 16 + 8 - p->left) *
+				      (int32_t)card.du) >> 4);
+		card.v0 = (uint32_t)(((p->j0 * 16 + 8 - p->top) *
+				      (int32_t)card.dv) >> 4);
+		out->card(out->ctx, &card);
+	}
 }
 
 void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
@@ -1731,8 +1859,9 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 				     (int32_t)(i % side) * 3;
 			int32_t gz = sprite_gz - (int32_t)(side * 3 / 2) +
 				     (int32_t)(i / side) * 3;
-			card_at(gx * CELL + CELL / 2, sprite_y, gz * CELL + CELL / 2,
-				i % ART_TILES);
+			int32_t wx = gx * CELL + CELL / 2;
+			int32_t wz = gz * CELL + CELL / 2;
+			card_at(wx, ground(wx, wz), wz, i % ART_TILES);
 		}
 	}
 #endif

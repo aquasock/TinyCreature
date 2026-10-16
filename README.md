@@ -206,6 +206,31 @@ The tall sprite takes its height from that same projected vertical segment and
 shrinks the same way; it is left as it is here because this cycle was scoped to
 the cards.
 
+A card is then not a picture that turns to face the camera but an object: a box
+three cells wide and tall and a tenth of that deep, standing on the ground and
+looking one way, `CARD_YAW` in the same 1/65536 of a turn the camera's angle
+uses. Its six faces are drawn as the axis-aligned rectangles their corners
+project into, which is all the textured fill can draw -- the art on the front,
+the same art on the back for now, and the four edges solid black, the thin side
+that says it is a box rather than a sheet. A face whose normal points away from
+the camera is dropped, and the rest are drawn farthest first, so the nearer ones
+paint over the farther ones. The consequence is the one the user asked for: the
+camera sees a card edge-on and then from behind as it circles the island. What
+that measures, one card at 80,90 with the camera twenty cells back, is the front
+face's art at 1,444 pixels in a 38 by 38 rectangle facing the camera, 1,107 in a
+27 by 41 rectangle at 45 degrees -- 38 times the cosine, which is what a turning
+face should do -- nothing at all at 90, where the card is edge-on, and 1,189
+back from behind, with the black strip one pixel tall across the top when the
+card faces the camera and three pixels wide beside it at 45. The silhouette is
+exact: art and edge together are 1,320 pixels in a 30 by 44 rectangle at 45
+degrees, and 30 by 44 is 1,320, so the six rectangles tile the box with no gap
+and no overlap. Black is palette entry 9, which the palette dump shows as
+`#000000`, and it arrives through the shading table the way the cursor's outline
+does, so no palette entry was added and no land colour can move. The two board
+gates passed with the CRCs re-pinned, `6f3ff69d` unpinned against `21a74c13` and
+`8e9ba88f` pinned against `bc66529e`, `TRIS` rising 164 for the eighty-two solid
+faces the sixty-four cards show between them and `CELLS` unchanged at 18,158.
+
 A tall sprite stands on the island's middle: `tools/convert_sprite.py` stacks
 one of the tile set's two-tile creatures into 32 by 64, trims it to the art,
 tints it and quantises it to the seven palette entries the sea gave up when it
