@@ -1562,6 +1562,24 @@ static void draw_sprite(void)
 #endif
 #define TC_FACE_SOLID 0xffffffffu
 
+/* How wide one column of a face is on the screen, in whole pixels, and the
+ * most columns a face is ever cut into. A face projects into a quadrilateral
+ * and this rasterizer's fill is an axis-aligned rectangle with a constant
+ * texel step, so a face drawn as one rectangle is drawn as the rectangle
+ * around it: its two sides are different heights, its top and bottom edges
+ * slope, and the art is stretched into the corners the face never reaches.
+ * Drawn as columns, the outline becomes the true one's column-wide steps and
+ * each column's art is anchored to that column's own height. A column is
+ * another CARD command, so this is the dial between how closely the outline
+ * follows the face and what a card costs: 1000 draws a face as the single
+ * rectangle it used to be. */
+#ifndef TC_CARD_COLUMN_PX
+#define TC_CARD_COLUMN_PX 3
+#endif
+#ifndef TC_CARD_COLUMNS_MAX
+#define TC_CARD_COLUMNS_MAX 24
+#endif
+
 /* The box's eight corners: corner c has bit 2 for +u, bit 1 for +v and bit 0
  * for +n, where u runs across the face, v up and n out of its front. */
 static void card_corners(int32_t wx, int32_t wy, int32_t wz, uint32_t yaw,
@@ -1587,6 +1605,29 @@ static void card_corners(int32_t wx, int32_t wy, int32_t wz, uint32_t yaw,
 	}
 }
 
+/* One coordinate of a column boundary: a and b are the two ends of a box edge
+ * and t is how far along it, out of 65536. In 64 bits because the worlds this
+ * is used on reach an extent of tens of thousands of Q4 units. */
+static int32_t lerp16(int32_t a, int32_t b, uint32_t t)
+{
+	return (int32_t)(((int64_t)a * (65536 - t) + (int64_t)b * t) >> 16);
+}
+
+/* How many columns a face of this screen width is cut into, Q4 in and one or
+ * more out: one column for every TC_CARD_COLUMN_PX whole pixels of width, so
+ * that a face pays in commands for what it covers and a thin one stays a
+ * single rectangle. */
+static unsigned card_columns(int32_t width)
+{
+	int32_t px = (width + 8) / 16;
+	int32_t n = (px + TC_CARD_COLUMN_PX - 1) / TC_CARD_COLUMN_PX;
+	if (n < 1)
+		n = 1;
+	if (n > TC_CARD_COLUMNS_MAX)
+		n = TC_CARD_COLUMNS_MAX;
+	return (unsigned)n;
+}
+
 static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 {
 	if (out->card == NULL)
@@ -1609,6 +1650,7 @@ static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 		int32_t left, right, top, bottom;   /* the same rectangle in Q4 screen */
 		int32_t z;                          /* how far away its middle is */
 		uint32_t tile;                      /* TC_FACE_SOLID for the edges */
+		uint8_t c0, c1, c2, c3;             /* the sweep: c0->c1, c2->c3 */
 	};
 	struct card_face face[6];
 	unsigned used = 0;
@@ -1692,6 +1734,21 @@ static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 		p->bottom = bottom;
 		p->z = zsum / 4;
 		p->tile = f == 0 || f == 1 ? tile : TC_FACE_SOLID;
+		/* Which way this face is cut. The columns are parallel to the pair
+		 * of corners that differ in v -- bit 1, up -- and run from that
+		 * pair's edge to the other pair's, so the sweep is (c0,c1) and
+		 * (c2,c3). The three kinds of face are listed in two different
+		 * orders in face_corner, so the pairing is read off the bits
+		 * rather than assumed. */
+		unsigned k0 = face_corner[f][0], k1 = face_corner[f][1];
+		unsigned k2 = face_corner[f][2], k3 = face_corner[f][3];
+		if ((k0 ^ k1) & 2u) {
+			p->c0 = (uint8_t)k0; p->c1 = (uint8_t)k2;
+			p->c2 = (uint8_t)k1; p->c3 = (uint8_t)k3;
+		} else {
+			p->c0 = (uint8_t)k0; p->c1 = (uint8_t)k1;
+			p->c2 = (uint8_t)k2; p->c3 = (uint8_t)k3;
+		}
 	}
 
 	/* Farthest first, so a near face paints over the one behind it. */
@@ -1705,30 +1762,84 @@ static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 
 	for (unsigned a = 0; a < used; a++) {
 		const struct card_face *p = &face[a];
-		if (p->tile == TC_FACE_SOLID) {
-			/* A solid face is two triangles, the way the cursor's runs
-			 * are. Palette entry 0 is what the shading table answers
-			 * with the land's own nearest to black, which is also what
-			 * the cursor's outline comes out. */
-			hand_rect(p->i0 * 16 + 8, p->j0 * 16 + 8,
-				  (p->i1 - 1) * 16 + 8, (p->j1 - 1) * 16 + 8,
-				  TC_CURSOR_EDGE);
-			continue;
+		/* A face is drawn as a run of columns rather than as one
+		 * rectangle, and every column is drawn from its own four
+		 * projected corners, so the outline follows the quadrilateral the
+		 * face projects into in steps one column wide instead of being a
+		 * rectangle that the art is stretched to fill. */
+		int32_t w = p->right - p->left;
+		unsigned cols = card_columns(w);
+		uint32_t du = w > 0 ? (uint32_t)((32 << 12) / w) : 0;
+		uint8_t ci[4] = {p->c0, p->c1, p->c2, p->c3};
+		for (unsigned k = 0; k < cols; k++) {
+			uint32_t t0 = (uint32_t)((uint64_t)k * 65536u / cols);
+			uint32_t t1 = (uint32_t)((uint64_t)(k + 1) * 65536u / cols);
+			int32_t lo = 0x7fffffff, hi = -0x7fffffff;
+			int32_t top = 0x7fffffff, bottom = -0x7fffffff;
+			for (unsigned e = 0; e < 4; e++) {
+				unsigned ca = ci[e < 2 ? 0 : 2];
+				unsigned cb = ci[e < 2 ? 1 : 3];
+				uint32_t t = e & 1u ? t1 : t0;
+				int32_t x, y, z, sx, sy;
+				to_camera(lerp16(bx[ca], bx[cb], t),
+					  lerp16(by[ca], by[cb], t),
+					  lerp16(bz[ca], bz[cb], t), &x, &y, &z);
+				if (z < NEAR)
+					z = NEAR;
+				project_xy(x, y, z, &sx, &sy);
+				lo = sx < lo ? sx : lo;
+				hi = sx > hi ? sx : hi;
+				top = sy < top ? sy : top;
+				bottom = sy > bottom ? sy : bottom;
+			}
+			int32_t i0 = floor_div(lo - 8 + 15, 16);
+			int32_t i1 = floor_div(hi - 8 + 15, 16);
+			int32_t j0 = floor_div(top - 8 + 15, 16);
+			int32_t j1 = floor_div(bottom - 8 + 15, 16);
+			if (i0 < 0)
+				i0 = 0;
+			if (j0 < 0)
+				j0 = 0;
+			if (i1 > TC_WIDTH)
+				i1 = TC_WIDTH;
+			if (j1 > TC_HEIGHT)
+				j1 = TC_HEIGHT;
+			if (i0 >= i1 || j0 >= j1)
+				continue;
+			if (p->tile == TC_FACE_SOLID) {
+				/* A solid face is two triangles, the way the
+				 * cursor's runs are. Palette entry 0 is what the
+				 * shading table answers with the land's own nearest
+				 * to black, which is also what the cursor's outline
+				 * comes out. */
+				hand_rect(i0 * 16 + 8, j0 * 16 + 8,
+					  (i1 - 1) * 16 + 8, (j1 - 1) * 16 + 8,
+					  TC_CURSOR_EDGE);
+				continue;
+			}
+			int32_t h = bottom - top;
+			if (h <= 0)
+				continue;
+			/* The art runs across the face as it always has -- the
+			 * same texel step and the same origin on the face's own
+			 * left edge -- so cutting the face up does not move it
+			 * sideways; what is anchored to this column's own height
+			 * instead of to the tallest part of the face is the art's
+			 * rows, which is where the stretch was. */
+			struct tc_card card;
+			card.tile = p->tile;
+			card.i0 = (uint32_t)i0;
+			card.i1 = (uint32_t)i1;
+			card.j0 = (uint32_t)j0;
+			card.j1 = (uint32_t)j1;
+			card.du = du;
+			card.dv = (uint32_t)((32 << 12) / h);
+			card.u0 = (uint32_t)(((i0 * 16 + 8 - p->left) *
+					      (int32_t)du) >> 4);
+			card.v0 = (uint32_t)(((j0 * 16 + 8 - top) *
+					      (int32_t)card.dv) >> 4);
+			out->card(out->ctx, &card);
 		}
-		int32_t w = p->right - p->left, h = p->bottom - p->top;
-		struct tc_card card;
-		card.tile = p->tile;
-		card.i0 = (uint32_t)p->i0;
-		card.i1 = (uint32_t)p->i1;
-		card.j0 = (uint32_t)p->j0;
-		card.j1 = (uint32_t)p->j1;
-		card.du = (uint32_t)((32 << 12) / w);
-		card.dv = (uint32_t)((32 << 12) / h);
-		card.u0 = (uint32_t)(((p->i0 * 16 + 8 - p->left) *
-				      (int32_t)card.du) >> 4);
-		card.v0 = (uint32_t)(((p->j0 * 16 + 8 - p->top) *
-				      (int32_t)card.dv) >> 4);
-		out->card(out->ctx, &card);
 	}
 }
 

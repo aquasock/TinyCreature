@@ -51,7 +51,8 @@ make -C "$root/firmware/terrain" TINYNES="$source_dir" BUILD="$build" \
     PIN_DIST="${TINYCREATURE_PIN_DIST:-3200}" \
     PIN_PITCH="${TINYCREATURE_PIN_PITCH:-2731}" \
     CARD_YAW="${TINYCREATURE_CARD_YAW:-0}" \
-    CARD_DEPTH="${TINYCREATURE_CARD_DEPTH:-48}" clean all >/dev/null
+    CARD_DEPTH="${TINYCREATURE_CARD_DEPTH:-48}" \
+    CARD_COLUMN_PX="${TINYCREATURE_CARD_COLUMN_PX:-3}" clean all >/dev/null
 
 echo "Loading the core"
 python3 "$tinytang/tools/tinytang_run.py" --port "$port" --seconds 1 \

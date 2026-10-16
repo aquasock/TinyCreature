@@ -61,10 +61,16 @@ module raster_tb;
     reg [15:0] pal [0:255];
     reg [7:0] lut [0:32767];
     // The art's tiles, which the unit keeps in a store of its own and a
-    // card's texel is read from. Four tiles of 32 by 32 bytes here, loaded
-    // through TILES_ADDR and TILES_DATA four bytes a write, which is how the
-    // program loads them too.
-    reg [7:0] tile_bytes [0:4095];
+    // card's texel is read from. The store is the unit's: TILE_COUNT tiles of
+    // TILE_BYTES bytes, the same two localparams fpga/raster.sv declares, and
+    // the testbench has to load all of them -- a frame that draws the art uses
+    // every tile, and a tile left unloaded reads back as x. Four tiles here
+    // while the art had grown to sixty-four is what made every cards-on run of
+    // this testbench report x in its frame from entry 39 on, and the passes
+    // recorded since then were all cards-off runs.
+    localparam TILE_BYTES = 1024;
+    localparam TILE_COUNT = 64;
+    reg [7:0] tile_bytes [0:TILE_COUNT * TILE_BYTES - 1];
     function automatic [7:0] expected(input integer slot, input integer i);
         expected = slot ? expect1[i] : expect0[i];
     endfunction
@@ -87,12 +93,12 @@ module raster_tb;
     task automatic load_tiles;
         integer a;
         begin
-            for (a = 0; a < 4096; a = a + 4) begin
+            for (a = 0; a < TILE_COUNT * TILE_BYTES; a = a + 4) begin
                 write(15'h0034, a[15:0]);
                 write(15'h0038, {tile_bytes[a + 3], tile_bytes[a + 2],
                                  tile_bytes[a + 1], tile_bytes[a + 0]});
             end
-            $display("tiles loaded: 4 tiles of 32 by 32");
+            $display("tiles loaded: %0d tiles of 32 by 32", TILE_COUNT);
         end
     endtask
 

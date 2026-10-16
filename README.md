@@ -209,10 +209,10 @@ the cards.
 A card is then not a picture that turns to face the camera but an object: a box
 three cells wide and tall and a tenth of that deep, standing on the ground and
 looking one way, `CARD_YAW` in the same 1/65536 of a turn the camera's angle
-uses. Its six faces are drawn as the axis-aligned rectangles their corners
-project into, which is all the textured fill can draw -- the art on the front,
-the same art on the back for now, and the four edges solid black, the thin side
-that says it is a box rather than a sheet. A face whose normal points away from
+uses. Each visible face is drawn as a run of columns, and every column is
+filled from its own four projected corners -- the art on the front, the same art
+on the back for now, and the four edges solid black, the thin side that says it
+is a box rather than a sheet. A face whose normal points away from
 the camera is dropped, and the rest are drawn farthest first, so the nearer ones
 paint over the farther ones. The consequence is the one the user asked for: the
 camera sees a card edge-on and then from behind as it circles the island. What
@@ -221,15 +221,30 @@ face's art at 1,444 pixels in a 38 by 38 rectangle facing the camera, 1,107 in a
 27 by 41 rectangle at 45 degrees -- 38 times the cosine, which is what a turning
 face should do -- nothing at all at 90, where the card is edge-on, and 1,189
 back from behind, with the black strip one pixel tall across the top when the
-card faces the camera and three pixels wide beside it at 45. The silhouette is
-exact: art and edge together are 1,320 pixels in a 30 by 44 rectangle at 45
-degrees, and 30 by 44 is 1,320, so the six rectangles tile the box with no gap
-and no overlap. Black is palette entry 9, which the palette dump shows as
+card faces the camera and three pixels wide beside it at 45. A face's true outline is the quadrilateral its
+corners project into, and a rectangle cannot be one, which is what the user saw
+as a distorted card: drawn as one rectangle the front face at 45 degrees was
+27.5 by 44.3 pixels around a face of 1,047, so 141 of the 1,188 pixels drawn --
+13 per cent of the face -- stood outside it. Drawn in columns three screen
+pixels wide, that face draws 1,067 pixels with 20 of them outside it, and the
+art moves at most 1.2 texels of 32 where a single rectangle moved it 5.5; at 20
+degrees 48 pixels outside against 120 and at most 0.8 texels against 2.5; and
+facing the camera the frame is unchanged to the byte. The columns' art runs
+across the face with the same texel step and the same origin on its left edge,
+so cutting a face up does not move the art sideways, while its rows are anchored
+to each column's own height instead of the tallest part of the face.
+`CARD_COLUMN_PX` is how many whole pixels of width one column covers, and 1000
+draws the single rectangle of before. A column is another `CARD` command, so
+what a face costs follows what it covers: the pin's front face is thirteen
+columns and the shelf's ten-pixel cards four. Black is palette entry 9, which the palette dump shows as
 `#000000`, and it arrives through the shading table the way the cursor's outline
-does, so no palette entry was added and no land colour can move. The two board
-gates passed with the CRCs re-pinned, `6f3ff69d` unpinned against `21a74c13` and
-`8e9ba88f` pinned against `bc66529e`, `TRIS` rising 164 for the eighty-two solid
-faces the sixty-four cards show between them and `CELLS` unchanged at 18,158.
+does, so no palette entry was added and no land colour can move. The board gates were taken with one
+column first, which reproduced entry 45's frames byte for byte, `6f3ff69d`
+unpinned and `8e9ba88f` pinned, and then with columns: the orbit's frame moved
+to `62b662a6`, because the shelf's sixty-four cards are seen at many angles,
+with `TRIS` 20609 to 20676 and `PIXELS` 35611 to 35839, while the pinned view,
+which opens facing the card, drew the identical frame at `8e9ba88f` and wrote
+114 more pixels where columns meet. `CELLS` is unchanged at 18,158.
 
 A tall sprite stands on the island's middle: `tools/convert_sprite.py` stacks
 one of the tile set's two-tile creatures into 32 by 64, trims it to the art,
@@ -264,8 +279,9 @@ a hundred mosaic sprites is about 74 ms, so a village wants textures in the
 fabric rather than more triangles, and the palette room a texture needs wants
 the land's 237 entries re-fitted.
 
-The renderer also draws cards: axis-aligned rectangles filled with one 32 by 32
-tile each. They go to the fabric as a five-word `CARD` command -- the opcode and
+The renderer also draws cards: columns of axis-aligned rectangles, each filled
+with one 32 by 32 tile, a face being one rectangle for every `CARD_COLUMN_PX`
+pixels of its projected width and never fewer than one. They go to the fabric as a five-word `CARD` command -- the opcode and
 the tile, the pixel rectangle, the Q8 texel steps and the accumulators to start
 from -- and the caller works all of that out because the fabric has no divider,
 so the fill only adds. It takes three clocks a pixel, because the tile store is
@@ -277,7 +293,10 @@ table is never consulted and art cannot take colour off the land. `tc_soft_card`
 takes the same five fields, so the model and the fabric cannot disagree about
 the arithmetic, only about carrying it out, and `tests/raster_tb.sv` replays two
 real frames' commands and requires the unit's read-back to match the twin word
-for word. On the board the same check passes: the four cards add no triangles,
+for word, which needs the unit's whole tile store loaded: the testbench held
+four tiles while the art had grown to sixty-four, so every cards-on run of it
+from entry 39 read `x` for a card's texels, and the passes recorded since then
+were all cards-off runs. On the board the same check passes: the four cards add no triangles,
 33158 pixels become 33325, the frame takes 29995 us rather than 29661, `VBLMIN`
 and `VBLMAX` are still both 3, and the frame CRC is `0609cd9f` against the host's
 `0609cd9f`. The first hardware attempt drew the right number of pixels in the
