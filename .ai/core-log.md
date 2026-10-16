@@ -1217,3 +1217,36 @@ The card now works in simulation, so the rest of the pivot's fabric cycle is wha
 - User Test: NOT RUN
 
 ---
+
+## 38 COMMIT Unreleased 2026-10-15T17:41:00-07:00
+
+#### Coming From:
+
+Unreleased 906c293
+
+#### Purpose:
+
+Load the art's tile store from the program, rebuild the core with the card command in it, and see a card drawn by the fabric on the board for the first time.
+
+#### Outcome:
+
+The fabric now draws textured cards on real hardware and matches its model byte for byte, and the cycle got there through three things, one of them a lesson repeated. The core was rebuilt: eight seeds placed and routed, of which six were clean, seed 4 missing the 75 MHz bus constraint at 74.49 MHz and seed 6 killed on the user's instruction to take the best of seven, and seed 2 was kept at 84.77 MHz on the bus and 82.99 MHz on the pixel clock -- better than the core before the card had, which is the sweep's doing rather than the card's, but it does say the third block RAM read port, the counter set and the 64 KiB store have not hurt this design's critical paths. The first two launch attempts are worth recording because the user noticed the second: `nohup` did not keep the build alive when the shell's process group was killed, so the synthesis died and only `build/tang32/seeds/synth` was left; `setsid` put it in its own session and it survived. The second thing is the card switch. `build_tang32.sh` and `run_tang32_feel.sh` now take `CARDS`, reaching the program and the host twin from one switch so that a run with cards is always compared against a twin that drew them; and the first run with it appeared to pass while drawing nothing, because `make` was invoked without `clean` and reused objects built with the cards off -- `CARDS` is not a file dependency, so make had no reason to rebuild. That is the third time this project has been bitten by a stale build in one day, and the measurement that exposed it was the program's text size, 76,020 bytes against 76,912. The third thing is the piece that was missing and that the board found: `main.c` never loaded the tile store, so the first hardware card run drew the right number of pixels in the wrong colours -- 33,325 pixels, which is exactly the host's count, with frame CRC `87fbfc89` against the host's `0609cd9f`. A card filled from a store the program had never written looks exactly like that. `fabric_tiles` now writes the art through `TILES_ADDR` and `TILES_DATA`, four bytes a write, before the first frame, the same shape the palette and the shading table already use. With it, the scripted run passes on the board: `TRIS=20445` unchanged because a card is a fill and not geometry, `PIXELS=33325` the cards, `DRAW=29995us` against 29661 without them, `VBLMIN` and `VBLMAX` both 3 so the orbit is still twenty a second, `LATE=0`, and frame CRC `0609cd9f` matching the host exactly -- which is the check that the fabric's fill, its stepping, its store and its palette all agree with `tc_soft_card`. The earlier gate owed from entry 34 was also run and passed at `566ccf4e`, so the inference recorded there is now a measurement. The artefacts are `ae350_soc.fs` (seed 2, SHA-256 `64f76105c79f9a095edd992466b784602475d83cfe1394b6e8fb442521aa4b1b`) and `ae350_soc.bin` (4,873,196 bytes, SHA-256 `169bb556c43af02e969a76c15e08392015a4adbb393b898d06c51ab399a8344d`), and the build for the user's hands was deployed with a 200,000-frame budget and the cards on. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that this cycle's only `.ai` change is this entry, checked that the reference's fast index and its records list the same eleven ids in the same order with none retired, validated this entry against the template, ordering, prose, Status, numbering and 100-entry rules, and confirmed that the project-control change agrees with the workflow and rewrites no settled history.
+
+#### Next Steps:
+
+The cards are the four drawn in the source, so the next step is the art itself: the converted Meph tiles in place of them, which forces the store's size. The unit holds sixty-four tiles and Meph's sheet has 255, so it is either a larger store -- sixty-four kilobytes is thirty-two of the device's 340 block RAM blocks, and two hundred and fifty-six would be a hundred and thirty-one, most of what the renderer has left -- or a working set chosen per scene, which is a decision the measurements have not made and the next cycle should. The other half of the pivot's fabric work is then in reach: cards that turn and tilt, which the fabric cannot do yet because this fill is axis-aligned by design, and a texture path that reads from SDRAM rather than from BSRAM, which is what the display list's read channel was justified by. The user has not yet judged the cards on the board. Open from before and unchanged: the ninth bit of the framebuffer, unused and worth a second 256-entry bank if 64 entries for art proves too few; the palette's other half, which is how much of the pool a world that is not Land 1 should take; the cell-shaped command and the display list, both priced and both declined for now; the keyboard, gated on TinyTang gaining keyboard forwarding from the Tiny89 work; flying to a clicked point; the pipe guard in TinyTang; pinning a CRC per recorded input sequence in a tool, which this cycle's two CRC values argue for again; the capture card; the Bullet world removal (entry 6); and GAME-001.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/main.c
+- tools/build_tang32.sh
+- tools/run_tang32_feel.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

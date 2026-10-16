@@ -170,6 +170,27 @@ a hundred mosaic sprites is about 74 ms, so a village wants textures in the
 fabric rather than more triangles, and the palette room a texture needs wants
 the land's 237 entries re-fitted.
 
+The renderer also draws cards: axis-aligned rectangles filled with one 32 by 32
+tile each. They go to the fabric as a five-word `CARD` command -- the opcode and
+the tile, the pixel rectangle, the Q8 texel steps and the accumulators to start
+from -- and the caller works all of that out because the fabric has no divider,
+so the fill only adds. It takes three clocks a pixel, because the tile store is
+a block RAM whose answer arrives the clock after its address and the address is
+a register changing on that same edge; two clocks wrote each pixel the previous
+pixel's texel, which the testbench caught as a frame reading one column left.
+A texel is written as the palette entry `192 + its own index`, so the shading
+table is never consulted and art cannot take colour off the land. `tc_soft_card`
+takes the same five fields, so the model and the fabric cannot disagree about
+the arithmetic, only about carrying it out, and `tests/raster_tb.sv` replays two
+real frames' commands and requires the unit's read-back to match the twin word
+for word. On the board the same check passes: the four cards add no triangles,
+33158 pixels become 33325, the frame takes 29995 us rather than 29661, `VBLMIN`
+and `VBLMAX` are still both 3, and the frame CRC is `0609cd9f` against the host's
+`0609cd9f`. The first hardware attempt drew the right number of pixels in the
+wrong colours, which is what a card filled from a store the program had never
+written looks like; `fabric_tiles` in `main.c` now loads it four bytes a write
+before the first frame.
+
 A build that times its own phases with the core's cycle counter reports the
 mean cells a frame drew and the time it spent in the sky and sea rows, the
 block cull and the cell walk: `CELLS=18158 PHROWS=2us PHCULL=48us

@@ -80,10 +80,12 @@ cp "$out/seeds/synth/synth.log" "$out/synth.log"
 echo "$best" >"$out/seed"
 
 make -C "$source_dir/firmware/apps/video_test" BUILD="$out/app" clean all
+# CARDS reaches both the program and the host twin from one switch, so that a
+# run with cards is always compared against a twin that drew them too.
 make -C "$root/firmware/terrain" TINYNES="$source_dir" BUILD="$out/terrain" \
-    clean all host
+    CARDS="${TINYCREATURE_CARDS:-0}" clean all host
 make -C "$root/firmware/terrain" TINYNES="$source_dir" FABRIC=0 \
-    BUILD="$out/terrain-soft" clean all
+    CARDS="${TINYCREATURE_CARDS:-0}" BUILD="$out/terrain-soft" clean all
 
 sha256sum "$out/ae350_soc.fs" "$out/ae350_soc.bin" "$out/app/video_test.elf" \
     "$out/terrain/terrain.elf" "$out/terrain-soft/terrain.elf"

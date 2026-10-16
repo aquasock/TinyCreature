@@ -69,6 +69,8 @@
 #define RASTER_NONZERO TN_REG(0x18028)
 #define RASTER_PAL     TN_REG(0x1802c)
 #define RASTER_LUT     TN_REG(0x18030)
+#define RASTER_TILES_A TN_REG(0x18034)
+#define RASTER_TILES_D TN_REG(0x18038)
 #define RASTER_ID_VALUE 0x54435231u /* "TCR1" */
 
 /* Vertical blanks each frame is held for. The display shows a frame only on a
@@ -314,6 +316,23 @@ static void fabric_tables(const struct tc_shade *shade)
 		RASTER_LUT = (uint32_t)shade->lut[i] << 24 | i;
 }
 
+// The art's tiles, four bytes a write through TILES_ADDR and TILES_DATA,
+// which is the shape the frame read-back and the palette already use. Without
+// this the store is whatever the block RAM powers up as, and a card drawn from
+// it has the right pixels in the wrong colours -- which is exactly how the
+// first hardware run of a card failed.
+static void fabric_tiles(void)
+{
+	const uint8_t *art = tc_art_tiles();
+	unsigned bytes = tc_art_tile_count() * 1024;
+	for (unsigned i = 0; i < bytes; i += 4) {
+		RASTER_TILES_A = i;
+		RASTER_TILES_D = (uint32_t)art[i + 3] << 24 |
+				 (uint32_t)art[i + 2] << 16 |
+				 (uint32_t)art[i + 1] << 8 | art[i];
+	}
+}
+
 /* The core's cycle counter, as tc_draw's clock: the phases it measures are the
  * board's profile of a frame, and the host twin passes nothing here because it
  * has no such counter and its frames must not move. */
@@ -363,6 +382,10 @@ int main(void)
 		TN_VIDEO_PALETTE(i) = tc_palette(&land, i);
 	if (FABRIC)
 		fabric_tables(&shade);
+#if TC_CARDS
+	if (FABRIC)
+		fabric_tiles();
+#endif
 
 	struct tc_soft soft = {.stride = TN_VIDEO_FB_STRIDE,
 			       .pal5 = shade.pal5, .lut = shade.lut};
