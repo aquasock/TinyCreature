@@ -60,6 +60,11 @@ module raster_tb;
     reg [7:0] expect1 [0:57599];
     reg [15:0] pal [0:255];
     reg [7:0] lut [0:32767];
+    // The art's tiles, which the unit keeps in a store of its own and a
+    // card's texel is read from. Four tiles of 32 by 32 bytes here, loaded
+    // through TILES_ADDR and TILES_DATA four bytes a write, which is how the
+    // program loads them too.
+    reg [7:0] tile_bytes [0:4095];
     function automatic [7:0] expected(input integer slot, input integer i);
         expected = slot ? expect1[i] : expect0[i];
     endfunction
@@ -76,6 +81,18 @@ module raster_tb;
             for (i = 0; i < 32768; i = i + 1)
                 write(15'h0030, {lut[i], 24'h0} | i[14:0]);
             $display("tables loaded: 256 palette entries, 32768 colours");
+        end
+    endtask
+
+    task automatic load_tiles;
+        integer a;
+        begin
+            for (a = 0; a < 4096; a = a + 4) begin
+                write(15'h0034, a[15:0]);
+                write(15'h0038, {tile_bytes[a + 3], tile_bytes[a + 2],
+                                 tile_bytes[a + 1], tile_bytes[a + 0]});
+            end
+            $display("tiles loaded: 4 tiles of 32 by 32");
         end
     endtask
 
@@ -171,7 +188,7 @@ module raster_tb;
         end
     endtask
 
-    reg [8*256-1:0] cmd0, cmd1, fb0, fb1, pal_path, lut_path;
+    reg [8*256-1:0] cmd0, cmd1, fb0, fb1, pal_path, lut_path, tiles_path;
     reg [31:0] q, tris0, pixels0, stalls;
 
     // The fabric's frame checksum, against the C the firmware and
@@ -218,8 +235,9 @@ module raster_tb;
         if (!$value$plusargs("cmd0=%s", cmd0) || !$value$plusargs("cmd1=%s", cmd1) ||
             !$value$plusargs("fb0=%s", fb0) || !$value$plusargs("fb1=%s", fb1) ||
             !$value$plusargs("pal=%s", pal_path) ||
-            !$value$plusargs("lut=%s", lut_path)) begin
-            $display("FAIL: give +cmd0= +cmd1= +fb0= +fb1= +pal= +lut=");
+            !$value$plusargs("lut=%s", lut_path) ||
+            !$value$plusargs("tiles=%s", tiles_path)) begin
+            $display("FAIL: give +cmd0= +cmd1= +fb0= +fb1= +pal= +lut= +tiles=");
             $finish;
         end
         if (!$value$plusargs("crc0=%h", want_crc0) ||
@@ -233,6 +251,7 @@ module raster_tb;
         $readmemh(fb1, expect1);
         $readmemh(pal_path, pal);
         $readmemh(lut_path, lut);
+        $readmemh(tiles_path, tile_bytes);
         repeat (4) @(posedge clk);
         resetn = 1;
 
@@ -241,6 +260,7 @@ module raster_tb;
             $display("FAIL: ID %h", q); errors = errors + 1;
         end
         load_tables;
+        load_tiles;
         read(15'h10, tris0);
         write(15'h04, 32'h0);          // draw into buffer 0
         push(cmd0, 0);

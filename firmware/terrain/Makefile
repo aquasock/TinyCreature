@@ -9,9 +9,10 @@
 #
 # FRAMES=<n> replaces the 600 frames of one orbit, and FABRIC=0 draws with
 # tc_soft into the SDRAM buffers instead of the fabric rasterizer; give such
-# builds their own BUILD=<dir>. SPRITE names the tall sprite, SPRITE_CELL its
-# cell size in source pixels, SPRITE_TINT the colour its mask is tinted, and
-# SPRITE_DIR the directory holding the two tiles. The tint is saturated here
+# builds their own BUILD=<dir>. CARDS=1 draws the art's cards, which both the
+# program and the host twin must be built with. SPRITE names the tall sprite,
+# SPRITE_CELL its cell size in source pixels, SPRITE_TINT the colour its mask
+# is tinted, and SPRITE_DIR the directory holding the two tiles. The tint is saturated here
 # because a neutral ramp is not available to it: the land's palette is dense
 # between 25 and 75 degrees of hue, and its palest, least saturated colours are
 # nearer to a grey than to the land's own entries, so a grey ramp claims about
@@ -50,7 +51,13 @@ SPRITE_TOOL := $(abspath ../../tools/convert_sprite.py)
 SPRITE_CPPFLAGS := -I$(BUILD)/sprite -DTC_SPRITE_HEADER='"$(notdir $(SPRITE_H))"' \
                    -DTC_SPRITE_DRAW=$(SPRITE_DRAW)
 
-CPPFLAGS += $(SPRITE_CPPFLAGS)
+# The art's cards. Off by default, and the switch has to reach both the program
+# and the host twin or they would be asked for different frames; run_cards.sh
+# and the run scripts pass it.
+CARDS       ?= 0
+COMMON_CPPFLAGS := $(SPRITE_CPPFLAGS) -DTC_CARDS=$(CARDS)
+
+CPPFLAGS += $(COMMON_CPPFLAGS)
 
 $(SPRITE_H): $(SPRITE_TOOL) $(wildcard $(SPRITE_DIR)/$(SPRITE)_top.png)
 	@mkdir -p $(dir $@)
@@ -64,6 +71,6 @@ host: $(BUILD)/host/terrain_host
 
 $(BUILD)/host/terrain_host: terrain.c host.c terrain.h $(SPRITE_H) $(MAKEFILE_LIST)
 	@mkdir -p $(dir $@)
-	$(HOST_CC) -O2 -std=gnu11 -Wall -Wextra -Werror $(SPRITE_CPPFLAGS) -o $@ terrain.c host.c
+	$(HOST_CC) -O2 -std=gnu11 -Wall -Wextra -Werror $(COMMON_CPPFLAGS) -o $@ terrain.c host.c
 
 .PHONY: host

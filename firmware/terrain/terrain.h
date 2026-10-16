@@ -44,25 +44,31 @@ struct tc_land {
 	const uint8_t *cells;        /* cells_x * cells_z: flags byte each */
 };
 
+/* A card, exactly as the fabric's CARD command carries one. The caller works
+ * every field out -- the pixel range, the steps and the accumulators the fill
+ * starts from -- because the fabric has no divider, so a card's fields are
+ * the whole of its arithmetic and both renderers take them verbatim. */
+struct tc_card {
+	uint32_t tile;            /* which tile of the art */
+	uint32_t i0, j0, i1, j1;  /* pixels: [i0, i1) across, [j0, j1) down */
+	uint32_t du, dv;          /* Q8 texels a pixel, across and down */
+	uint32_t u0, v0;          /* Q8 texels the first pixel stands at */
+};
+
 /* Where a frame goes. rows fills rows first to end - 1 with one colour;
  * triangle fills a triangle given as three Q4 screen corners, each
  * coordinate within -32768 to 32767, in the order fpga/raster.sv requires,
  * and shaded between the three palette entries colours holds, the first
- * corner's in bits 7:0 and the second's in 15:8; and card fills an
- * axis-aligned rectangle with one tile of the art, taking its texels from
- * tile (see tools/convert_tiles.py) and writing them as palette entries from
- * TC_ART_FIRST up, one texel a pixel, the tile stretched to the rectangle.
- * rect holds x0, y0, x1 and y1 in Q4 screen pixels and steps holds the
- * texel steps in Q8 a pixel across and down, which the caller divides out
- * because the fabric has no divider. Both are exactly the fabric
- * rasterizer's ROWS, TRI and CARD commands. A target with no card function
- * is one whose rasterizer cannot draw them yet. */
+ * corner's in bits 7:0 and the second's in 15:8; and card fills the
+ * rectangle with one tile of the art, its texels written as palette entries
+ * from TC_ART_FIRST up, one texel a pixel, without the shading table being
+ * consulted at all. A target with no card function is one whose rasterizer
+ * cannot draw them. */
 struct tc_target {
 	void (*rows)(void *ctx, uint32_t first, uint32_t end, uint8_t colour);
 	void (*triangle)(void *ctx, const int32_t *x, const int32_t *y,
 			 uint32_t colours);
-	void (*card)(void *ctx, uint32_t tile, const int32_t *rect,
-		     const int32_t *steps);
+	void (*card)(void *ctx, const struct tc_card *card);
 	void *ctx;
 	/* The board's cycle counter and the durations it measures into, both NULL
 	 * for the host twin: a profile is the board's alone, and the host's frames
@@ -101,10 +107,16 @@ struct tc_soft {
 void tc_soft_rows(void *soft, uint32_t first, uint32_t end, uint8_t colour);
 void tc_soft_triangle(void *soft, const int32_t *x, const int32_t *y,
 		      uint32_t colours);
-/* A card: an axis-aligned rectangle filled with one tile of the art, which
- * is what fpga/raster.sv's CARD command will do. */
-void tc_soft_card(void *soft, uint32_t tile, const int32_t *rect,
-		  const int32_t *steps);
+/* The art's tiles as the cards read them, and how many there are. The host
+ * writes them out for the rasterizer's own testbench, which loads them into
+ * the unit's store through the same two registers the program uses. */
+const uint8_t *tc_art_tiles(void);
+unsigned tc_art_tile_count(void);
+
+/* A card: the same fields the fabric's CARD command carries, filled the same
+ * way, so that a mismatch between the two is a mismatch of this arithmetic
+ * and not of a duplicated copy of it. */
+void tc_soft_card(void *soft, const struct tc_card *c);
 
 /* What one frame sent: triangles, after culling, and the cells the walk drew. */
 struct tc_stats {

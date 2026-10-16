@@ -434,6 +434,13 @@ static int32_t height(uint32_t altitude)
 #define TC_SPRITE_CELLS_TALL 6   // cells high, so 60 world units, 960 Q4
 #define TC_SPRITE_UNITS (TC_SPRITE_CELLS_TALL * CELL)
 
+/* The art's cards, drawn when the build asks for them: see the Makefile's
+ * CARDS. Both the program and the host twin have to be built with it, or they
+ * would be asked for different frames. */
+#ifndef TC_CARDS
+#define TC_CARDS 0
+#endif
+
 /* The art, and the cards drawn from it. A card is an axis-aligned rectangle
  * filled with one tile, its texels written as palette entries from
  * TC_ART_FIRST up, one texel a pixel. Nothing is mixed and the shading table
@@ -485,6 +492,16 @@ static const uint8_t *art_tile(uint32_t tile)
 	if (tile >= TC_ART_TILES)
 		return NULL;
 	return &art_tiles[tile * TC_TILE_PIXELS];
+}
+
+const uint8_t *tc_art_tiles(void)
+{
+	return art_tiles;
+}
+
+unsigned tc_art_tile_count(void)
+{
+	return TC_ART_TILES;
 }
 static uint32_t sprite_gx, sprite_gz;   // the cell it stands on
 static int32_t sprite_y;                // the ground there, Q4
@@ -1268,41 +1285,23 @@ static void hand_rect(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
 	counts->triangles++;
 }
 
-/* A card, as fpga/raster.sv will fill one: pixel centres inside the
- * rectangle, a texel whose u and v are the accumulated steps, and the texel
- * written as a palette entry from TC_ART_FIRST up. A pixel is covered when
- * its centre, at 16i + 8, lies in the rectangle, which is the rule the
- * triangle fill uses; the caller's step is in Q8 texels a pixel and the
- * accumulator's top five bits are the texel, so nothing divides here. */
-void tc_soft_card(void *soft, uint32_t tile, const int32_t *rect,
-		  const int32_t *steps)
+/* A card, as fpga/raster.sv fills one and from the same fields: the
+ * accumulators carry, one add a pixel, and the texel is the top five bits of
+ * each, so neither side divides. The texel is written as a palette entry from
+ * TC_ART_FIRST up, and nothing is mixed or looked up. */
+void tc_soft_card(void *soft, const struct tc_card *c)
 {
 	struct tc_soft *s = soft;
-	const uint8_t *art = art_tile(tile);
-	if (art == NULL || rect[2] <= rect[0] || rect[3] <= rect[1])
+	const uint8_t *art = art_tile(c->tile);
+	if (art == NULL || c->i0 >= c->i1 || c->j0 >= c->j1)
 		return;
-	int32_t ix0 = floor_div(rect[0] - 8 + 15, 16);
-	int32_t ix1 = floor_div(rect[2] - 8 + 15, 16);
-	int32_t iy0 = floor_div(rect[1] - 8 + 15, 16);
-	int32_t iy1 = floor_div(rect[3] - 8 + 15, 16);
-	for (int32_t iy = iy0; iy < iy1; iy++) {
-		int32_t v = ((iy * 16 + 8 - rect[1]) * steps[1]) >> 12;
-		if (v < 0)
-			v = 0;
-		if (v > 31)
-			v = 31;
-		if (iy < 0 || iy >= TC_HEIGHT)
-			continue;
-		uint8_t *row = s->fb + (size_t)iy * s->stride;
-		for (int32_t ix = ix0; ix < ix1; ix++) {
-			int32_t u = ((ix * 16 + 8 - rect[0]) * steps[0]) >> 12;
-			if (u < 0)
-				u = 0;
-			if (u > 31)
-				u = 31;
-			if (ix < 0 || ix >= TC_WIDTH)
-				continue;
-			row[ix] = (uint8_t)(TC_ART_FIRST + art[v * 32 + u]);
+	uint32_t v = c->v0;
+	for (uint32_t j = c->j0; j < c->j1; j++, v += c->dv) {
+		uint8_t *row = s->fb + (size_t)j * s->stride;
+		uint32_t u = c->u0;
+		for (uint32_t i = c->i0; i < c->i1; i++, u += c->du) {
+			row[i] = (uint8_t)(TC_ART_FIRST +
+					   art[(v >> 8) * 32 + (u >> 8)]);
 			s->pixels++;
 		}
 	}
@@ -1455,6 +1454,7 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 	 * as it is tall, and the steps it hands the fill are the tile's 32
 	 * texels across that width, which is the divide the fabric does not
 	 * have. */
+#if TC_CARDS
 	if (out->card != NULL) {
 		for (uint32_t i = 0; i < TC_ART_TILES; i++) {
 			int32_t wx = (int32_t)(sprite_gx + 2 + i * 3) * CELL + CELL / 2;
@@ -1472,11 +1472,42 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 			if (h < 16)
 				continue;
 			int32_t w = h;
-			int32_t rect[4] = {sx0 - w / 2, sy1, sx0 + w / 2, sy0};
-			int32_t steps[2] = {(32 << 8) * 16 / w, (32 << 8) * 16 / h};
-			out->card(out->ctx, i, rect, steps);
+			/* The rectangle's pixel range, clamped to the screen, and
+			 * the fields the fabric wants worked out here: the steps in
+			 * Q8 texels a pixel, and what the first pixel of each row
+			 * and column stands at. A pixel centre is 16i + 8, which is
+			 * the rule both fills use. */
+			struct tc_card card;
+			int32_t ci0 = floor_div(sx0 - w / 2 - 8 + 15, 16);
+			int32_t ci1 = floor_div(sx0 + w / 2 - 8 + 15, 16);
+			int32_t cj0 = floor_div(sy1 - 8 + 15, 16);
+			int32_t cj1 = floor_div(sy0 - 8 + 15, 16);
+			if (ci0 < 0)
+				ci0 = 0;
+			if (cj0 < 0)
+				cj0 = 0;
+			if (ci1 > TC_WIDTH)
+				ci1 = TC_WIDTH;
+			if (cj1 > TC_HEIGHT)
+				cj1 = TC_HEIGHT;
+			if (ci0 >= ci1 || cj0 >= cj1)
+				continue;
+			const int32_t bx0 = sx0 - w / 2, by0 = sy1;
+			card.tile = i;
+			card.i0 = (uint32_t)ci0;
+			card.i1 = (uint32_t)ci1;
+			card.j0 = (uint32_t)cj0;
+			card.j1 = (uint32_t)cj1;
+			card.du = (uint32_t)((32 << 12) / w);
+			card.dv = (uint32_t)((32 << 12) / h);
+			card.u0 = (uint32_t)(((ci0 * 16 + 8 - bx0) *
+					      (int32_t)card.du) >> 4);
+			card.v0 = (uint32_t)(((cj0 * 16 + 8 - by0) *
+					      (int32_t)card.dv) >> 4);
+			out->card(out->ctx, &card);
 		}
 	}
+#endif
 
 	// The cursor goes last, so that it lies over everything else. Its middle
 	// is the mouse's position, and the sprite it draws is the frame's or the

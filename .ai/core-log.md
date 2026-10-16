@@ -1149,3 +1149,39 @@ The card has to be emitted and then exercised. `main.c` gains the fabric's own `
 - User Test: NOT RUN
 
 ---
+
+## 36 COMMIT Unreleased 2026-10-15T17:14:35-07:00
+
+#### Coming From:
+
+Unreleased cd61f7e
+
+#### Purpose:
+
+Emit the card's five words from both the program and the host, and make the rasterizer's testbench check a card's pixels byte for byte against `tc_soft_card`, which is the check that catches a stepping or addressing error a plausible-looking picture would hide.
+
+#### Outcome:
+
+The emitters are in and the check exists, and it fails: seventeen of the fourteen thousand four hundred words of the first frame differ between the fabric and its model, so this entry's build is a failure and the card path is not done. What was built is worth stating before the defect. `struct tc_card` now holds exactly the fields the fabric's CARD command carries -- the tile, the pixel rectangle, the Q8 steps and the accumulators to start from -- and `tc_card` is what both the target and `tc_soft_card` take, so the setup arithmetic exists once, in the emitter, and neither renderer repeats it; that is a stronger form of this project's rule that the model and the fabric are the same thing, because now they cannot disagree about a card's arithmetic, only about carrying it out. `main.c` gained `fabric_card`, writing the five words to the FIFO, and `host.c` gained a `card` wrapper that writes the same five words to the `.cmd` file the testbench replays and then draws the card with `tc_soft_card`, so the file and the pixels it is compared against come from one set of fields. The Makefile gained `CARDS`, defaulting to zero, reaching both the program and the host through one `COMMON_CPPFLAGS` rather than an environment variable, because a switch that reached only one of them would ask the board and the twin for different frames. `host.c` writes a `tiles.hex` beside the palette and the table, from a new pair of accessors, and the testbench loads it into the unit's store through `TILES_ADDR` and `TILES_DATA`, four bytes a write, which is the path the program will use. With the cards off, everything is unchanged and the rasterizer's testbench passes on a clean build: `TRIS=20445 PIXELS=33158 CRC=566ccf4e` from the host, and `PASS raster_tb` with both frames' read-back matching `terrain_host`. With the cards on, `TRIS=20445` unchanged, `PIXELS` 33158 to 33325, frame CRC `0609cd9f`, and the command file carries what it should: four cards, five words each, the first telling the fabric the tile and that it is a card. Then the testbench fails with seventeen words wrong in the first frame, the fabric's bytes reading one column to the left of the model's -- `ff27d1c9` against `d327d9d1` and the like -- at rows 96 and 97 of the frame, which is where the emissary stands rather than where the cards are. Two things about the failure are established and are the next cycle's starting point: it is real, because the run was taken after deleting the build directory once a stale host binary had been shown to produce an identical failure under both settings, which is the trap this project's own notes warn about; and it is small and localized, seventeen words out of fourteen thousand four hundred, all in one frame, with the second frame clean. What is not established is which side is wrong, the model or the fabric, and the honest next step is to find out rather than to guess: a frame with a card on bare ground, or a testbench that dumps the buffer the unit filled, would settle it in one run. The core was not rebuilt and the Tang is running the previous image. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that this cycle's only `.ai` change is this entry, checked that the reference's fast index and its records list the same eleven ids in the same order with none retired, validated this entry against the template, ordering, prose, Status, numbering and 100-entry rules, and confirmed that the project-control change agrees with the workflow and rewrites no settled history.
+
+#### Next Steps:
+
+Find which side shifts. The cheapest decisive test is a frame whose cards stand on bare ground with nothing else near them, so the seventeen wrong words can be read as the card's own pixels: if the fabric is one column left of the model, the fabric's stepping is wrong and the fix is in `S_CARD`; if the two agree there and only the sprite's rows differ, then the card writes are landing on the sprite and the address is wrong. A testbench option to dump the unit's buffer beside the expected one would make that a diff of two files rather than a hunt through a log, and is worth the twenty lines. Once the card passes byte for byte, the program loads the tile store before its first frame with the converted Meph tiles in place of the four synthetic ones, and then comes the core rebuild and the eight-seed sweep, which is still the real risk of the pivot: the card adds a state, a counter set and a 64 KiB block RAM read port to a design already at a third of the RAM. The board gates owed from entries 34 and 35 still need the console on the serial port. Open from before and unchanged: the ninth bit of the framebuffer, unused and worth a second 256-entry bank if 64 entries for art proves too few; the palette's other half, which is how much of the pool a world that is not Land 1 should take; the cell-shaped command and the display list, both priced and both declined for now; the keyboard, gated on TinyTang gaining keyboard forwarding from the Tiny89 work; flying to a clicked point; the pipe guard in TinyTang; pinning a CRC per recorded input sequence in a tool; the capture card; the Bullet world removal (entry 6); and GAME-001.
+
+#### Files Modified:
+
+- firmware/terrain/Makefile
+- firmware/terrain/host.c
+- firmware/terrain/main.c
+- firmware/terrain/terrain.c
+- firmware/terrain/terrain.h
+- tests/raster_tb.sv
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: FAIL
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---

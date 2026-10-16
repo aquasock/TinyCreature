@@ -288,6 +288,20 @@ static void fabric_triangle(void *ctx, const int32_t *x, const int32_t *y,
 	RASTER_FIFO = (uint32_t)(uint16_t)y[2] << 16 | (uint16_t)x[2];
 }
 
+// A card's five words, which fpga/raster.sv reads as CARD: the opcode with the
+// tile, the first pixel of the rectangle, the last, the Q8 steps and the
+// accumulators to start from. Everything the fill needs is worked out here,
+// because the fabric has no divider.
+static void fabric_card(void *ctx, const struct tc_card *c)
+{
+	(void)ctx;
+	RASTER_FIFO = 3u << 28 | c->tile << 16;
+	RASTER_FIFO = c->j0 << 16 | c->i0;
+	RASTER_FIFO = c->j1 << 16 | c->i1;
+	RASTER_FIFO = c->dv << 16 | c->du;
+	RASTER_FIFO = c->v0 << 16 | c->u0;
+}
+
 // Give the fabric the shading tables: the palette in five bits a channel and
 // the table from a colour they make back to a land entry. This happens once,
 // before the first frame, and about a millisecond of a run. It is the same
@@ -358,7 +372,8 @@ int main(void)
 	uint64_t phase_sum[TC_PHASE_COUNT] = {0};
 	uint64_t cells = 0;
 	const struct tc_target target = FABRIC ?
-		(struct tc_target){fabric_rows, fabric_triangle, 0, 0, phase_now, phase} :
+		(struct tc_target){fabric_rows, fabric_triangle, fabric_card, 0,
+				   phase_now, phase} :
 		(struct tc_target){tc_soft_rows, tc_soft_triangle, tc_soft_card, &soft,
 				   phase_now, phase};
 	uint32_t late0 = TN_VIDEO_LATE, vbl0 = TN_VIDEO_FRAMES;

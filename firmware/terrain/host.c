@@ -43,6 +43,21 @@ static void triangle(void *ctx, const int32_t *x, const int32_t *y, uint32_t col
 	tc_soft_triangle(ctx, x, y, colours);
 }
 
+// A card's five words as fpga/raster.sv takes them, then the twin's own fill:
+// both come from the fields the caller worked out, so the file the testbench
+// replays and the pixels it is compared against cannot disagree about a card.
+static void card(void *ctx, const struct tc_card *c)
+{
+	if (commands) {
+		fprintf(commands, "%08x\n", 3u << 28 | c->tile << 16);
+		fprintf(commands, "%08x\n", c->j0 << 16 | c->i0);
+		fprintf(commands, "%08x\n", c->j1 << 16 | c->i1);
+		fprintf(commands, "%08x\n", c->dv << 16 | c->du);
+		fprintf(commands, "%08x\n", c->v0 << 16 | c->u0);
+	}
+	tc_soft_card(ctx, c);
+}
+
 // What the fabric needs before its first triangle: the palette in the five
 // bits a channel the shading works in, and the table from a colour those
 // channels make back to a land entry. $readmemh reads both in this form.
@@ -55,6 +70,15 @@ static int write_tables(const char *prefix, const struct tc_shade *shade)
 		return -1;
 	for (unsigned i = 0; i < TC_PAL5_ENTRIES; i++)
 		fprintf(f, "%04x\n", shade->pal5[i]);
+	fclose(f);
+	snprintf(path, sizeof path, "%stiles.hex", prefix);
+	f = fopen(path, "w");
+	if (!f)
+		return -1;
+	const uint8_t *art = tc_art_tiles();
+	unsigned bytes = tc_art_tile_count() * 1024;
+	for (unsigned i = 0; i < bytes; i++)
+		fprintf(f, "%02x\n", art[i]);
 	fclose(f);
 	snprintf(path, sizeof path, "%slut.hex", prefix);
 	f = fopen(path, "w");
@@ -200,8 +224,7 @@ int main(int argc, char **argv)
 	struct tc_soft soft = {.fb = &frame[0][0], .stride = TC_WIDTH,
 			       .pal5 = shade.pal5, .lut = shade.lut};
 	const struct tc_target target = {.rows = rows, .triangle = triangle,
-					.ctx = &soft,
-					.card = getenv("TC_CARDS") ? tc_soft_card : 0};
+					.ctx = &soft, .card = card};
 	for (uint32_t i = 0; i < frames; i++) {
 		int chosen = 0;
 		char path[4096];
