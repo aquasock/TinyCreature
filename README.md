@@ -189,7 +189,12 @@ and `VBLMAX` are still both 3, and the frame CRC is `0609cd9f` against the host'
 `0609cd9f`. The first hardware attempt drew the right number of pixels in the
 wrong colours, which is what a card filled from a store the program had never
 written looks like; `fabric_tiles` in `main.c` now loads it four bytes a write
-before the first frame.
+before the first frame. The tiles it loads are the converted art when the build
+has them: `TILES=1` runs `tools/convert_tiles.py` over Meph's sheet and the
+header it writes names the tiles and the sixty-four palette entries at 192,
+while a build without the art still draws four synthetic tiles so the path can
+be exercised with nothing fetched. The unit's store holds sixty-four tiles and
+Meph's sheet has 255, so the header takes the first sixty-four of them.
 
 A build that times its own phases with the core's cycle counter reports the
 mean cells a frame drew and the time it spent in the sky and sea rows, the

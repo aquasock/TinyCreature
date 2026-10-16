@@ -1250,3 +1250,40 @@ The cards are the four drawn in the source, so the next step is the art itself: 
 - User Test: NOT RUN
 
 ---
+
+## 39 COMMIT Unreleased 2026-10-15T17:58:00-07:00
+
+#### Coming From:
+
+Unreleased cb1105a
+
+#### Purpose:
+
+Draw Meph's converted tiles on the board in place of the four tiles drawn in source, so the cards carry art rather than a test pattern.
+
+#### Outcome:
+
+The fabric now draws the real art and matches its model. `tools/convert_tiles.py` was run over Meph's sheet to a header of sixty-four tiles -- the number the unit's store holds -- whose 3,128 source colours are fitted to the sixty-four palette entries at 192 with a weighted mean error of 22.43 and a worst of 111.8 out of 255; that is worse than the whole sheet's 19.31, which is what taking the first sixty-four tiles rather than all 255 does, and it is recorded rather than smoothed over. The Makefile gained `TILES`, off by default because the art is fetched and not committed, with the sheet, the tile limit, the colours and the pool's first entry as variables, generating the header and making the terrain object wait for it. `terrain.c` takes that header when the build has it, with `ART_PALETTE`, `ART_PIXELS` and `ART_TILES` naming whichever set is in play, and keeps the four tiles drawn in source when it does not, so a build with no art in it still works and still exercises the card path. Three compile failures were of this cycle's own making and each is worth the line it takes: `fabric_tiles` was unused with the cards off, because its only caller is guarded, so the definition is guarded too; `TC_TILE_PIXELS` was deleted while restructuring the art block and now lives in `terrain.h` beside the tile's size, where both builds can see it and where the generated header's identical definition is a harmless repetition; and `ART_PALETTE` was used by `tc_palette` before the art block defined it, which is the same ordering trap the art's palette fell into once before, fixed the same way by moving the whole block above the function that reads it. The board run then passed: `TRIS=20445` unchanged, `PIXELS=35935` for the sixty-four cards, `DRAW=30133us` against 29995 with four of them, `VBLMIN` and `VBLMAX` both 3 so the orbit is still twenty a second, `LATE=0`, and frame CRC `304cc9b9` matching the host exactly, which is the check that the fabric's store holds the converted art that the twin is reading. One intermediate number was diagnostic and is the reason the layout changed: with the tiles in, `PIXELS` first came out at 34,301 because the emission loop draws every tile the art has, which is now sixty-four rather than four, and it laid them in a single row three cells apart that ran a hundred and ninety-two cells past the island's edge. They now stand in a shelf eight to a row near the island's middle, which is what a whole tile set looks like rather than a line of four. The three run scripts pass `TILES` beside `CARDS`, so the board, the twin and the testbench are always built from the same art. The art is not committed and the header is a build product; `THIRD_PARTY.md` already carries Meph, Vordak and Denzi's credit and the note that the terms are the author's. The build for the user's hands was deployed with both switches on, 200,000 frames, and he has not judged the tiles on the board yet, which is why the user test is not run rather than passed. The core was not rebuilt: the CARD command and the store have been in the bitstream since this cycle's predecessor. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that this cycle's only `.ai` change is this entry, checked that the reference's fast index and its records list the same eleven ids in the same order with none retired, validated this entry against the template, ordering, prose, Status, numbering and 100-entry rules, and confirmed that the project-control change agrees with the workflow and rewrites no settled history.
+
+#### Next Steps:
+
+The store's size is the decision this cycle ran into: sixty-four tiles is what the unit holds and Meph's sheet has 255, so it is either a store of 256 -- 131 of the device's 340 block RAM blocks against the 125 the renderer already uses, which leaves very little for anything else -- or a working set chosen per scene, which is what a game would do anyway and which the next cycle should design rather than guess at. The other half of the pivot's fabric work is then in reach: cards that turn and tilt, which this fill cannot do because it is axis-aligned by design, and a texture path reading from SDRAM rather than BSRAM, which is what the display list's read channel was justified by. The user has not judged the tiles on the board. Open from before and unchanged: the ninth bit of the framebuffer, unused and worth a second 256-entry bank if 64 entries for art proves too few; the palette's other half, which is how much of the pool a world that is not Land 1 should take; the cell-shaped command and the display list, both priced and both declined for now; the keyboard, gated on TinyTang gaining keyboard forwarding from the Tiny89 work; flying to a clicked point; the pipe guard in TinyTang; pinning a CRC per recorded input sequence in a tool; the capture card; the Bullet world removal (entry 6); and GAME-001.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/Makefile
+- firmware/terrain/main.c
+- firmware/terrain/terrain.c
+- firmware/terrain/terrain.h
+- tools/build_tang32.sh
+- tools/run_tang32_feel.sh
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

@@ -14,7 +14,8 @@ land="$root/build/land/$(basename "${lnd%.*}").tcl"
 
 python3 -I "$root/tools/convert_land.py" "$lnd" "$land"
 make -s -C "$root/firmware/terrain" BUILD="$out" \
-    CARDS="${TINYCREATURE_CARDS:-0}" host
+    CARDS="${TINYCREATURE_CARDS:-0}" \
+    TILES="${TINYCREATURE_TILES:-0}" host
 # Frame 0 sees the whole island; frame 75 is close in, with triangles cut
 # at the near plane.
 "$out/host/terrain_host" "$land" 600 "$out/f" 0 75

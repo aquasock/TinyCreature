@@ -57,6 +57,31 @@ SPRITE_CPPFLAGS := -I$(BUILD)/sprite -DTC_SPRITE_HEADER='"$(notdir $(SPRITE_H))"
 CARDS       ?= 0
 COMMON_CPPFLAGS := $(SPRITE_CPPFLAGS) -DTC_CARDS=$(CARDS)
 
+# The art's tiles: a generated header, off by default because the art is
+# fetched rather than committed, so a fresh clone builds. TILES=1 wants the
+# sheet in TILES_SHEET and no more tiles than fpga/raster.sv's store holds,
+# which its TILE_COUNT sizes at 64.
+TILES         ?= 0
+TILES_SHEET   ?= $(abspath ../../build/tiles/Meph/data/art/Meph_32x32.png)
+TILES_LIMIT   ?= 64
+TILES_COLOURS ?= 64
+TILES_FIRST   ?= 192
+TILES_H       := $(BUILD)/tiles/meph-$(TILES_COLOURS)c-$(TILES_LIMIT)t.h
+TILES_TOOL    := $(abspath ../../tools/convert_tiles.py)
+
+ifeq ($(TILES),1)
+TILES_FLAGS := -I$(BUILD)/tiles -DTC_TILES_HEADER='"$(notdir $(TILES_H))"'
+COMMON_CPPFLAGS += $(TILES_FLAGS)
+CPPFLAGS += $(TILES_FLAGS)
+
+$(TILES_H): $(TILES_TOOL) $(TILES_SHEET)
+	@mkdir -p $(dir $@)
+	@python3 $(TILES_TOOL) --sheet "$(TILES_SHEET)" --first $(TILES_FIRST) \
+		--colours $(TILES_COLOURS) --limit $(TILES_LIMIT) --out $@
+
+$(call objects,terrain.c): $(TILES_H)
+endif
+
 CPPFLAGS += $(COMMON_CPPFLAGS)
 
 $(SPRITE_H): $(SPRITE_TOOL) $(wildcard $(SPRITE_DIR)/$(SPRITE)_top.png)

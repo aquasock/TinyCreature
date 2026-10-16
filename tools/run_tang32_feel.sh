@@ -43,7 +43,8 @@ python3 -I "$root/tools/convert_land.py" "$lnd" "$land"
 
 echo "Building for $frames frames"
 make -C "$root/firmware/terrain" TINYNES="$source_dir" BUILD="$build" \
-    FRAMES="$frames" CARDS="${TINYCREATURE_CARDS:-0}" clean all >/dev/null
+    FRAMES="$frames" CARDS="${TINYCREATURE_CARDS:-0}" \
+    TILES="${TINYCREATURE_TILES:-0}" clean all >/dev/null
 
 echo "Loading the core"
 python3 "$tinytang/tools/tinytang_run.py" --port "$port" --seconds 1 \

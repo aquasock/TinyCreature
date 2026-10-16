@@ -316,6 +316,7 @@ static void fabric_tables(const struct tc_shade *shade)
 		RASTER_LUT = (uint32_t)shade->lut[i] << 24 | i;
 }
 
+#if TC_CARDS
 // The art's tiles, four bytes a write through TILES_ADDR and TILES_DATA,
 // which is the shape the frame read-back and the palette already use. Without
 // this the store is whatever the block RAM powers up as, and a card drawn from
@@ -332,6 +333,7 @@ static void fabric_tiles(void)
 				 (uint32_t)art[i + 1] << 8 | art[i];
 	}
 }
+#endif
 
 /* The core's cycle counter, as tc_draw's clock: the phases it measures are the
  * board's profile of a frame, and the host twin passes nothing here because it

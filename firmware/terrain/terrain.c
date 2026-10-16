@@ -22,6 +22,25 @@
 #endif
 #include TC_SPRITE_HEADER
 
+/* The art's tiles, if the build has them: a sheet converted by
+ * tools/convert_tiles.py, which is generated and never committed because the
+ * art is not this project's. Without it the four tiles below are drawn in
+ * source, which is enough to see the path work and enough for a build that
+ * has no art in it. */
+#ifdef TC_TILES_HEADER
+#include TC_TILES_HEADER
+#if TC_TILE_COUNT > 64
+#error "more tiles than fpga/raster.sv's store holds"
+#endif
+#define ART_PALETTE tc_tile_palette
+#define ART_PIXELS tc_tile_pixels
+#define ART_TILES TC_TILE_COUNT
+#else
+#define ART_PALETTE art_palette
+#define ART_PIXELS art_tiles
+#define ART_TILES TC_ART_TILES
+#endif
+
 /* Draw the sprite, or only carry its palette: the switch exists so that the
  * six scripted lands can be drawn with the ramp admitted and the sprite
  * absent, which is what shows that admitting it moved nothing the island
@@ -303,9 +322,55 @@ static uint32_t mix(uint32_t a, uint32_t b, unsigned i, unsigned n)
 	return out;
 }
 
-/* The art's own palette, filled by art_build before the first frame: the
- * entries from TC_ART_FIRST up, which a card writes directly. */
+/* The art's tiles and their palette, before the palette function that hands
+ * them out: the generated header's when the build has them, and four tiles
+ * drawn here when it has not, so a build with no art in it still works and
+ * still shows the card path. */
+#ifdef TC_TILES_HEADER
+/* The generated header says what the tiles and their palette are, so this
+ * build draws none of its own and ART_* name its arrays. */
+static void art_build(void)
+{
+}
+#define ART_PALETTE tc_tile_palette
+#define ART_PIXELS tc_tile_pixels
+#define ART_TILES TC_TILE_COUNT
+#else
+#define TC_ART_TILES 4
+static uint8_t art_tiles[TC_ART_TILES * TC_TILE_PIXELS];
 static uint32_t art_palette[TC_ART_COLOURS];
+
+/* A sixteen-step grey ramp, then three hues at their own levels, which is
+ * enough to tell the tiles and the stepping apart on screen, and four tiles: a
+ * bordered ramp, an xor weave, a diagonal and a four-pixel checker. */
+static void art_build(void)
+{
+	for (int i = 0; i < 16; i++) {
+		uint32_t v = (uint32_t)(i * 17);
+		art_palette[i] = v << 16 | v << 8 | v;
+	}
+	for (int i = 16; i < TC_ART_COLOURS; i++) {
+		int k = i - 16;
+		art_palette[i] = (uint32_t)((k * 5 & 31) * 8) << 16 |
+				 (uint32_t)((k * 11 & 31) * 8) << 8 |
+				 (uint32_t)((k * 3 & 31) * 8);
+	}
+	for (int t = 0; t < TC_ART_TILES; t++) {
+		uint8_t *tile = &art_tiles[t * TC_TILE_PIXELS];
+		for (int y = 0; y < 32; y++)
+			for (int x = 0; x < 32; x++)
+				tile[y * 32 + x] = (uint8_t)(
+					t == 0 ? ((x == 0 || y == 0 || x == 31 || y == 31)
+						 ? 63 : (x >> 1 & 15) + 16)
+					: t == 1 ? ((x ^ y) & 31)
+					: t == 2 ? ((x + y) % TC_ART_COLOURS)
+					: (((x >> 2) + (y >> 2)) & 1 ? 63 : 32));
+	}
+}
+#define ART_PALETTE art_palette
+#define ART_PIXELS art_tiles
+#define ART_TILES TC_ART_TILES
+#endif
 
 uint32_t tc_palette(const struct tc_land *l, unsigned index)
 {
@@ -324,7 +389,7 @@ uint32_t tc_palette(const struct tc_land *l, unsigned index)
 	/* The art's own entries, which a card writes directly: nothing mixes
 	 * them, so they are not shading-table candidates. */
 	if (index >= TC_ART_FIRST && index < TC_ART_FIRST + TC_ART_COLOURS)
-		return art_palette[index - TC_ART_FIRST];
+		return ART_PALETTE[index - TC_ART_FIRST];
 	if (index >= TC_SEA_COLOUR && index < TC_SEA_COLOUR + TC_RAMP)
 		return mix(0x6aa0b4, 0x1c4a6a, index - TC_SEA_COLOUR, TC_RAMP - 1);
 	if (index >= l->first && index < l->first + l->colours)
@@ -454,54 +519,23 @@ static int32_t height(uint32_t altitude)
  * The card command is four words: what the tile is and that it is a card, the
  * two corners, and the texel steps across and down. The caller divides the
  * steps out because the fabric has no divider; the fill only accumulates. */
-#define TC_ART_TILES 4
-#define TC_TILE_PIXELS 1024   /* 32 by 32 */
-#define TC_CARDS_MAX  16
-static uint8_t art_tiles[TC_ART_TILES * TC_TILE_PIXELS];
-
-static void art_build(void)
-{
-	/* A sixteen-step grey ramp, then three hues at their own levels, which
-	 * is enough to tell the tiles and the stepping apart on screen. */
-	for (int i = 0; i < 16; i++) {
-		uint32_t v = (uint32_t)(i * 17);
-		art_palette[i] = v << 16 | v << 8 | v;
-	}
-	for (int i = 16; i < TC_ART_COLOURS; i++) {
-		int k = i - 16;
-		art_palette[i] = (uint32_t)((k * 5 & 31) * 8) << 16 |
-				 (uint32_t)((k * 11 & 31) * 8) << 8 |
-				 (uint32_t)((k * 3 & 31) * 8);
-	}
-	for (int t = 0; t < TC_ART_TILES; t++) {
-		uint8_t *tile = &art_tiles[t * TC_TILE_PIXELS];
-		for (int y = 0; y < 32; y++)
-			for (int x = 0; x < 32; x++)
-				tile[y * 32 + x] = (uint8_t)(
-					t == 0 ? ((x == 0 || y == 0 || x == 31 || y == 31)
-						 ? 63 : (x >> 1 & 15) + 16)
-					: t == 1 ? ((x ^ y) & 31)
-					: t == 2 ? ((x + y) % TC_ART_COLOURS)
-					: (((x >> 2) + (y >> 2)) & 1 ? 63 : 32));
-	}
-}
 
 /* The tiles as the fill reads them, one palette-relative index a pixel. */
 static const uint8_t *art_tile(uint32_t tile)
 {
-	if (tile >= TC_ART_TILES)
+	if (tile >= ART_TILES)
 		return NULL;
-	return &art_tiles[tile * TC_TILE_PIXELS];
+	return &ART_PIXELS[tile * TC_TILE_PIXELS];
 }
 
 const uint8_t *tc_art_tiles(void)
 {
-	return art_tiles;
+	return ART_PIXELS;
 }
 
 unsigned tc_art_tile_count(void)
 {
-	return TC_ART_TILES;
+	return ART_TILES;
 }
 static uint32_t sprite_gx, sprite_gz;   // the cell it stands on
 static int32_t sprite_y;                // the ground there, Q4
@@ -1456,9 +1490,13 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 	 * have. */
 #if TC_CARDS
 	if (out->card != NULL) {
-		for (uint32_t i = 0; i < TC_ART_TILES; i++) {
-			int32_t wx = (int32_t)(sprite_gx + 2 + i * 3) * CELL + CELL / 2;
-			int32_t wz = (int32_t)sprite_gz * CELL + CELL / 2;
+		for (uint32_t i = 0; i < ART_TILES; i++) {
+			/* A shelf of them, eight to a row, three cells apart,
+			 * standing on the ground by the island's middle. */
+			int32_t wx = (int32_t)(sprite_gx + 2 + (i % 8) * 3) * CELL +
+				     CELL / 2;
+			int32_t wz = (int32_t)(sprite_gz - 10 + (i / 8) * 3) * CELL +
+				     CELL / 2;
 			int32_t x, y, z, sx0, sy0, sx1, sy1;
 			to_camera(wx, sprite_y, wz, &x, &y, &z);
 			if (z < NEAR)

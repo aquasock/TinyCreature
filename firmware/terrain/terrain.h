@@ -29,6 +29,12 @@
 /* Entries 192 to 255 are the art's: one 64-colour palette every tile this
  * project draws is quantised into, loaded beside the land's and read by the
  * fabric's textured quads. The land takes what is left, 19 to 191. */
+/* A tile of the art is 32 by 32 texels, which is what tools/convert_tiles.py
+ * writes and what a card reads, a byte a texel. The generated header says the
+ * same and saying it twice, identically, is allowed. */
+#define TC_TILE_SIZE  32
+#define TC_TILE_PIXELS (TC_TILE_SIZE * TC_TILE_SIZE)
+
 #define TC_ART_FIRST   192
 #define TC_ART_COLOURS 64
 #define TC_LAND_COLOUR 19
