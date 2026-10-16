@@ -1119,3 +1119,33 @@ The fabric is next and the model it must match now exists: `fpga/raster.sv` gain
 - User Test: NOT RUN
 
 ---
+
+## 35 COMMIT Unreleased 2026-10-15T17:08:38-07:00
+
+#### Coming From:
+
+Unreleased 30f8c40
+
+#### Purpose:
+
+Put the CARD command and the art's tile store into `fpga/raster.sv`, to the shape `tc_soft_card` already models, before any program emits one.
+
+#### Outcome:
+
+The command is five words, and the model fixed every one of them: the opcode with a tile id, the rectangle's first pixel and its last, the texel steps across and down in Q8 a pixel, and the accumulators to start from. The caller works out the pixel range, the steps and the starting accumulators, because the fabric has no divider; the fill only adds. Two things about the design are worth keeping. A card is filled two clocks a pixel -- the store is asked at the texel's address while the counters stand, and the byte it answers with is written the next clock as the counters move on -- which is the same two-clock phase the triangle fill already uses, so nothing new was invented for the timing. And a texel is written as the palette entry `ART_FIRST` plus its own index, so the shading table is never consulted: that is the property that keeps art colour off the land, and it is now a property of the hardware rather than of the program. The tile store is sixty-four tiles of 32 by 32 bytes in block RAM, 64 KiB, loaded by the program through two new registers at `0x34` and `0x38`, four bytes a write with the first in bits 7:0, which is the shape `RB_ADDR` and `RB_DATA` already use; the address is byte-addressed and advances by four on its own. The assembler takes opcode 3 as a five-word command and reads its four data words into the same corner fields a triangle uses, which is why `cmd_x` and `cmd_y` grew by one element rather than gaining a set of their own. One defect was caught while writing rather than by the simulator: the tile id has to be latched into the card's own register at dispatch, because the assembler has already begun gathering the next command's words by the time the engine draws -- the same hazard this file's own comments warn about for a triangle's corner colours. The verification is the raster testbench, unchanged and passing: it compiles the new HDL with iverilog and replays two real Land 1 frames' commands through the unit, and the read-back matches terrain_host on both buffers with both frame CRCs (`PASS raster_tb`, frame 1 taking 81,269 words and 20,315 triangles). What is *not* verified has to be said as plainly: nothing emits opcode 3 yet, so the card path is unreachable, and the simulation's two frames carry no card. This entry therefore commits a path that has been written to a checked model and compiled, but not yet exercised. The core was not rebuilt -- the change is in the source, not in the bitstream -- so no seed sweep was run and the Tang is running the previous image. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that this cycle's only `.ai` change is this entry, checked that the reference's fast index and its records list the same eleven ids in the same order with none retired, validated this entry against the template, ordering, prose, Status, numbering and 100-entry rules, and confirmed that the project-control change agrees with the workflow and rewrites no settled history.
+
+#### Next Steps:
+
+The card has to be emitted and then exercised. `main.c` gains the fabric's own `card` function writing the five words, and `host.c`'s command-dump emitter gains the same so that the simulation's `.cmd` files carry cards; then the testbench's two frames can include a card and the unit's read-back can be required to match `tc_soft_card` byte for byte, which is the check that will find a stepping or an addressing error that a plausible-looking picture would hide. After that the program loads the tile store once before its first frame, the way it already loads the palette and the shading table, with the converted Meph tiles in place of the four synthetic ones. Only then a core rebuild and the eight-seed sweep, which is the real risk left in this cycle: this core's timing margin has rejected placements before, and the card fill adds a state, a counter set and a 64 KiB block RAM read port to a design that is already at twelve per cent of the logic but a third of the RAM. The board gate owed from entry 34 still needs the console on the serial port. Open from before and unchanged: the ninth bit of the framebuffer, unused and worth a second 256-entry bank if 64 entries for art proves too few; the palette's other half, which is how much of the pool a world that is not Land 1 should take; the cell-shaped command and the display list, both priced and both declined for now; the keyboard, gated on TinyTang gaining keyboard forwarding from the Tiny89 work; flying to a clicked point; the pipe guard in TinyTang; pinning a CRC per recorded input sequence in a tool; the capture card; the Bullet world removal (entry 6); and GAME-001.
+
+#### Files Modified:
+
+- fpga/raster.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---

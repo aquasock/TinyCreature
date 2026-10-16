@@ -40,6 +40,19 @@
 //   TRI   4 words: 1 << 28 | c2 << 16 | c1 << 8 | c0, then y << 16 | x for
 //         each corner, as 16-bit two's-complement Q4 screen coordinates.
 //         c0, c1 and c2 are the corners' palette entries, one byte each.
+//   CARD  5 words: 3 << 28 | tile << 16, then i0 | j0 << 16, then
+//         i1 | j1 << 16, then du | dv << 16, then u0 | v0 << 16: an
+//         axis-aligned rectangle of pixels, [i0, i1) across and [j0, j1)
+//         down, filled with one 32 by 32 tile of the art, whose texel is
+//         taken by accumulating du and dv, in Q8 texels a pixel, from u0 and
+//         v0. The caller works the pixel range, the steps and the starting
+//         accumulators out, because the fabric has no divider; the fill only
+//         adds. A texel is written as the palette entry ART_FIRST plus its
+//         own index, so the art's entries are written rather than searched
+//         for and the shading table is not consulted at all -- which is why
+//         art cannot take colour off the land the way a shaded triangle's
+//         nearest-entry search can. A card is two clocks a pixel: the store
+//         is asked at one address and its byte is written the next.
 // A triangle fills pixel (i, j) when, at its centre (16i + 8, 16j + 8), all
 // three edge functions F = (by - ay)(px - ax) - (bx - ax)(py - ay) over its
 // edges a to b are >= 0; pixels outside the screen are never visited. The
@@ -115,7 +128,8 @@ module raster #(
     wire is_fb = is_reg && !hwrite && reg_index == 9;
     wire ok = word && is_reg &&
               (hwrite ? (reg_index <= 1 || reg_index >= 7 && reg_index <= 8) ||
-                        reg_index == 11 || reg_index == 12
+                        reg_index == 11 || reg_index == 12 || reg_index == 13 ||
+                        reg_index == 14
                       : (reg_index >= 1 && reg_index <= 7) || reg_index == 9 ||
                         reg_index == 10);
     // The CPU's read port request, served when the line fetch leaves it.
@@ -148,6 +162,17 @@ module raster #(
                 w_pal <= 0; hready <= 1;
             end else if (w_lut) begin
                 w_lut <= 0; hready <= 1;
+            end else if (w_tiles_addr) begin
+                tiles_addr <= hwdata[15:0];
+                w_tiles_addr <= 0; hready <= 1;
+            end else if (w_tiles) begin
+                // Four bytes a write, the first in bits 7:0, which is the
+                // shape the frame read-back already has.
+                if (tiles_step == 2'd3) begin
+                    w_tiles <= 0; hready <= 1;
+                    tiles_addr <= tiles_addr + 16'd4;
+                end else
+                    tiles_step <= tiles_step + 1'b1;
             end else if (w_crc) begin
                 // One cycle of w_crc is the scan's start pulse.
                 w_crc <= 0; hready <= 1;
@@ -188,6 +213,10 @@ module raster #(
                         hready <= 0; w_fifo <= 1;
                     end else if (hwrite && reg_index == 7) begin
                         hready <= 0; w_crc <= 1;
+                    end else if (hwrite && reg_index == 13) begin
+                        hready <= 0; w_tiles_addr <= 1;
+                    end else if (hwrite && reg_index == 14) begin
+                        hready <= 0; w_tiles <= 1; tiles_step <= 0;
                     end else if (hwrite && (reg_index == 11 || reg_index == 12)) begin
                         hready <= 0;
                         w_pal <= reg_index == 11;
@@ -211,8 +240,12 @@ module raster #(
     // A triangle's three corner colours; the first is the byte a ROWS word
     // also carries, so both commands read the same field.
     reg [7:0] cmd_c1 = 0, cmd_c2 = 0;
-    reg signed [15:0] cmd_x [0:2];
-    reg signed [15:0] cmd_y [0:2];
+    // A card's tile, and the four words that follow its opcode. They are read
+    // into the same fields a triangle's corners are, four of them instead of
+    // three, which is why these hold one more than the triangle needs.
+    reg [7:0] cmd_tile = 0;
+    reg signed [15:0] cmd_x [0:3];
+    reg signed [15:0] cmd_y [0:3];
     wire take;
     always @(posedge clk or negedge resetn) begin
         if (!resetn) begin
@@ -233,13 +266,16 @@ module raster #(
                     if (fifo_q[31:28] == 4'd1) begin
                         cmd_c1 <= fifo_q[15:8]; cmd_c2 <= fifo_q[23:16];
                         len <= 4; got <= 1;
+                    end else if (fifo_q[31:28] == 4'd3) begin
+                        cmd_tile <= fifo_q[23:16];
+                        len <= 5; got <= 1;
                     end else begin
                         cmd_full <= 1; got <= 0; issued <= 0; len <= 1;
                     end
                 end else begin
                     cmd_x[got - 1] <= fifo_q[15:0];
                     cmd_y[got - 1] <= fifo_q[31:16];
-                    if (got == 3) begin
+                    if (got == (cmd_op == 4'd3 ? 3'd4 : 3'd3)) begin
                         cmd_full <= 1; got <= 0; issued <= 0; len <= 1;
                     end else
                         got <= got + 1'b1;
@@ -262,6 +298,17 @@ module raster #(
     // open flow, so the palette is 18 bits and the table 9, not 16 and 8.
     (* ram_style = "block" *) reg [17:0] palette [0:255];
     (* ram_style = "block" *) reg [8:0] lut [0:32767];
+    // The art: 64 tiles of 32 by 32 texels, a byte each, 64 KiB. The program
+    // loads them through TILES_ADDR and TILES_DATA, four bytes a write, the
+    // first in bits 7:0, which is the shape RB_ADDR and RB_DATA already use.
+    localparam TILE_BYTES = 1024, TILE_COUNT = 64;
+    localparam ART_FIRST_W = 192;
+    (* ram_style = "block" *) reg [8:0] tiles [0:TILE_COUNT * TILE_BYTES - 1];
+    reg [15:0] tiles_addr = 0;
+    reg [1:0] tiles_step = 0;
+    reg w_tiles = 0, w_tiles_addr = 0;
+    reg [15:0] tile_raddr = 0;
+    reg [8:0] tile_q = 0;
     reg [7:0] pal_addr = 0;
     reg [14:0] lut_addr = 0;
     reg [17:0] pal_q = 0;
@@ -272,15 +319,30 @@ module raster #(
     always @(posedge clk) begin
         if (w_pal) palette[hwdata[7:0]] <= hwdata[31:16];
         if (w_lut) lut[hwdata[14:0]] <= hwdata[31:24];
+        if (w_tiles) tiles[tiles_addr + tiles_step] <= hwdata[8 * tiles_step +: 8];
         pal_q <= palette[pal_addr];
         lut_q <= lut[lut_addr];
+        tile_q <= tiles[tile_raddr];
     end
 
     // ---- Engine ----
     localparam S_IDLE = 0, S_ROWS = 1, S_BOX = 2, S_CLAMP = 3, S_LOAD = 4,
                S_EDGE = 5, S_TRIPLE = 6, S_MUL = 7, S_FIN = 8, S_PAL = 9,
-               S_SCAN = 10, S_DRAIN = 11;
+               S_SCAN = 10, S_DRAIN = 11, S_CARD = 12;
     reg [3:0] state = S_IDLE;
+
+    // ---- A card's own state ----
+    // The rectangle, the running pixel, the two Q8 texel accumulators and
+    // their starting values, and the steps: all of it worked out by the
+    // caller, so the fill adds and never multiplies or divides.
+    reg [8:0] card_i = 0, card_i0 = 0, card_i1 = 0;
+    reg [7:0] card_j = 0, card_j0 = 0, card_j1 = 0;
+    reg [15:0] card_u = 0, card_v = 0, card_u0 = 0, card_du = 0, card_dv = 0;
+    reg [15:0] card_addr = 0;
+    // The tile is latched from the assembler's field, not read from it: the
+    // assembler has already started gathering the next command's words.
+    reg [7:0] card_tile = 0;
+    reg card_phase = 0;
     assign take = cmd_full && state == S_IDLE;
     assign busy = !fifo_empty || pop || q_valid || cmd_full || got != 0 ||
                   state != S_IDLE || w_fifo;
@@ -433,8 +495,58 @@ module raster #(
                         addr <= {cmd_first, 8'd0} + {2'd0, cmd_first, 6'd0};
                         fill_end <= {cmd_end, 8'd0} + {2'd0, cmd_end, 6'd0};
                         state <= S_ROWS;
+                    end else if (cmd_op == 4'd3 && cmd_x[1] > cmd_x[0] &&
+                                 cmd_y[1] > cmd_y[0]) begin
+                        card_i0 <= cmd_x[0][8:0];
+                        card_i1 <= cmd_x[1][8:0];
+                        card_j0 <= cmd_y[0][7:0];
+                        card_j1 <= cmd_y[1][7:0];
+                        card_i <= cmd_x[0][8:0];
+                        card_j <= cmd_y[0][7:0];
+                        card_du <= cmd_x[2];
+                        card_dv <= cmd_y[2];
+                        card_u0 <= cmd_x[3];
+                        card_u <= cmd_x[3];
+                        card_v <= cmd_y[3];
+                        card_tile <= cmd_tile;
+                        card_addr <= {cmd_y[0][7:0], 8'd0} +
+                                     {2'd0, cmd_y[0][7:0], 6'd0} +
+                                     {7'd0, cmd_x[0][8:0]};
+                        card_phase <= 0;
+                        state <= S_CARD;
                     end
                 end
+            S_CARD: begin
+                // Two clocks a pixel: the store is asked at the texel's
+                // address while the counters stand, and the byte it answers
+                // with is written the next clock, as the counters move on.
+                if (!card_phase) begin
+                    tile_raddr <= {card_tile, 10'd0} +
+                                  {5'd0, card_v[15:8], 5'd0} +
+                                  {10'd0, card_u[15:8]};
+                    card_phase <= 1;
+                end else begin
+                    we <= 1;
+                    waddr <= card_addr;
+                    wdata <= ART_FIRST_W + tile_q[7:0];
+                    pixels <= pixels + 1'b1;
+                    card_phase <= 0;
+                    if (card_i + 1'b1 < card_i1) begin
+                        card_i <= card_i + 1'b1;
+                        card_u <= card_u + card_du;
+                        card_addr <= card_addr + 1'b1;
+                    end else if (card_j + 1'b1 < card_j1) begin
+                        card_i <= card_i0;
+                        card_u <= card_u0;
+                        card_v <= card_v + card_dv;
+                        card_j <= card_j + 1'b1;
+                        card_addr <= {card_j + 1'b1, 8'd0} +
+                                     {2'd0, card_j + 1'b1, 6'd0} +
+                                     {7'd0, card_i0};
+                    end else
+                        state <= S_IDLE;
+                end
+            end
             S_ROWS: begin
                 we <= 1; waddr <= addr; wdata <= colour;
                 addr <= addr + 1'b1;
