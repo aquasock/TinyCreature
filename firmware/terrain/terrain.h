@@ -125,6 +125,11 @@ unsigned tc_art_tile_count(void);
 void tc_camera(int32_t *focus_x, int32_t *focus_z, int32_t *eye_x,
 	       int32_t *eye_z, int32_t *turn);
 
+/* The cell this build stands a card on, if it was built with one: TC_PIN_X and
+ * TC_PIN_Z name it, and a build without them returns 0. It is the one thing
+ * this renderer has that is at a place in the world and not the camera. */
+int tc_pin(int32_t *x, int32_t *z);
+
 /* A card: the same fields the fabric's CARD command carries, filled the same
  * way, so that a mismatch between the two is a mismatch of this arithmetic
  * and not of a duplicated copy of it. */

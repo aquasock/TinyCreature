@@ -45,7 +45,10 @@ echo "Building for $frames frames"
 make -C "$root/firmware/terrain" TINYNES="$source_dir" BUILD="$build" \
     FRAMES="$frames" CARDS="${TINYCREATURE_CARDS:-0}" \
     TILES="${TINYCREATURE_TILES:-0}" \
-    READOUT="${TINYCREATURE_READOUT:-1}" clean all >/dev/null
+    READOUT="${TINYCREATURE_READOUT:-1}" \
+    PIN_X="${TINYCREATURE_PIN_X:-0xffff}" \
+    PIN_Z="${TINYCREATURE_PIN_Z:-0xffff}" \
+    PIN_DIST="${TINYCREATURE_PIN_DIST:-3200}" clean all >/dev/null
 
 echo "Loading the core"
 python3 "$tinytang/tools/tinytang_run.py" --port "$port" --seconds 1 \

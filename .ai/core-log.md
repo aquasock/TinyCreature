@@ -1387,3 +1387,39 @@ None.
 - User Test: PASS
 
 ---
+
+## 43 COMMIT Unreleased 2026-10-15T18:29:02-07:00
+
+#### Coming From:
+
+Unreleased cce94c5
+
+#### Purpose:
+
+Stand one card at the cell the user read off the readout while flying, so that the world holds something that is neither the camera nor the land.
+
+#### Outcome:
+
+The world has its first thing in it. `terrain.c` gained a pin: `TC_PIN_X` and `TC_PIN_Z` name a cell in the coordinates the readout draws, `0xffff` in either leaves it unset which is every scripted build, and a pinned build plants one card there -- three cells tall, standing on that cell's own ground rather than on the sprite's, and drawn every frame wherever the camera is, which is what makes it a thing in the world rather than a thing on the screen. A pinned build also starts its camera on the pin at `TC_PIN_DIST`, twenty cells by default, and stands still on it until the mouse takes the camera over, so what a pinned build opens on is the card it was asked to stand there; the scripted orbit is what a build with no pin runs, and the two share `camera_from_angles`. The shelf's card arithmetic was factored into `card_at`, which the shelf and the pin both call, so the projection, the clamp to the screen and the fill's Q8 steps and starting accumulators exist once. The pin is how the user put himself in his own world: he flew, read `080 090` off the readout and gave the numbers, and `TC_PIN_X=80` `TC_PIN_Z=90` is that cell. The readout's bearing was wrong and his numbers found it: `388` is not a bearing, because the turn is an angle a drag adds to without wrapping and the conversion took the whole value, so it now takes the low sixteen bits -- the scripted orbit's last frame, which the report had been calling 539, is 179, and a run reports `PIN=` beside the camera fields. Two defects of this cycle's own making are worth their lines: the pin's camera was set in `tc_init` before `ground` was defined, so an implicit declaration became an error and the forward declaration now sits beside the pin's own, and the factored `card_at` first landed inside `tc_draw`'s body -- invalid storage class, since a nested function is not C here -- and had to move to file scope. The verification was two-sided. First, nothing that was on record moved: the unpinned host frames are byte-identical to HEAD's twin, `TRIS=20445 PIXELS=35831 CRC=5f34a008`, and the unpinned board run passed against the twin at that same CRC, so the refactor and the pin changed no frame the project had accepted. Second, the pin's own pixels were counted rather than assumed, using the palette: art texels are entries 192 and up and the land never writes one, so a build with no shelf and a pin has exactly the pin's pixels above 191 -- 1,482 of them in a rectangle 38 by 39, centred horizontally on the focus's cell and rising above the view's middle because the card stands three cells, and zero in the same build with no pin. The board then passed the pinned gate at `CRC=065cd90a PIN=80,90 CAMFOCUS=80,90` matching the twin, `TRIS=2785 PIXELS=52076` and `DRAW=7607us` against the orbit's 29,870, because a close view culls the island to 3,543 cells from 18,158, with `VBLMIN` and `VBLMAX` both 3. The build for the user's hands was deployed pinned: `build/feel/terrain.elf`, 393,584 bytes, MD5 `71584a6e0d7e0be473d39bc80ee64a11` and SHA-256 `231cba34d6777ae5d157eae784b1b98476d5c369753c10021cc82cb04fa427f1`, cards and tiles on, 200,000 frames, the link handed back to the mouse. The core was not rebuilt: nothing in this cycle touched the fabric. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that this cycle's only `.ai` change is this entry, checked that the reference's fast index and its records list the same eleven ids in the same order with none retired, validated this entry against the template, ordering, prose, Status, numbering and 100-entry rules, and confirmed that the project-control change agrees with the workflow and rewrites no settled history.
+
+#### Next Steps:
+
+One pin is placed by a rebuild, which is the wrong way for a world to grow, and the machinery to do better is already in the tree: the middle press's pick marches the camera and the projection back apart against the height field and returns a world point, so planting a card where the cursor is on a button is the same arithmetic the pin already does with a constant instead of a pick -- that is the next step, and it turns the pin into a thing the user makes rather than a thing he asks for. After that the world's content is the store's size, which is still either 256 tiles of BSRAM at 131 of the device's 340 blocks or a working set chosen per scene, and then a crowd that moves, cards that turn and tilt, and a texture path reading from SDRAM rather than BSRAM; a five thousand card rung would put a measured number on the cost wall instead of entry 40's 13.6 ms extrapolation, and `tools/fetch_tiles.sh` would make the art reproducible from a clone. The pin also wants to appear on the readout, so that a pinned build says where its card is the same way it says where the camera is; and the readout's own cost, 146 triangles a driven frame, is unchanged by any of this. The user has not yet judged the pin on the board. Open from before and unchanged: the ninth bit of the framebuffer; the palette's other half, which is how much of the pool a world that is not Land 1 should take; the cell-shaped command and the display list, both priced and both declined for now; the keyboard, gated on TinyTang gaining keyboard forwarding from the Tiny89 work; flying to a clicked point; the pipe guard in TinyTang; pinning a CRC per recorded input sequence in a tool; the capture card; the Bullet world removal (entry 6); and GAME-001.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/Makefile
+- firmware/terrain/host.c
+- firmware/terrain/main.c
+- firmware/terrain/terrain.c
+- firmware/terrain/terrain.h
+- tools/run_tang32_feel.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

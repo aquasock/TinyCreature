@@ -156,7 +156,29 @@ by 68 us. The run's report carries the same numbers -- `CAMFOCUS=111,103
 CAMEYE=110,283 CAMTURN=539` for a scripted orbit's last frame, and the board
 and the twin agree on them as they do on the frame CRC. A run driven from a PC
 shows it too: `TINYCREATURE_INPUT=<file> tools/run_tang32.sh terrain` is the
-same comparison with recorded reports instead of the scripted orbit.
+same comparison with recorded reports instead of the scripted orbit. The
+bearing is an angle a drag adds to without wrapping, so the readout takes the
+low sixteen bits of it: it had printed turns past 359, and the user read one
+back as `388`, where the true bearing was 28 degrees. The scripted orbit's last
+frame, which the report had been calling 539, is 179.
+
+A build can also be given one thing to stand in the world, which is the first
+this renderer has that is neither the camera nor the land. `PIN_X` and `PIN_Z`
+in the Makefile name a cell in the coordinates the readout shows, and the
+program plants one card there, three cells tall, standing on that cell's own
+ground and drawn through the same arithmetic the shelf of tiles uses -- one
+copy of the projection, the clamping and the fill's steps, shared by both. A
+pinned build opens looking at its pin from `PIN_DIST` back in Q4, twenty cells
+by default, and its camera stands still on it until the mouse takes over, so
+the first thing a pinned build shows is the card it was asked to stand there.
+The pin is how this user put himself in his own world: he read `080 090` off
+the readout while flying, the card was built at that cell, and the board then
+drew it against the twin at CRC `065cd90a`, four times cheaper a frame than the
+orbit because a close view culls the island down to 2,785 triangles from
+20,445 and 3,543 cells from 18,158. A card is told from the land by the palette -- art texels are entries
+192 and up, which the land never writes -- which is what made the pin's own
+pixels countable: 1,482 of them in a 38 by 39 rectangle centred on the focus's
+cell, and none at all in the same build with no pin.
 
 A tall sprite stands on the island's middle: `tools/convert_sprite.py` stacks
 one of the tile set's two-tile creatures into 32 by 64, trims it to the art,

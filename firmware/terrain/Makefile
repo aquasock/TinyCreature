@@ -61,8 +61,18 @@ CARDS_N     ?= 64
 # frame and moves no scripted frame, so the recorded CRCs stay where they are.
 # READOUT=0 takes it out.
 READOUT     ?= 1
+# The pin: one card standing at a cell of the island, named the way the readout
+# names one, with 0xffff in either coordinate meaning there is no pin -- which
+# is every scripted build, and what keeps their frames as recorded. A pinned
+# build also opens looking at its pin from PIN_DIST back, in Q4, so it stands
+# where it was asked to stand. run_tang32_feel.sh passes all three.
+PIN_X       ?= 0xffff
+PIN_Z       ?= 0xffff
+PIN_DIST    ?= 3200
 COMMON_CPPFLAGS := $(SPRITE_CPPFLAGS) -DTC_CARDS=$(CARDS) \
-                   -DTC_CARDS_N=$(CARDS_N) -DTC_READOUT=$(READOUT)
+                   -DTC_CARDS_N=$(CARDS_N) -DTC_READOUT=$(READOUT) \
+                   -DTC_PIN_X=$(PIN_X) -DTC_PIN_Z=$(PIN_Z) \
+                   -DTC_PIN_DIST=$(PIN_DIST)
 
 # The art's tiles: a generated header, off by default because the art is
 # fetched rather than committed, so a fresh clone builds. TILES=1 wants the

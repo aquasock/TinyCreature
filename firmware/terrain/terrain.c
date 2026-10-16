@@ -239,6 +239,45 @@ static int32_t cam_pitch;                              // 1/65536 of a turn
 static int32_t cam_dist;                               // Q4, focus to camera
 static int cam_driven;
 
+/* The pin: one card standing at a place in the world, which is what this
+ * renderer has that is not the camera and not the land. TC_PIN_X and TC_PIN_Z
+ * name the cell in the island's own coordinates -- what the readout shows --
+ * and 0xffff in either leaves it unset, which is every scripted build. A build
+ * with a pin also starts its camera looking at it, so it opens standing where
+ * it was asked to stand instead of on the scripted orbit, and TC_PIN_DIST is
+ * how far back that camera sits, in Q4. */
+#ifndef TC_PIN_X
+#define TC_PIN_X 0xffff
+#endif
+#ifndef TC_PIN_Z
+#define TC_PIN_Z 0xffff
+#endif
+#ifndef TC_PIN_DIST
+#define TC_PIN_DIST 3200    /* twenty cells */
+#endif
+#define TC_PIN_SET (TC_PIN_X != 0xffff && TC_PIN_Z != 0xffff)
+
+/* The pin's place in the world, Q4: the middle of the cell it stands on, which
+ * is where the shelf of cards stands a card too. */
+static void pin_world(int32_t *wx, int32_t *wz)
+{
+	*wx = TC_PIN_X * CELL + CELL / 2;
+	*wz = TC_PIN_Z * CELL + CELL / 2;
+}
+
+int tc_pin(int32_t *x, int32_t *z)
+{
+	if (!TC_PIN_SET)
+		return 0;
+	*x = TC_PIN_X;
+	*z = TC_PIN_Z;
+	return 1;
+}
+
+// The land's height under a world position, Q4. tc_init needs it before the
+// definition below when a build has a pin to stand on the ground.
+static int32_t ground(int32_t x, int32_t z);
+
 static uint32_t read32(const uint8_t *p)
 {
 	return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24;
@@ -545,7 +584,10 @@ void tc_camera(int32_t *focus_x, int32_t *focus_z, int32_t *eye_x,
 	*focus_z = cam_focus_z / CELL;
 	*eye_x = cam_x / CELL;
 	*eye_z = cam_z / CELL;
-	*turn = (int32_t)((uint32_t)cam_turn * 360u >> 16);
+	/* The turn is an angle that a drag adds to without wrapping, so the degree
+	 * is taken from the low 16 bits: the readout printed turns past 359 until
+	 * the user read one back as 388. */
+	*turn = (int32_t)(((uint32_t)cam_turn & 0xffffu) * 360u >> 16);
 }
 static uint32_t sprite_gx, sprite_gz;   // the cell it stands on
 static int32_t sprite_y;                // the ground there, Q4
@@ -604,6 +646,17 @@ struct tc_shade tc_init(const struct tc_land *l, void *work)
 	cam_focus_x = (int32_t)l->cells_x * CELL / 2;
 	cam_focus_z = (int32_t)l->cells_z * CELL / 2;
 	cam_focus_y = LIFT;
+	/* A build with a pin opens looking at it, at the distance that was asked
+	 * for, so the first frame shows the card standing where it was put rather
+	 * than an island seen from the orbit's reach. */
+	if (TC_PIN_SET) {
+		int32_t wx, wz;
+		pin_world(&wx, &wz);
+		cam_focus_x = wx;
+		cam_focus_z = wz;
+		cam_focus_y = ground(wx, wz);
+		cam_dist = TC_PIN_DIST;
+	}
 	// The camera those four describe, where the frame would put it. tc_draw
 	// computes these from them for every driven frame, but a run's first
 	// mouse report arrives before the first frame has been drawn, and the
@@ -1483,6 +1536,59 @@ static void draw_sprite(void)
 #endif
 }
 
+/* One card, standing on the land at a world position: three cells tall and as
+ * wide as it is tall, its base at wy and its top three cells up, filled with
+ * one tile of the art. The rectangle's pixel range, clamped to the screen, and
+ * the fields the fabric wants are worked out here because it has no divider:
+ * the steps in Q8 texels a pixel, and what the first pixel of each row and
+ * column stands at. A pixel centre is 16i + 8, which is the rule both fills
+ * use. The shelf and the pin both come through here, so there is one copy of
+ * this arithmetic. */
+static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
+{
+	if (out->card == NULL)
+		return;
+	int32_t x, y, z, sx0, sy0, sx1, sy1;
+	to_camera(wx, wy, wz, &x, &y, &z);
+	if (z < NEAR)
+		return;
+	project_xy(x, y, z, &sx0, &sy0);
+	to_camera(wx, wy + 3 * CELL, wz, &x, &y, &z);
+	if (z < NEAR)
+		return;
+	project_xy(x, y, z, &sx1, &sy1);
+	int32_t h = sy0 - sy1;
+	if (h < 16)
+		return;
+	int32_t w = h;
+	struct tc_card card;
+	int32_t ci0 = floor_div(sx0 - w / 2 - 8 + 15, 16);
+	int32_t ci1 = floor_div(sx0 + w / 2 - 8 + 15, 16);
+	int32_t cj0 = floor_div(sy1 - 8 + 15, 16);
+	int32_t cj1 = floor_div(sy0 - 8 + 15, 16);
+	if (ci0 < 0)
+		ci0 = 0;
+	if (cj0 < 0)
+		cj0 = 0;
+	if (ci1 > TC_WIDTH)
+		ci1 = TC_WIDTH;
+	if (cj1 > TC_HEIGHT)
+		cj1 = TC_HEIGHT;
+	if (ci0 >= ci1 || cj0 >= cj1)
+		return;
+	const int32_t bx0 = sx0 - w / 2, by0 = sy1;
+	card.tile = tile;
+	card.i0 = (uint32_t)ci0;
+	card.i1 = (uint32_t)ci1;
+	card.j0 = (uint32_t)cj0;
+	card.j1 = (uint32_t)cj1;
+	card.du = (uint32_t)((32 << 12) / w);
+	card.dv = (uint32_t)((32 << 12) / h);
+	card.u0 = (uint32_t)(((ci0 * 16 + 8 - bx0) * (int32_t)card.du) >> 4);
+	card.v0 = (uint32_t)(((cj0 * 16 + 8 - by0) * (int32_t)card.dv) >> 4);
+	out->card(out->ctx, &card);
+}
+
 void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 	     struct tc_stats *stats)
 {
@@ -1496,23 +1602,30 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 	int32_t size = (land->cells_x > land->cells_z ? land->cells_x : land->cells_z) * CELL;
 	int32_t reach = size * 4 / 5;
 	if (!cam_driven) {
-		uint32_t turn = (uint32_t)((uint64_t)frame * 65536 / frames);
-		int32_t radius = (int32_t)(reach * (7 * 16384 + 3 * (int64_t)icos(2 * turn)) / (10 * 16384));
-		cam_x = land->cells_x * CELL / 2 + (int32_t)((int64_t)radius * isin(turn) >> 14);
-		cam_z = land->cells_z * CELL / 2 + (int32_t)((int64_t)radius * icos(turn) >> 14);
-		cam_y = (int32_t)((int64_t)radius * TAN_PITCH >> 14) + LIFT;
-		sin_yaw = isin(turn + 0x8000);
-		cos_yaw = icos(turn + 0x8000);
-		sin_pitch = isin(PITCH);
-		cos_pitch = icos(PITCH);
-		// The same camera written as the focus, angle, tilt and distance the
-		// mouse drives, so its first report can take it over in place.
-		cam_turn = (int32_t)(turn + 0x8000);
-		cam_pitch = PITCH;
-		cam_dist = (int32_t)((int64_t)radius * 16384 / cos_pitch);
-		cam_focus_x = cam_x + (int32_t)((int64_t)radius * sin_yaw >> 14);
-		cam_focus_z = cam_z + (int32_t)((int64_t)radius * cos_yaw >> 14);
-		cam_focus_y = cam_y - (int32_t)((int64_t)radius * TAN_PITCH >> 14);
+		if (TC_PIN_SET) {
+			/* A pinned build stands still on its pin until the mouse takes
+			 * the camera, so that what it opens on is the card it was
+			 * asked to stand there. */
+			camera_from_angles();
+		} else {
+			uint32_t turn = (uint32_t)((uint64_t)frame * 65536 / frames);
+			int32_t radius = (int32_t)(reach * (7 * 16384 + 3 * (int64_t)icos(2 * turn)) / (10 * 16384));
+			cam_x = land->cells_x * CELL / 2 + (int32_t)((int64_t)radius * isin(turn) >> 14);
+			cam_z = land->cells_z * CELL / 2 + (int32_t)((int64_t)radius * icos(turn) >> 14);
+			cam_y = (int32_t)((int64_t)radius * TAN_PITCH >> 14) + LIFT;
+			sin_yaw = isin(turn + 0x8000);
+			cos_yaw = icos(turn + 0x8000);
+			sin_pitch = isin(PITCH);
+			cos_pitch = icos(PITCH);
+			// The same camera written as the focus, angle, tilt and distance the
+			// mouse drives, so its first report can take it over in place.
+			cam_turn = (int32_t)(turn + 0x8000);
+			cam_pitch = PITCH;
+			cam_dist = (int32_t)((int64_t)radius * 16384 / cos_pitch);
+			cam_focus_x = cam_x + (int32_t)((int64_t)radius * sin_yaw >> 14);
+			cam_focus_z = cam_z + (int32_t)((int64_t)radius * cos_yaw >> 14);
+			cam_focus_y = cam_y - (int32_t)((int64_t)radius * TAN_PITCH >> 14);
+		}
 	} else {
 		camera_from_angles();
 	}
@@ -1584,11 +1697,11 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 #endif
 
 /* The four cards, standing in a row beside the sprite, one tile each,
-	 * drawn where the sprite is drawn so that the land in front of that
-	 * cell still paints over them. A card is three cells tall and as wide
-	 * as it is tall, and the steps it hands the fill are the tile's 32
-	 * texels across that width, which is the divide the fabric does not
-	 * have. */
+ * drawn where the sprite is drawn so that the land in front of that
+ * cell still paints over them. A card is three cells tall and as wide
+ * as it is tall, and the steps it hands the fill are the tile's 32
+ * texels across that width, which is the divide the fabric does not
+ * have. */
 #if TC_CARDS
 	if (out->card != NULL) {
 		uint32_t side = 1;
@@ -1603,57 +1716,21 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 				     (int32_t)(i % side) * 3;
 			int32_t gz = sprite_gz - (int32_t)(side * 3 / 2) +
 				     (int32_t)(i / side) * 3;
-			int32_t wx = gx * CELL + CELL / 2;
-			int32_t wz = gz * CELL + CELL / 2;
-			int32_t x, y, z, sx0, sy0, sx1, sy1;
-			to_camera(wx, sprite_y, wz, &x, &y, &z);
-			if (z < NEAR)
-				continue;
-			project_xy(x, y, z, &sx0, &sy0);
-			to_camera(wx, sprite_y + 3 * CELL, wz, &x, &y, &z);
-			if (z < NEAR)
-				continue;
-			project_xy(x, y, z, &sx1, &sy1);
-			int32_t h = sy0 - sy1;
-			if (h < 16)
-				continue;
-			int32_t w = h;
-			/* The rectangle's pixel range, clamped to the screen, and
-			 * the fields the fabric wants worked out here: the steps in
-			 * Q8 texels a pixel, and what the first pixel of each row
-			 * and column stands at. A pixel centre is 16i + 8, which is
-			 * the rule both fills use. */
-			struct tc_card card;
-			int32_t ci0 = floor_div(sx0 - w / 2 - 8 + 15, 16);
-			int32_t ci1 = floor_div(sx0 + w / 2 - 8 + 15, 16);
-			int32_t cj0 = floor_div(sy1 - 8 + 15, 16);
-			int32_t cj1 = floor_div(sy0 - 8 + 15, 16);
-			if (ci0 < 0)
-				ci0 = 0;
-			if (cj0 < 0)
-				cj0 = 0;
-			if (ci1 > TC_WIDTH)
-				ci1 = TC_WIDTH;
-			if (cj1 > TC_HEIGHT)
-				cj1 = TC_HEIGHT;
-			if (ci0 >= ci1 || cj0 >= cj1)
-				continue;
-			const int32_t bx0 = sx0 - w / 2, by0 = sy1;
-			card.tile = i % ART_TILES;
-			card.i0 = (uint32_t)ci0;
-			card.i1 = (uint32_t)ci1;
-			card.j0 = (uint32_t)cj0;
-			card.j1 = (uint32_t)cj1;
-			card.du = (uint32_t)((32 << 12) / w);
-			card.dv = (uint32_t)((32 << 12) / h);
-			card.u0 = (uint32_t)(((ci0 * 16 + 8 - bx0) *
-					      (int32_t)card.du) >> 4);
-			card.v0 = (uint32_t)(((cj0 * 16 + 8 - by0) *
-					      (int32_t)card.dv) >> 4);
-			out->card(out->ctx, &card);
+			card_at(gx * CELL + CELL / 2, sprite_y, gz * CELL + CELL / 2,
+				i % ART_TILES);
 		}
 	}
 #endif
+
+	/* The pin, if this build was given one: one card standing where it was
+	 * asked to stand, on the ground of the cell it names. It is drawn wherever
+	 * the camera is, which is what makes it a thing in the world rather than
+	 * a thing on the screen. */
+	if (TC_PIN_SET) {
+		int32_t wx, wz;
+		pin_world(&wx, &wz);
+		card_at(wx, ground(wx, wz), wz, 0);
+	}
 
 	// The cursor goes last, so that it lies over everything else. Its middle
 	// is the mouse's position, and the sprite it draws is the frame's or the

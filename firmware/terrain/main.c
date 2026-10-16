@@ -12,7 +12,7 @@
 //     TRIS=<mean> PIXELS=<mean> DRAW=<us> MAX=<us> FINISH=<us> STALLS=<n>
 //     VBL=<n> VBLMIN=<n> VBLMAX=<n> PERIOD=<us> INPUT=<n> LATE=<n> CRC=<crc>
 //     CELLS=<mean> PHROWS=<us> PHCULL=<us> PHWALK=<us>
-//     CAMFOCUS=<x>,<z> CAMEYE=<x>,<z> CAMTURN=<degrees>
+//     CAMFOCUS=<x>,<z> CAMEYE=<x>,<z> CAMTURN=<degrees> PIN=<x>,<z>|none
 // LAND is the file's CRC-32; TRIS and PIXELS the mean triangles sent and
 // pixels they filled per frame; DRAW and MAX the mean and longest CPU time
 // to send a frame, FINISH the mean time after that until the rasterizer is
@@ -521,7 +521,7 @@ int main(void)
 	       "PIXELS=%lu DRAW=%luus MAX=%luus FINISH=%luus STALLS=%lu "
 	       "VBL=%lu VBLMIN=%lu VBLMAX=%lu PERIOD=%luus INPUT=%lu LATE=%lu "
 	       "CRC=%08lx CELLS=%lu PHROWS=%luus PHCULL=%luus PHWALK=%luus "
-	       "CAMFOCUS=%ld,%ld CAMEYE=%ld,%ld CAMTURN=%ld\n",
+	       "CAMFOCUS=%ld,%ld CAMEYE=%ld,%ld CAMTURN=%ld",
 	       FABRIC ? "FABRIC" : "SOFT", (unsigned long)land_crc, (unsigned)FRAMES,
 	       (unsigned long)(tris / FRAMES), (unsigned long)(pixels / FRAMES),
 	       (unsigned long)(draw / FRAMES / us), (unsigned long)(longest / us),
@@ -535,5 +535,12 @@ int main(void)
 	       (unsigned long)(phase_sum[TC_PHASE_WALK] / FRAMES / us),
 	       (long)cam_focus_x, (long)cam_focus_z, (long)cam_eye_x,
 	       (long)cam_eye_z, (long)cam_turn);
+	/* The cell this build stands its card on, if it has one: the one thing in the
+	 * world that is not the camera, and what a pinned build is for. */
+	int32_t pin_x, pin_z;
+	if (tc_pin(&pin_x, &pin_z))
+		printf(" PIN=%ld,%ld\n", (long)pin_x, (long)pin_z);
+	else
+		printf(" PIN=none\n");
 	return 0;
 }
