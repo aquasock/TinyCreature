@@ -75,6 +75,10 @@ PIN_PITCH   ?= 2731
 # thick it is, in Q4 -- a tenth of its height by default.
 CARD_YAW    ?= 0
 CARD_DEPTH  ?= 48
+# The card's size: how tall and wide the box is, in Q4, and its thickness a
+# tenth of that by default. Three cells (480) is a small building; half a cell
+# (80) is about a villager in the original game.
+CARD_UNITS  ?= 480
 # How wide one column of a card face is on the screen, in whole pixels. A face
 # is drawn as columns this wide rather than as one rectangle, which is what
 # lets its outline follow the quadrilateral it projects into; smaller is
@@ -92,6 +96,7 @@ COMMON_CPPFLAGS := $(SPRITE_CPPFLAGS) -DTC_CARDS=$(CARDS) \
                    -DTC_PIN_X=$(PIN_X) -DTC_PIN_Z=$(PIN_Z) \
                    -DTC_PIN_DIST=$(PIN_DIST) -DTC_PIN_PITCH=$(PIN_PITCH) \
                    -DTC_CARD_YAW=$(CARD_YAW) -DTC_CARD_DEPTH=$(CARD_DEPTH) \
+                   -DTC_CARD_UNITS=$(CARD_UNITS) \
                    -DTC_CARD_COLUMN_PX=$(CARD_COLUMN_PX) -DTC_TEX=$(CARD_TEX)
 
 # The art's tiles: a generated header, off by default because the art is

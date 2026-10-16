@@ -1658,3 +1658,38 @@ The textured triangle is the renderer's now and the columns are the stand-in it 
 - User Test: PASS
 
 ---
+
+## 51 COMMIT Unreleased 2026-10-16T06:01:09-07:00
+
+#### Coming From:
+
+Unreleased 8ad238c
+
+#### Purpose:
+
+Scale one card down to a villager's size in the original's terms and measure what the engine draws and what it costs as the camera closes in and as the number of cards rises, so that a level of detail can be decided from numbers rather than from the speck on the screen.
+
+#### Outcome:
+
+The card's size became a knob, `CARD_UNITS` in Q4 with the thickness a tenth of it by default, forwarded through the Makefile, the feel script and `build_tang32.sh` -- which entry 50 had taught to forward the card knobs -- and the villager builds came out of it: one card, no shelf, textured, standing at 80,90, at half a cell (`CARD_UNITS=80`), first opening twenty cells back and then, so the figure could be looked at, four cells back. The user flew both and asked why the first was black, and the answer is a measurement and not a defect. At twenty cells the card is six pixels across and the twin's own frame shows 36 art pixels in a 6 by 6 box of which 78 per cent are the tile's darkest entries, drawn from **six distinct texels of the tile's 1024**: nearest-neighbour sampling at five to one subsamples rather than blurs, takes one texel per pixel, and on a small figure over a large dark field it usually misses the figure altogether. A clean rebuild at each of four pin distances closed it -- 12 by 12 pixels and 18 distinct texels at ten cells, 24 by 26 and the creature plainly visible at five, 59 by 59 and unmistakable at two -- and the distinct texel count saturates near 24, which is the art's own palette count, so nothing about the sampler is worse than sampling explains. `tools/measure_tang32.sh` is new and is the measuring tool this cycle needed: it builds each configuration and runs it through `run_tang32.sh`, so the board and the twin are always the same build, and writes one table of triangles, pixels, cells, `DRAW`, `MAX`, `PERIOD`, stalls and the frame CRC, with a run that fails its own check recorded as failing rather than as a blank. Two sweeps ran on the board. The distance sweep, one villager card with the camera at 3200, 1600, 800 and 320 Q4, gives 2,787, 1,709, 1,320 and 1,123 triangles over 3,543, 2,778, 2,065 and 2,065 cells, drawing 7,606, 5,774, 4,668 and 4,391 us while the pixels rise from 50,630 to 59,430 and the period holds at 49,998 us, which is the twenty-a-second hold kept at every distance: closing in more than halves the triangles and takes the frame to 58 per cent of its cost while the fill grows. The card ladder, villager-sized cards on the island, gives 64 cards at `DRAW` 30,339 us and a worst frame of 36,222, 256 at 31,931 and 37,647, 1,000 at 38,071 and 43,729, and 1,500 at 41,707 and 48,063, which is 7.9 us a card against entry 40's 1.36 and only 1.9 ms of the hold's margin left, with one frame in 1,801 taking a fourth blank. At 2,000 and at 3,000 cards the run stops with `BAD TINYCREATURE PIXELS`: the twin expects `TRIS=23193 PIXELS=34373` and the board draws a different number of pixels, where 1,500 cards pass. That is a count discrepancy and not a frame budget, it is the first time those rungs were run, and it has not been reproduced, so it is recorded here as an open defect with its configuration and its expected numbers and not explained. Two predictions of the agent's are worth recording against the data: it expected the villager card to cost about seven times entry 40's billboard and it cost 5.8, and it expected the timing wall between 256 and 1,000 cards where the pacing in fact held to 1,500. What the numbers say for the level of detail the user proposed is that the cost is in words and not texels: a textured card is about 38 command words where the billboard was 5, so the far level should be a flat quad at six words rather than a coarse texture at twenty-six, and a crowd of smudges then costs less than the crowd that used to be affordable. The far-field terrain merge of entries 24 to 26 stays rejected: this cycle's evidence is about objects, and the triangles the walk draws are decided by the view, which the distance sweep shows falling from 3,543 to 2,065 cells on their own. The user called the villager picture's blackness a question rather than a fault and asked for this cycle to be logged and pushed as a handoff; the builds he flew were not given a verdict, so the user test is not run rather than passed. The core was not rebuilt, its image being entry 49's; `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that this cycle's only `.ai` change is this entry, checked that the reference's fast index and its records list the same eleven ids in the same order with none retired, validated this entry against the template, ordering, prose, Status, numbering and 100-entry rules, and confirmed that the project-control change agrees with the workflow and rewrites no settled history.
+
+#### Next Steps:
+
+The open defect comes first and comes as a reproduction and not as a guess: at 2,000 and 3,000 villager-sized cards the board stops with `BAD TINYCREATURE PIXELS` while 1,500 passes, the twin expecting `TRIS=23193 PIXELS=34373` for that configuration, and nothing about it has been confirmed twice. Fresh data is the step -- run the same configuration again from a clean build, then bracket it between 1,500 and 2,000 to find the first rung that fails, and only then look at the fill and the FIFO with a reproduction in hand. `tools/measure_tang32.sh` does all of that in one command and takes `TINYCREATURE_MEASURE_CARDS` as a list, so a reproduction is a single argument. Two warts of that tool's own are worth a line: its `why` column captures the program's failure line so a failed rung is explained, and its two sweep lists are overridable with an empty value to skip one, both of which cost the agent two runs to learn. After the defect, the level of detail the user proposed, with the measurement behind it: two levels keyed on a card's *projected width* rather than on the camera's distance, which `card_at` already has before it draws anything, with the near level the textured face above about 24 screen pixels and the far level a flat quad below it, and more levels later behind the same table if the curve asks for them. The art to do it with already exists, since `tools/convert_tiles.py` takes the cell size it should quantise to. Then the queue: the keyboard, which TinyTang now forwards as `0x17` and which this program already consumes safely; cards that turn and tilt, which two triangles make possible and which the user described as a wobble; the command words a textured triangle spends, thirteen where entry 49 named about ten with the steps paired, which is the lever a crowd feels first; planting a pin where the cursor is on a button; the store's size; a texture path from SDRAM; `tools/fetch_tiles.sh`; the projection's left-right mirroring; the fabric's card fill indexing its store without clamping; the Makefile's host target not depending on the generated tile header; the ninth bit of the framebuffer; the palette's other half; the cell-shaped command and the display list; flying to a clicked point; a CRC pinned per recorded input sequence; the capture card; the Bullet world removal (entry 6); and GAME-001.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/Makefile
+- firmware/terrain/terrain.c
+- tools/build_tang32.sh
+- tools/measure_tang32.sh
+- tools/run_tang32_feel.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

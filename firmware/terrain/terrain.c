@@ -1627,9 +1627,16 @@ static void draw_sprite(void)
 #ifndef TC_CARD_YAW
 #define TC_CARD_YAW 0        /* looking along +z */
 #endif
-#define TC_CARD_UNITS (3 * CELL)   /* three cells tall, three cells wide */
+/* The box's size: TC_CARD_UNITS tall and wide in Q4, three cells by default,
+ * which is a small building, and TC_CARD_DEPTH thick, a tenth of that. A
+ * villager in the original stands about half a cell, so CARD_UNITS=80 is that
+ * figure. The box can be any size at all, because the textured fill draws a
+ * face as two triangles rather than as a rectangle scaled to it. */
+#ifndef TC_CARD_UNITS
+#define TC_CARD_UNITS (3 * CELL)
+#endif
 #ifndef TC_CARD_DEPTH
-#define TC_CARD_DEPTH 48           /* a tenth of the height, in Q4 */
+#define TC_CARD_DEPTH (TC_CARD_UNITS / 10)
 #endif
 #define TC_FACE_SOLID 0xffffffffu
 

@@ -322,6 +322,43 @@ default, so a board build draws the columns unless it is asked for the
 triangles; flipping that default and retiring the columns, `CARD_COLUMN_PX` and
 the `CARD` command is its own small cycle.
 
+The card's size is a knob, `CARD_UNITS` in Q4 and the thickness a tenth of it:
+three cells is a small building, and `CARD_UNITS=80` is half a cell, which is
+about a villager in the original. At that size, at the pin's own camera twenty
+cells back, the card is six pixels across and reads as a black speck -- not
+because anything is broken, but because nearest-neighbour sampling at five to
+one consults six texels of the tile's 1024 and lands on the near-black
+background the creature figure sits on. Four cells back the card is 24 pixels
+and the figure is plainly there, and at two cells it is 59 pixels and
+unmistakable: the distinct texels a tile can offer saturate at about 24, which
+is the art's own palette count and not a sampling limit. So the size reads
+correctly at any distance and the *art* is what does not, which is the case for
+choosing a card's tile by its screen size.
+
+`tools/measure_tang32.sh` measures what the engine draws. It builds each
+configuration and runs it through `run_tang32.sh`, so the board and the twin it
+is judged against are always one build, and writes one table of triangles,
+pixels, cells, `DRAW`, `MAX`, `PERIOD`, stalls and the frame CRC. Two sweeps,
+each on the board: one villager card with the camera at 3200, 1600, 800 and 320
+Q4 -- 20, 10, 5 and 2 cells -- and a ladder of villager-sized textured cards at
+64, 256, 1,000, 1,500, 2,000 and 3,000. Closing from 20 cells to 2 cuts the
+triangles from 2,787 to 1,123 and the frame from 7,606 to 4,391 us while the
+pixels rise from 50,630 to 59,430, and the twenty-a-second hold is kept at
+every distance. The ladder puts a villager card at 7.9 us -- 5.8 times entry
+40's billboard, because a textured face is two triangles at thirteen words
+where a card used to be five -- and the pacing wall at about 1,500 cards, where
+the worst frame is 48,063 us of the 50,000 the hold allows. A crowd's tempo is
+set by emission, so the far level of a level of detail wants to be a *flat*
+quad at six words rather than a coarse texture at twenty-six.
+
+One defect is open and is the first thing to pick up. At 2,000 cards and at
+3,000 the board stops with `BAD TINYCREATURE PIXELS`: the twin expects
+`TRIS=23193 PIXELS=34373` for that configuration and the board draws a
+different number of pixels, while 1,500 cards pass. It is a count discrepancy
+and not a frame budget, and it has not been reproduced on a second run, so the
+first step is fresh data on the same configuration rather than a hypothesis
+about the FIFO or the fill.
+
 A tall sprite stands on the island's middle: `tools/convert_sprite.py` stacks
 one of the tile set's two-tile creatures into 32 by 64, trims it to the art,
 tints it and quantises it to the seven palette entries the sea gave up when it
