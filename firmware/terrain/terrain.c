@@ -255,6 +255,9 @@ static int cam_driven;
 #ifndef TC_PIN_DIST
 #define TC_PIN_DIST 3200    /* twenty cells */
 #endif
+#ifndef TC_PIN_PITCH
+#define TC_PIN_PITCH PITCH  /* the orbit's tilt: fifteen degrees down */
+#endif
 #define TC_PIN_SET (TC_PIN_X != 0xffff && TC_PIN_Z != 0xffff)
 
 /* The pin's place in the world, Q4: the middle of the cell it stands on, which
@@ -656,6 +659,7 @@ struct tc_shade tc_init(const struct tc_land *l, void *work)
 		cam_focus_z = wz;
 		cam_focus_y = ground(wx, wz);
 		cam_dist = TC_PIN_DIST;
+		cam_pitch = TC_PIN_PITCH;
 	}
 	// The camera those four describe, where the frame would put it. tc_draw
 	// computes these from them for every driven frame, but a run's first
@@ -1548,23 +1552,34 @@ static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 {
 	if (out->card == NULL)
 		return;
-	int32_t x, y, z, sx0, sy0, sx1, sy1;
+	int32_t x, y, z, sx0, sy0;
 	to_camera(wx, wy, wz, &x, &y, &z);
 	if (z < NEAR)
 		return;
 	project_xy(x, y, z, &sx0, &sy0);
-	to_camera(wx, wy + 3 * CELL, wz, &x, &y, &z);
-	if (z < NEAR)
-		return;
-	project_xy(x, y, z, &sx1, &sy1);
-	int32_t h = sy0 - sy1;
+	/* A card is three cells of world drawn as a rectangle that always faces the
+	 * camera, so how big it is on the screen depends on how far away it is and
+	 * not on how the camera is tilted. Its height is what three cells across
+	 * the view project to at the depth it stands at -- three cells, times the
+	 * projection's own 4096, over the depth, which is project_xy's arithmetic
+	 * with an x of three cells. Taking the height from the world's vertical
+	 * axis instead, which is what this did, projected a vertical segment: that
+	 * length foreshortens by the cosine of the tilt, so a card shrank as the
+	 * camera came down on it -- 1,188 pixels across at the orbit's fifteen
+	 * degrees and 36 at the tilt's seventy-nine, which is the shrink the user
+	 * saw -- and vanished at the top of the tilt. */
+	int32_t h = (int32_t)((((int64_t)3 * CELL) << 12) / z);
 	if (h < 16)
 		return;
 	int32_t w = h;
+	/* The rectangle runs from the card's base, where the ground under it
+	 * projects, up by its height: a billboard, so its top is not a projected
+	 * world point but the base less the size the depth gives it. */
+	const int32_t top = sy0 - h;
 	struct tc_card card;
 	int32_t ci0 = floor_div(sx0 - w / 2 - 8 + 15, 16);
 	int32_t ci1 = floor_div(sx0 + w / 2 - 8 + 15, 16);
-	int32_t cj0 = floor_div(sy1 - 8 + 15, 16);
+	int32_t cj0 = floor_div(top - 8 + 15, 16);
 	int32_t cj1 = floor_div(sy0 - 8 + 15, 16);
 	if (ci0 < 0)
 		ci0 = 0;
@@ -1576,7 +1591,7 @@ static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 		cj1 = TC_HEIGHT;
 	if (ci0 >= ci1 || cj0 >= cj1)
 		return;
-	const int32_t bx0 = sx0 - w / 2, by0 = sy1;
+	const int32_t bx0 = sx0 - w / 2, by0 = top;
 	card.tile = tile;
 	card.i0 = (uint32_t)ci0;
 	card.i1 = (uint32_t)ci1;

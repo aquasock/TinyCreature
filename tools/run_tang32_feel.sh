@@ -48,7 +48,8 @@ make -C "$root/firmware/terrain" TINYNES="$source_dir" BUILD="$build" \
     READOUT="${TINYCREATURE_READOUT:-1}" \
     PIN_X="${TINYCREATURE_PIN_X:-0xffff}" \
     PIN_Z="${TINYCREATURE_PIN_Z:-0xffff}" \
-    PIN_DIST="${TINYCREATURE_PIN_DIST:-3200}" clean all >/dev/null
+    PIN_DIST="${TINYCREATURE_PIN_DIST:-3200}" \
+    PIN_PITCH="${TINYCREATURE_PIN_PITCH:-2731}" clean all >/dev/null
 
 echo "Loading the core"
 python3 "$tinytang/tools/tinytang_run.py" --port "$port" --seconds 1 \
@@ -65,9 +66,9 @@ python3 "$source_dir/tools/load_ae350.py" "$build/terrain.elf" --file "$land" \
     --expect "TinyCreature TERRAIN OK" || true
 
 cat <<'EOF'
-The board's mouse is driving the camera: middle-drag turns it, left-drag slides
-the land, the wheel moves in and out. Where the eye and its focus are, in the
-island's cells, and the bearing in degrees, are drawn along the bottom of the
+The board's mouse is driving the camera: middle-drag turns and tilts it, left-drag
+slides the land, the wheel moves in and out. Where the eye and its focus are, in
+the island's cells, and the bearing in degrees, are drawn along the bottom of the
 frame. Change the TC_* constants in firmware/terrain/terrain.h and run this
 again to try another feel.
 EOF

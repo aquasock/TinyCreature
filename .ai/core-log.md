@@ -1423,3 +1423,36 @@ One pin is placed by a rebuild, which is the wrong way for a world to grow, and 
 - User Test: NOT RUN
 
 ---
+
+## 44 COMMIT Unreleased 2026-10-15T18:37:00-07:00
+
+#### Coming From:
+
+Unreleased 3c9541f
+
+#### Purpose:
+
+Make a card keep its size as the camera tilts down onto it, which is what a rectangle that faces the camera owes the eye.
+
+#### Outcome:
+
+The cards no longer shrink when the camera comes down on them. `card_at` derived a card's height on the screen from a projected segment of the world's vertical axis -- the card's base and the point three cells above it -- and a vertical length foreshortens by the cosine of the tilt, so a card collapsed as the camera pitched down and would have vanished at the top of the tilt. The user found it flying over the pin he had just asked for, and it is measured rather than described: the same card drew 1,188 pixels in a 36 by 35 rectangle at the orbit's fifteen degrees of tilt and 36 pixels in 8 by 8 at the tilt's seventy-nine, three percent of its area, reproduced here from a recorded middle drag of forty reports before the fix and after it. The height is now three cells times the projection's own 4096 over the camera-space depth, which is `project_xy`'s arithmetic with an x of three cells, and the rectangle's top is the base less that height instead of a projected world point, because a card is a billboard: what should change its size is distance and not the camera's angle. The measurement that says so is a tilt sweep at a fixed distance, which needed a knob and got one: `TC_PIN_PITCH` names the tilt a pinned build opens at, in the Q16 turn units the camera already uses, and with that the same card measures 1,444 pixels in a 38 by 38 rectangle at 2,731, 5,000, 8,000, 11,000 and 14,336 -- fifteen degrees of tilt to seventy-nine, identical at every one, while the eye the run reports walks from cell 109 behind the focus to 94, which is what says the camera really moved and the sweep is not five copies of one build. That distinction is this cycle's own mistake and is worth the lines: the first sweep was exactly that, because `PIN_PITCH` was read by `terrain.c` but never written into the Makefile's `COMMON_CPPFLAGS`, so five apparently different builds were one build and their identical measurements proved nothing; the tell was the Makefile's absence from the cycle's diff, and the knob is in the compiler flags now. That it is still a thing in the world rather than a fixed patch of screen was checked the other way, by distance: at 10, 20, 40 and 80 cells the card's area is 5,852, 1,444, 380 and 100 pixels, which is the quartering every doubling is supposed to give, the small departures from four being integer pixels at ten across. The rasterizer's simulation was run and is unchanged and passing, which is the check that the fix touched cards alone: its two frames carry no cards, so the land and the sprite draw the bytes they drew before. On the board both gates passed against the twin, and the unpinned one shows what moved and what did not: `TRIS=20445` and `CELLS=18158` unchanged and `PIXELS` from 35,831 to 36,080, which is the shelf's sixty-four cards drawn the size they really are at fifteen degrees, with the frame CRC moving from `5f34a008` to `21a74c13`; the pinned run moved with it, `PIXELS` 52,076 to 52,038 and CRC `065cd90a` to `bc66529e`, with `VBLMIN` and `VBLMAX` both 3 in both. The tall sprite takes its height from the same projected vertical segment and shrinks the same way; it is left alone because this cycle was scoped to the cards and it is the same one-line change. The build for the user's hands was deployed pinned as before, `build/feel/terrain.elf`, 383,984 bytes, MD5 `81ae5308d655998d1b7de58e57b3dae0` and SHA-256 `a3820e46596261874636e66f8f318627c135f1798785dc1dc55325de477d7c7b`, cards and tiles on, the card still standing at 80,90, 200,000 frames, the link handed back. The core was not rebuilt: nothing in this cycle touched the fabric. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that this cycle's only `.ai` change is this entry, checked that the reference's fast index and its records list the same eleven ids in the same order with none retired, validated this entry against the template, ordering, prose, Status, numbering and 100-entry rules, and confirmed that the project-control change agrees with the workflow and rewrites no settled history.
+
+#### Next Steps:
+
+The user said the cards have some bugs and named this one, so the next thing is what he sees next: the sprite's height is taken from the same projected vertical segment `card_at` no longer uses, so the tall creature still flattens as the camera comes down on it, and the fix is the same line in `draw_sprite`. The depth the size is taken at is the card's base rather than its middle, which makes a card a few percent larger than a strict billboard would; that is worth a look if a card ever looks wrong next to another. Then the world's own queue is unchanged: planting a pin where the cursor is on a button, which the middle press's pick already has the arithmetic for; the store's size, either 256 BSRAM tiles at 131 of 340 blocks or a working set per scene; a crowd that moves; cards that turn and tilt, which this fix does not give them because a card is still an axis-aligned rectangle; a texture path reading from SDRAM rather than BSRAM; a five thousand card rung for a measured cost wall; and `tools/fetch_tiles.sh` so the art is reproducible from a clone. The user has not yet judged this fix on the board. Open from before and unchanged: the ninth bit of the framebuffer; the palette's other half; the cell-shaped command and the display list, both priced and both declined for now; the keyboard, gated on TinyTang gaining keyboard forwarding from the Tiny89 work; flying to a clicked point; the pipe guard in TinyTang; pinning a CRC per recorded input sequence in a tool; the capture card; the Bullet world removal (entry 6); and GAME-001.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/Makefile
+- firmware/terrain/terrain.c
+- tools/run_tang32_feel.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

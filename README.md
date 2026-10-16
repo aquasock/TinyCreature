@@ -180,6 +180,32 @@ orbit because a close view culls the island down to 2,785 triangles from
 pixels countable: 1,482 of them in a 38 by 39 rectangle centred on the focus's
 cell, and none at all in the same build with no pin.
 
+That card's size was wrong, and flying over it is how the user found it: a card
+shrank as the camera tilted down onto it. The size came from projecting a
+segment of the world's vertical axis -- the card's base and the point three
+cells above it -- and a vertical length foreshortens by the cosine of the tilt,
+so the card went from 1,188 pixels across at the orbit's fifteen degrees to 36
+at the tilt's seventy-nine, three percent of its area, and would have vanished
+at the top of the tilt. A card is a rectangle that faces the camera, and its
+size should follow how far away it is and not how the camera is pointing, so
+the height is now three cells times the projection's own 4096 over the depth --
+`project_xy`'s arithmetic with an x of three cells -- and the rectangle's top is
+the base less that height rather than a projected world point. The same card now
+measures 1,444 pixels at every tilt from 15 to 79 degrees, and at 10, 20, 40 and
+80 cells of camera distance its area is 5,852, 1,444, 380 and 100 pixels, which
+is the quartering a billboard should do. `PIN_PITCH` is the new knob the sweep
+needed -- the tilt a pinned build opens at, in the same Q16 turn units the camera
+uses -- and the first attempt at that sweep was five copies of one build, because
+the knob was read by the program and never passed by the Makefile; what made the
+real one a measurement was the eye moving from cell 109 behind the focus to 94
+as the tilt went from 15 degrees to 79 while the card stayed 38 by 38. The
+unpinned board run moved with the fix and moved only in the cards:
+`TRIS=20445` and `CELLS=18158` unchanged, `PIXELS` from 35,831 to 36,080 -- the
+shelf's sixty-four cards at their true size -- and the frame CRC to `21a74c13`.
+The tall sprite takes its height from that same projected vertical segment and
+shrinks the same way; it is left as it is here because this cycle was scoped to
+the cards.
+
 A tall sprite stands on the island's middle: `tools/convert_sprite.py` stacks
 one of the tile set's two-tile creatures into 32 by 64, trims it to the art,
 tints it and quantises it to the seven palette entries the sea gave up when it
