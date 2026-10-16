@@ -119,6 +119,12 @@ void tc_soft_triangle(void *soft, const int32_t *x, const int32_t *y,
 const uint8_t *tc_art_tiles(void);
 unsigned tc_art_tile_count(void);
 
+/* Where the camera is, for the readout tc_draw draws when a mouse is driving
+ * it and for a run's report: the focus and the eye in the land's own cells,
+ * and the turn in degrees clockwise from the grid's own north. */
+void tc_camera(int32_t *focus_x, int32_t *focus_z, int32_t *eye_x,
+	       int32_t *eye_z, int32_t *turn);
+
 /* A card: the same fields the fabric's CARD command carries, filled the same
  * way, so that a mismatch between the two is a mismatch of this arithmetic
  * and not of a duplicated copy of it. */

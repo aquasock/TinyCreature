@@ -84,9 +84,11 @@ make -C "$source_dir/firmware/apps/video_test" BUILD="$out/app" clean all
 # run with cards is always compared against a twin that drew them too.
 make -C "$root/firmware/terrain" TINYNES="$source_dir" BUILD="$out/terrain" \
     CARDS="${TINYCREATURE_CARDS:-0}" TILES="${TINYCREATURE_TILES:-0}" \
+    READOUT="${TINYCREATURE_READOUT:-1}" \
     clean all host
 make -C "$root/firmware/terrain" TINYNES="$source_dir" FABRIC=0 \
     CARDS="${TINYCREATURE_CARDS:-0}" TILES="${TINYCREATURE_TILES:-0}" \
+    READOUT="${TINYCREATURE_READOUT:-1}" \
     BUILD="$out/terrain-soft" clean all
 
 sha256sum "$out/ae350_soc.fs" "$out/ae350_soc.bin" "$out/app/video_test.elf" \

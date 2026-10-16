@@ -14,7 +14,8 @@
 // belongs to, the buttons, and the mouse's dx, dy and wheel.
 //
 // prints
-//   HOST TERRAIN LAND=<crc> FRAMES=<n> TRIS=<mean> PIXELS=<mean> INPUT=<n> CRC=<crc>
+//   HOST TERRAIN LAND=<crc> FRAMES=<n> TRIS=<mean> PIXELS=<mean> INPUT=<n>
+//     CRC=<crc> CAMFOCUS=<x>,<z> CAMEYE=<x>,<z> CAMTURN=<degrees>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -275,9 +276,14 @@ int main(int argc, char **argv)
 			}
 		}
 	}
-	printf("HOST TERRAIN LAND=%08x FRAMES=%u TRIS=%u PIXELS=%u INPUT=%u CRC=%08x\n",
+	int32_t cam_focus_x, cam_focus_z, cam_eye_x, cam_eye_z, cam_turn;
+	tc_camera(&cam_focus_x, &cam_focus_z, &cam_eye_x, &cam_eye_z, &cam_turn);
+	printf("HOST TERRAIN LAND=%08x FRAMES=%u TRIS=%u PIXELS=%u INPUT=%u CRC=%08x "
+	       "CAMFOCUS=%ld,%ld CAMEYE=%ld,%ld CAMTURN=%ld\n",
 	       (unsigned)tc_crc32(0, file, bytes), (unsigned)frames,
 	       (unsigned)(tris / frames), (unsigned)(pixels / frames),
-	       (unsigned)applied, (unsigned)crc);
+	       (unsigned)applied, (unsigned)crc,
+	       (long)cam_focus_x, (long)cam_focus_z, (long)cam_eye_x,
+	       (long)cam_eye_z, (long)cam_turn);
 	return 0;
 }

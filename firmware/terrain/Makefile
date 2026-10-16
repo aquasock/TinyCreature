@@ -56,8 +56,13 @@ SPRITE_CPPFLAGS := -I$(BUILD)/sprite -DTC_SPRITE_HEADER='"$(notdir $(SPRITE_H))"
 # and the run scripts pass it.
 CARDS       ?= 0
 CARDS_N     ?= 64
+# The camera readout, on by default: a driven run draws where the eye and its
+# focus are along the bottom of the frame. It costs a few dozen rectangles a
+# frame and moves no scripted frame, so the recorded CRCs stay where they are.
+# READOUT=0 takes it out.
+READOUT     ?= 1
 COMMON_CPPFLAGS := $(SPRITE_CPPFLAGS) -DTC_CARDS=$(CARDS) \
-                   -DTC_CARDS_N=$(CARDS_N)
+                   -DTC_CARDS_N=$(CARDS_N) -DTC_READOUT=$(READOUT)
 
 # The art's tiles: a generated header, off by default because the art is
 # fetched rather than committed, so a fresh clone builds. TILES=1 wants the

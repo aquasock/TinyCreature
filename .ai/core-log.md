@@ -1319,3 +1319,41 @@ The store's size is still the decision the pivot has not made: sixty-four tiles 
 - User Test: NOT RUN
 
 ---
+
+## 41 COMMIT Unreleased 2026-10-15T18:08:11-07:00
+
+#### Coming From:
+
+Unreleased fa13a35
+
+#### Purpose:
+
+Answer the user's question of where his camera is while he flies the island, by drawing a readout of the eye, its focus and the bearing on the frame and by reporting the same numbers with a run.
+
+#### Outcome:
+
+The camera is now legible on the board and in a run. `terrain.c` gained `tc_camera`, handed out through `terrain.h`, which puts the camera the mouse drives into the island's own terms: the focus and the eye as cell coordinates and the angle as degrees, with the board, the twin and the readout all reading the same five numbers. The readout is drawn along the bottom of the frame while a mouse is driving the camera -- the focus in the cursor's own green and the eye in its red, so which pair is which needs no label, and the bearing in the first entry of the ramp the sprite uses. There is no font in this renderer, so a digit is a seven-segment one and a segment is one rectangle: the readout is built out of `hand_rect`, the same two-triangle call the cursor and the sprite are drawn with, which is why it needed no new command, no font and no palette entry -- the three colours it uses are entries the shading table already admits as candidates, the same reason the cursor came out green rather than olive. It is drawn after the cursor so that it lies over everything, and only when the mouse is driving the camera, which is what keeps every scripted frame this project has on record exactly where it was: HEAD's sources built in a scratch tree drew `TRIS=20445 PIXELS=35831 CRC=5f34a008` and the working tree drew the same three, and that is also entry 40's own sixty-four-card rung, so the record's numbers are confirmed rather than disturbed. Both report lines gained the same numbers -- `main.c` for the board and `host.c` for the twin -- and `run_tang32.sh` now compares `CAMFOCUS`, `CAMEYE` and `CAMTURN` between them beside the frame CRC, which is the check that the readout's numbers are right where the CRC is the check that the pixels they drew are. The board run then passed twice: the six hundred framed orbit with `TRIS=20445 PIXELS=35831 CRC=5f34a008 CAMFOCUS=111,103 CAMEYE=110,283 CAMTURN=539` matching the twin, and the same frames driven by the recorded drag of six hundred reports, where the camera actually moves, with `TRIS=20707 PIXELS=31429 CRC=2d1cf55e CAMFOCUS=114,96 CAMEYE=129,21 CAMTURN=348` on the board and on the twin alike. That second run is the readout's own verification, because those 146 extra triangles and 894 extra pixels are the digits, and the fabric's pixels equal the model's. The readout's cost was then measured rather than asserted, with the same recorded drag run twice: `READOUT=0` draws `TRIS=20561 PIXELS=30535` in a 29,264 us mean frame and `READOUT=1` draws `TRIS=20707 PIXELS=31429` in 29,196 us, so the readout is 146 triangles and 894 pixels a frame and its mean frame time moved 68 us in the cheap direction, which is smaller than a frame of this run varies between runs; the honest statement is that 146 triangles against 20,561 and 894 pixels against 31,429 put it well under one percent and leave it unresolved at this granularity, and no finer number is claimed for it. `READOUT` is in the Makefile with 1 as its default, `build_tang32.sh` and `run_tang32_feel.sh` pass it, and `READOUT=0` builds without the readout at all, for a frame that has to be clean. A driven run from a PC exercises the same path, with `TINYCREATURE_INPUT` naming a file of recorded reports. The core was not rebuilt: nothing in this cycle touched the fabric. The build for the user's hands was deployed with the cards and the tiles on and a 200,000 frame budget, and the board has been showing the readout since, which the user has not reported on. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that this cycle's only `.ai` change is this entry, checked that the reference's fast index and its records list the same eleven ids in the same order with none retired, validated this entry against the template, ordering, prose, Status, numbering and 100-entry rules, and confirmed that the project-control change agrees with the workflow and rewrites no settled history.
+
+#### Next Steps:
+
+The readout is a diagnostic, and the most useful thing it proves is that this renderer can put legible information on the frame for the price of rectangles, which is what a later game HUD, a debug overlay or an on-screen error would need, so a compact variant -- the focus and the bearing only, or the numbers shown only while a button is held -- is cheap to make if the full line ever feels like clutter in the user's hands. The project's own next work is unchanged and still starts where entry 40 left it: the store's size, which is either 256 tiles of BSRAM at 131 of the device's 340 blocks or a working set chosen per scene, a five thousand card rung if a measured number for the wall is ever wanted rather than the 13.6 ms extrapolation, cards that turn and tilt, and a texture path reading from SDRAM rather than BSRAM; a `tools/fetch_tiles.sh` beside `fetch_openblack.sh` and `fetch_tang32.sh` would still make the art reproducible from a clone. The user has not yet judged the readout on the board, and the tiles and the ladder from entries 39 and 40 remain unjudged too. Open from before and unchanged: the ninth bit of the framebuffer; the palette's other half, which is how much of the pool a world that is not Land 1 should take; the cell-shaped command and the display list, both priced and both declined for now; the keyboard, gated on TinyTang gaining keyboard forwarding from the Tiny89 work; flying to a clicked point; the pipe guard in TinyTang; pinning a CRC per recorded input sequence in a tool; the capture card; the Bullet world removal (entry 6); and GAME-001.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/Makefile
+- firmware/terrain/host.c
+- firmware/terrain/main.c
+- firmware/terrain/terrain.c
+- firmware/terrain/terrain.h
+- tools/build_tang32.sh
+- tools/run_tang32.sh
+- tools/run_tang32_feel.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

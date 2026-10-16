@@ -537,6 +537,16 @@ unsigned tc_art_tile_count(void)
 {
 	return ART_TILES;
 }
+
+void tc_camera(int32_t *focus_x, int32_t *focus_z, int32_t *eye_x,
+	       int32_t *eye_z, int32_t *turn)
+{
+	*focus_x = cam_focus_x / CELL;
+	*focus_z = cam_focus_z / CELL;
+	*eye_x = cam_x / CELL;
+	*eye_z = cam_z / CELL;
+	*turn = (int32_t)((uint32_t)cam_turn * 360u >> 16);
+}
 static uint32_t sprite_gx, sprite_gz;   // the cell it stands on
 static int32_t sprite_y;                // the ground there, Q4
 
@@ -1341,6 +1351,90 @@ void tc_soft_card(void *soft, const struct tc_card *c)
 	}
 }
 
+/* The camera readout: where the eye and its focus are, in the island's own
+ * cells, and which way it looks, along the bottom of the frame. This
+ * renderer has rectangles and no font, and a seven-segment digit is seven of
+ * them, so the readout is a few dozen rectangles and no fabric work at all.
+ * It is drawn only when a mouse is driving the camera: a scripted run draws
+ * the frames this project recorded and a readout in them would move every one
+ * of those frame CRCs. */
+#ifndef TC_READOUT
+#define TC_READOUT 1
+#endif
+
+#if TC_READOUT
+/* Which of the seven segments each digit lights, a bit each. */
+static const uint8_t seg_digits[10] = {
+	0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f
+};
+/* The segments as lines of a cell two wide and three tall, in the order the
+ * bits are: a the top, b upper right, c lower right, d the bottom, e lower
+ * left, f upper left, g the middle. */
+static const int8_t seg_lines[7][4] = {
+	{0, 0, 2, 0}, {2, 0, 2, 1}, {2, 1, 2, 2}, {0, 2, 2, 2},
+	{0, 1, 0, 2}, {0, 0, 0, 1}, {0, 1, 2, 1},
+};
+
+static void readout_digit(uint32_t digit, int32_t x, int32_t y, int32_t w,
+			  int32_t h, int32_t t, uint8_t colour)
+{
+	for (unsigned s = 0; s < 7; s++) {
+		if (!(seg_digits[digit] >> s & 1))
+			continue;
+		int32_t x0 = x + seg_lines[s][0] * w / 2;
+		int32_t y0 = y + seg_lines[s][1] * h / 2;
+		int32_t x1 = x + seg_lines[s][2] * w / 2;
+		int32_t y1 = y + seg_lines[s][3] * h / 2;
+		if (y0 == y1)
+			hand_rect(x0, y0 - t / 2, x1, y0 + t / 2, colour);
+		else
+			hand_rect(x0 - t / 2, y0, x0 + t / 2, y1, colour);
+	}
+}
+
+/* One number, three digits, with a column of its own for a minus so that an
+ * eye swung off the island still reads as the negative cell it is. */
+static void readout_number(int32_t value, int32_t *x, int32_t y, int32_t w,
+			   int32_t h, int32_t t, uint8_t colour)
+{
+	uint32_t magnitude = value < 0 ? (uint32_t)(-(int64_t)value)
+				       : (uint32_t)value;
+	int32_t mid = y + h / 2;
+	if (value < 0)
+		hand_rect(*x, mid - t / 2, *x + w, mid + t / 2, colour);
+	*x += w + t;
+	for (int32_t scale = 100; scale >= 1; scale /= 10) {
+		readout_digit(magnitude / (uint32_t)scale % 10, *x, y, w, h, t,
+			      colour);
+		*x += w + t;
+	}
+}
+
+static void draw_readout(void)
+{
+	if (!cam_driven)
+		return;
+	int32_t fx, fz, ex, ez, turn;
+	tc_camera(&fx, &fz, &ex, &ez, &turn);
+	const int32_t w = 96, h = 144, t = 32;   // six by nine pixels, two thick
+	const int32_t y = (TC_HEIGHT - 11) * 16;
+	int32_t x = 2 * 16;
+	/* The focus in the cursor's green and the eye in its red, so which pair
+	 * is which does not need a label. */
+	readout_number(fx, &x, y, w, h, t, TC_CURSOR_IDLE);
+	readout_number(fz, &x, y, w, h, t, TC_CURSOR_IDLE);
+	x += 2 * 16;
+	readout_number(ex, &x, y, w, h, t, TC_CURSOR_HELD);
+	readout_number(ez, &x, y, w, h, t, TC_CURSOR_HELD);
+	x += 2 * 16;
+	readout_number(turn, &x, y, w, h, t, TC_SEA_COLOUR);
+}
+#else
+static void draw_readout(void)
+{
+}
+#endif
+
 // The sprite, as runs of one colour a row, each run the rectangle hand_rect
 // wants. Its base is the middle of the cell it stands on, at the ground
 // there, and its top is TC_SPRITE_UNITS above it: those two projections give
@@ -1585,4 +1679,7 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 				  run->colour);
 		}
 	}
+
+	/* The camera readout goes with it, over everything the frame drew. */
+	draw_readout();
 }

@@ -137,6 +137,27 @@ as two entries of its own; their outline comes out the land's nearest
 near-black. Flying to a clicked point is not implemented; it would want a
 screen-to-land raycast.
 
+While the mouse is driving the camera the frame carries a readout of where it
+is: the focus and the eye in the island's own cells and the bearing in
+degrees, along the bottom, the first pair green and the second red so which is
+which needs no label. There is no font in this renderer, so the digits are
+seven-segment ones and a segment is one rectangle, drawn with the same
+`hand_rect` the cursor and the sprite are drawn with; a digit that needs seven
+segments costs seven of them, which is why the whole readout came to seventy
+rectangles, or 146 triangles, on the frame it was measured on. It is drawn only when a mouse is driving the camera, which is what
+keeps every scripted frame the project has on record byte for byte where it
+was, and `READOUT=0` takes it out of a build altogether. What it costs a frame
+is below what a frame's own variation can resolve: with a recorded drag of six
+hundred reports driving the camera, the same run with the readout off draws
+20,561 triangles and 30,535 pixels in a 29,264 us mean frame and the same run
+with it on draws 20,707 triangles and 31,429 pixels in 29,196 us, so 146
+triangles and 894 pixels a frame, and the mean frame time moved the wrong way
+by 68 us. The run's report carries the same numbers -- `CAMFOCUS=111,103
+CAMEYE=110,283 CAMTURN=539` for a scripted orbit's last frame, and the board
+and the twin agree on them as they do on the frame CRC. A run driven from a PC
+shows it too: `TINYCREATURE_INPUT=<file> tools/run_tang32.sh terrain` is the
+same comparison with recorded reports instead of the scripted orbit.
+
 A tall sprite stands on the island's middle: `tools/convert_sprite.py` stacks
 one of the tile set's two-tile creatures into 32 by 64, trims it to the art,
 tints it and quantises it to the seven palette entries the sea gave up when it

@@ -44,7 +44,8 @@ python3 -I "$root/tools/convert_land.py" "$lnd" "$land"
 echo "Building for $frames frames"
 make -C "$root/firmware/terrain" TINYNES="$source_dir" BUILD="$build" \
     FRAMES="$frames" CARDS="${TINYCREATURE_CARDS:-0}" \
-    TILES="${TINYCREATURE_TILES:-0}" clean all >/dev/null
+    TILES="${TINYCREATURE_TILES:-0}" \
+    READOUT="${TINYCREATURE_READOUT:-1}" clean all >/dev/null
 
 echo "Loading the core"
 python3 "$tinytang/tools/tinytang_run.py" --port "$port" --seconds 1 \
@@ -62,6 +63,8 @@ python3 "$source_dir/tools/load_ae350.py" "$build/terrain.elf" --file "$land" \
 
 cat <<'EOF'
 The board's mouse is driving the camera: middle-drag turns it, left-drag slides
-the land, the wheel moves in and out. Change the TC_* constants in
-firmware/terrain/terrain.h and run this again to try another feel.
+the land, the wheel moves in and out. Where the eye and its focus are, in the
+island's cells, and the bearing in degrees, are drawn along the bottom of the
+frame. Change the TC_* constants in firmware/terrain/terrain.h and run this
+again to try another feel.
 EOF

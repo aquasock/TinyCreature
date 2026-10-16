@@ -112,7 +112,10 @@ if [[ "$program" == terrain* ]]; then
     # The board must draw what this PC drew from the same file.
     field() { tr ' ' '\n' <<<"$1" | sed -n "s/^$2=//p"; }
     board_line=$(grep -a "^$expect" "$log")
-    for name in LAND FRAMES TRIS PIXELS INPUT CRC; do
+    # The camera fields are in both lines because both are the same program:
+    # comparing them checks the readout's own numbers, where the CRC checks the
+    # pixels it drew from them.
+    for name in LAND FRAMES TRIS PIXELS INPUT CRC CAMFOCUS CAMEYE CAMTURN; do
         if [[ "$(field "$board_line" "$name")" != "$(field "$host_line" "$name")" ]]; then
             echo "FAIL: board $name=$(field "$board_line" "$name")," \
                  "host $name=$(field "$host_line" "$name")"

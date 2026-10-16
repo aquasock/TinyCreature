@@ -12,6 +12,7 @@
 //     TRIS=<mean> PIXELS=<mean> DRAW=<us> MAX=<us> FINISH=<us> STALLS=<n>
 //     VBL=<n> VBLMIN=<n> VBLMAX=<n> PERIOD=<us> INPUT=<n> LATE=<n> CRC=<crc>
 //     CELLS=<mean> PHROWS=<us> PHCULL=<us> PHWALK=<us>
+//     CAMFOCUS=<x>,<z> CAMEYE=<x>,<z> CAMTURN=<degrees>
 // LAND is the file's CRC-32; TRIS and PIXELS the mean triangles sent and
 // pixels they filled per frame; DRAW and MAX the mean and longest CPU time
 // to send a frame, FINISH the mean time after that until the rasterizer is
@@ -23,7 +24,11 @@
 // and PHROWS, PHCULL and PHWALK the mean time the frame spent in the sky and
 // sea rows, in the block cull and in the cell walk, which is this program's
 // own profile of a frame, taken with the core's cycle counter and left out of
-// the host's line because the host has no such counter. With the fabric drawing, that CRC
+// the host's line because the host has no such counter. CAMFOCUS and CAMEYE
+// are the cells the camera ended the run looking at and standing in, and
+// CAMTURN its bearing in degrees: what the readout draws when a mouse is
+// driving the camera, and the last frame of the orbit when nothing is. With
+// the fabric drawing, that CRC
 // is the rasterizer's own: it folds each frame's buffer, in address order,
 // into a seed the program passes back, so the scan runs while the next frame
 // is drawn and only one register is read a frame. The last frame stays up. A
@@ -507,10 +512,16 @@ int main(void)
 		fail("LATE");
 	if (shown != lit * 16u)
 		fail("PIXELS");
+	/* Where the camera ended the run: the focus and the eye in the island's own
+	 * cells and the bearing in degrees, which is what the readout draws. A
+	 * scripted run reports the last frame of its orbit. */
+	int32_t cam_focus_x, cam_focus_z, cam_eye_x, cam_eye_z, cam_turn;
+	tc_camera(&cam_focus_x, &cam_focus_z, &cam_eye_x, &cam_eye_z, &cam_turn);
 	printf("TinyCreature TERRAIN OK MODE=%s LAND=%08lx FRAMES=%u TRIS=%lu "
 	       "PIXELS=%lu DRAW=%luus MAX=%luus FINISH=%luus STALLS=%lu "
 	       "VBL=%lu VBLMIN=%lu VBLMAX=%lu PERIOD=%luus INPUT=%lu LATE=%lu "
-	       "CRC=%08lx CELLS=%lu PHROWS=%luus PHCULL=%luus PHWALK=%luus\n",
+	       "CRC=%08lx CELLS=%lu PHROWS=%luus PHCULL=%luus PHWALK=%luus "
+	       "CAMFOCUS=%ld,%ld CAMEYE=%ld,%ld CAMTURN=%ld\n",
 	       FABRIC ? "FABRIC" : "SOFT", (unsigned long)land_crc, (unsigned)FRAMES,
 	       (unsigned long)(tris / FRAMES), (unsigned long)(pixels / FRAMES),
 	       (unsigned long)(draw / FRAMES / us), (unsigned long)(longest / us),
@@ -521,6 +532,8 @@ int main(void)
 	       (unsigned long)(cells / FRAMES),
 	       (unsigned long)(phase_sum[TC_PHASE_ROWS] / FRAMES / us),
 	       (unsigned long)(phase_sum[TC_PHASE_CULL] / FRAMES / us),
-	       (unsigned long)(phase_sum[TC_PHASE_WALK] / FRAMES / us));
+	       (unsigned long)(phase_sum[TC_PHASE_WALK] / FRAMES / us),
+	       (long)cam_focus_x, (long)cam_focus_z, (long)cam_eye_x,
+	       (long)cam_eye_z, (long)cam_turn);
 	return 0;
 }
