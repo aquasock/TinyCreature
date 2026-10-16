@@ -54,6 +54,13 @@ SPRITE_CPPFLAGS := -I$(BUILD)/sprite -DTC_SPRITE_HEADER='"$(notdir $(SPRITE_H))"
 # The art's cards. Off by default, and the switch has to reach both the program
 # and the host twin or they would be asked for different frames; run_cards.sh
 # and the run scripts pass it.
+# The handover: whether the program hands the link back to the desk layer so
+# the board's own mouse and keyboard can drive it (TANG-001). Off by default,
+# because a gated run's frames come from the input replayed out of the land
+# file's tail and a live mouse must not move the camera under them; the demo
+# and feel builds pass HANDOVER=1.
+HANDOVER    ?= 0
+
 CARDS       ?= 0
 CARDS_N     ?= 64
 # The camera readout, on by default: a driven run draws where the eye and its
@@ -97,7 +104,8 @@ COMMON_CPPFLAGS := $(SPRITE_CPPFLAGS) -DTC_CARDS=$(CARDS) \
                    -DTC_PIN_DIST=$(PIN_DIST) -DTC_PIN_PITCH=$(PIN_PITCH) \
                    -DTC_CARD_YAW=$(CARD_YAW) -DTC_CARD_DEPTH=$(CARD_DEPTH) \
                    -DTC_CARD_UNITS=$(CARD_UNITS) \
-                   -DTC_CARD_COLUMN_PX=$(CARD_COLUMN_PX) -DTC_TEX=$(CARD_TEX)
+                   -DTC_CARD_COLUMN_PX=$(CARD_COLUMN_PX) -DTC_TEX=$(CARD_TEX) \
+                   -DTC_HANDOVER=$(HANDOVER)
 
 # The art's tiles: a generated header, off by default because the art is
 # fetched rather than committed, so a fresh clone builds. TILES=1 wants the

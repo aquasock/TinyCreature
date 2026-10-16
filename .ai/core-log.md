@@ -1693,3 +1693,37 @@ The open defect comes first and comes as a reproduction and not as a guess: at 2
 - User Test: NOT RUN
 
 ---
+
+## 52 COMMIT Unreleased 2026-10-16T15:00:16-07:00
+
+#### Coming From:
+
+Unreleased ffe58de
+
+#### Purpose:
+
+Give the demo its own creatures out of the game's icon art and let the board's own mouse fly it from a desktop launcher, so the card work entry 51 measured can be seen and driven with no PC in the loop.
+
+#### Outcome:
+
+Both landed, and the first finding is that the renderer never needed changing. The crowd already walked the art's tiles -- `card_at(wx, ground(wx, wz), wz, i % ART_TILES)`, under a comment saying "past the art's last tile they start again from the first, which is how a crowd of one kind is drawn" -- so "a different creature on every card" is what that line does the moment the build has more than one tile. What the build had was `TILES=0`, which leaves `ART_TILES` at the four built-in procedural test tiles, and those four are what the user was looking at when they reported squares with distorted pixels; the agent told them twice that the blockiness was structural, and it was not. `tools/make_animal_sheet.py` is new and is the missing step between the icons and `tools/convert_tiles.py`: Dungeon Crawl Stone Soup ships its monster art one 32 by 32 PNG an icon and the tile converter reads one sheet, so the tool lays the icons on a square grid in sorted filename order -- which is what makes the same sheet every run -- and pads the grid with transparency. Sixty-four of the hundred and sixty animals are used, that being what `fpga/raster.sv`'s tile store holds; the sheet and the generated headers are build products, never committed, which `/build/` being ignored and the art not being this project's both require. A wart worth recording: the sixty-four are the first sixty-four by filename, which is sixteen butterflies, because the alphabet runs out around `giant_cockroach`; nothing later than that -- no wolf, no yak, no polar bear -- can appear until the list is curated or the store grows. The demo is the game's own Land 1 with a thousand villager-sized cards standing on it, each one a different creature, drawn as textured triangles at 32 by 32 in a shared sixty-four-colour palette, so the crowd is a menagerie in colour rather than a herd of blue silhouettes; the sprite ramp is the cursor's path and was never the cards'. The second finding is where the flying was lost. The program already read a live mouse from the link -- `TC_FRAME_INPUT 0x16`, `input_report()`, and a `live_report` flag for "the link delivered one" -- and nothing about that path was missing; what it never did was hand the link back, so `ae350run`, which is what a board-side launcher has, held the link for the whole run and the board's mouse and keyboard could not reach the program at all (core-reference TANG-001). That is why the desktop icon showed a camera that only drifted. `firmware/terrain/main.c` now prints `TinyNES LINK` once everything is set up and before the first frame -- the same line Tiny89's program prints for the same reason -- behind a new `TC_HANDOVER`, defaulted to 0 by the new `HANDOVER` knob in `firmware/terrain/Makefile`, because a gated run's frames come from input replayed out of the land file's tail and a live mouse must not move the camera under them. The demo built with `CARD_TEX=1 TILES=1 TILES_SHEET=build/animals/sheet.png HANDOVER=1 CARDS=1000 CARD_UNITS=80`, 500,220 bytes, with `-DTC_HANDOVER` and the `TinyNES LINK` string both confirmed in the binary; `tools/tinycreature.tdsh` is new and is the desktop launcher, and `tools/make_animal_sheet.py` and it were both put on the card with `tools/tinytang_put.py`. The user ran it from the desktop icon, flew it with the board's own mouse, and accepted it. Two smaller things went in. The `TC_TEX` comment in `firmware/terrain/terrain.c` said "the fabric's cannot yet: a board build falls back to the columns whatever this says", which stopped being true at entry 49 and which the agent believed over the hardware twice tonight; it now says what is true, that the switch is a choice and not a limit on the board and that entry 52's demo draws its cards with it on. And a wart of the shell: `tdsh`'s `mkdir` has no `-p`, so it returns success and creates nothing, which cost a deployment and is worth knowing before the next card script. The core was not rebuilt, its image being entry 49's. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry against the template, the ordering, the prose, the Status values, this sequential number and the 100-entry limit.
+
+#### Next Steps:
+
+Small and specific. TinyCreature's own `tools/run_tang32_feel.sh` should pass `HANDOVER=1` when it builds, so that the board hands the link back itself and the twenty-second window becomes belt and braces rather than the mechanism the flying depends on; the two paths then agree. The animal list wants curating, since sixty-four slots and an alphabetical cut gives sixteen butterflies and nothing after the letter g -- either a chosen list or dropping the `_old`, `_new` and numbered variants, and `--count` and the sort in `make_animal_sheet.py` are the only things to touch. That tool's name is animal-specific while the tool is not, so `make_tile_sheet.py` would be the honest name if a second caller ever appears. Entry 51's open defect still stands unchanged and un-reproduced: at 2,000 villager-sized cards the board stops with `BAD TINYCREATURE PIXELS` while 1,500 passes, and `tools/measure_tang32.sh` with `TINYCREATURE_MEASURE_CARDS` is the single command that brackets it. The rest of entry 51's queue stands as it was written. Nothing here touched the gates: `CARD_TEX` and `HANDOVER` both default to off, so every recorded frame and every CRC the board and the twin are compared on is where entry 51 left it.
+
+#### Files Modified:
+
+- firmware/terrain/Makefile
+- firmware/terrain/main.c
+- firmware/terrain/terrain.c
+- tools/make_animal_sheet.py
+- tools/tinycreature.tdsh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

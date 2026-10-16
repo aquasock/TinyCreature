@@ -1,0 +1,147 @@
+#!/bin/tdsh
+# tinycreature.tdsh - load the TinyCreature Tang32 core and run its demo.
+#
+# Run it from the desktop -- right-click its icon and choose Run -- or from the
+# console or the Terminal:
+#
+#     tdsh run /root/Desktop/tinycreature.tdsh
+#
+# Put it on the card with TinyTang's tool, from the TinyTang repository:
+#
+#     python3 "$TINYTANG_DIR/tools/tinytang_put.py" --port /dev/ttyACM0 \
+#         tools/tinycreature.tdsh /root/Desktop/tinycreature.tdsh
+#
+# THE DEMO. The game's own Land 1 with a thousand villager-sized cards standing
+# on it, each one a different creature drawn from Dungeon Crawl Stone Soup's
+# monster icons: 64 of them, 32 by 32 each, in a shared 64-colour palette, so
+# the crowd is a menagerie rather than a herd. The fabric draws the cards as
+# textured triangles, which is what the card faces are for since entry 49, and
+# the camera opens on the island's middle looking across it.
+#
+# It runs for 24000 frames at the twenty-a-second hold, about twenty minutes,
+# and then stops on its own and reports on this Terminal. What it reports is
+# its own gate: `TinyCreature TERRAIN OK` with the triangle, pixel, cell and
+# CRC figures, or `BAD TINYCREATURE PIXELS` if the board and the PC's twin drew
+# different pictures. The picture is up from the first frame; the line at the
+# end is the verdict.
+#
+# IT IS FLOWN WITH THE BOARD'S OWN MOUSE. The demo build hands the link back
+# to the desk layer just before its first frame -- `TinyNES LINK`, the same line
+# Tiny89's program prints -- which is what lets TinyTang's mouse and keyboard
+# reach it: they are sent as input frames only while no host holds the link
+# (core-reference TANG-001), and ae350run holds it until it sees that line.
+# Middle-drag turns and tilts the camera, left-drag slides the land, the wheel
+# moves in and out, and where the eye and its focus are, in the island's cells,
+# with the bearing in degrees, is drawn along the bottom of the frame. Leave
+# the mouse alone and the camera sits where it was.
+#
+# The line is guarded by the build's HANDOVER, which is 0 by default: a gated
+# run's frames come from the input replayed out of the land file's tail and a
+# live mouse must not move the camera under them. This demo is built with
+# HANDOVER=1, and so is TinyCreature's own tools/run_tang32_feel.sh on the PC,
+# which reaches the same state from the other end by letting go of the port.
+#
+# The two programs it needs on the card, and the core:
+#
+#     the core     /root/cores/console138k/tinycreature-tang32.bin
+#     the demo     /root/ae350/tinycreature-cards.elf
+#     the land     /root/media/tinycreature/Land1.tcl
+#
+# Both are TinyCreature's build tree as it stands. The art is baked into the
+# program, so changing the creature or the count is a rebuild and not a
+# setting; `tools/make_animal_sheet.py` composes the sheet the tiles come from,
+# and firmware/terrain's Makefile takes the rest as CARD_UNITS, CARDS, TILES,
+# CARD_TEX and PIN_DIST. PROGRAM picks an earlier build when one is wanted:
+#
+#     PROGRAM=terrain; tdsh run /root/Desktop/tinycreature.tdsh
+#     PROGRAM=video;   tdsh run /root/Desktop/tinycreature.tdsh
+#
+# The core is TinyNES's AE350, J9 SDRAM, UART loader and 720p HDMI foundation
+# without its NES desk, audio and controller blocks, so this is tangload and
+# then ae350run and nothing else: there is no desktop layer in it to hand the
+# screen to.
+
+if "$CORE" == ""
+    CORE=/root/cores/console138k/tinycreature-tang32.bin
+endif
+if "$PROGRAM" == ""
+    PROGRAM=cards
+endif
+if "$CARDS" == ""
+    CARDS=/root/ae350/tinycreature-cards.elf
+endif
+if "$TERRAIN" == ""
+    TERRAIN=/root/ae350/tinycreature-terrain.elf
+endif
+if "$VIDEO" == ""
+    VIDEO=/root/ae350/tinycreature-video.elf
+endif
+if "$LAND" == ""
+    LAND=/root/media/tinycreature/Land1.tcl
+endif
+
+echo "tinycreature: core    $CORE"
+echo "tinycreature: program $PROGRAM"
+
+if test -f "$CORE"
+    echo "tinycreature: core image found"
+else
+    echo "tinycreature: no core image at $CORE"
+    return 1
+endif
+
+FILE=""
+if "$PROGRAM" == "cards"
+    PLAYER="$CARDS"
+    FILE="$LAND"
+else
+    if "$PROGRAM" == "terrain"
+        PLAYER="$TERRAIN"
+        FILE="$LAND"
+    else
+        if "$PROGRAM" == "video"
+            PLAYER="$VIDEO"
+        else
+            echo "tinycreature: unknown program $PROGRAM; try cards, terrain or video"
+            return 1
+        endif
+    endif
+endif
+
+if test -f "$PLAYER"
+    echo "tinycreature: program found"
+else
+    echo "tinycreature: no program at $PLAYER"
+    return 1
+endif
+
+if "$FILE" != ""
+    if test -f "$FILE"
+        echo "tinycreature: land    $FILE"
+    else
+        echo "tinycreature: no land file at $FILE"
+        echo "tinycreature: run TinyCreature's tools/convert_land.py on the PC to"
+        echo "tinycreature: make it from the game's Land1.lnd, and put it here"
+        return 1
+    endif
+endif
+
+echo "tinycreature: programming the FPGA"
+tangload "$CORE"
+if $? != 0
+    echo "tinycreature: the core did not load"
+    return 1
+endif
+
+echo "tinycreature: sending the demo; it reports here when the run ends"
+echo "tinycreature: the picture is up once it has drawn a frame"
+echo "tinycreature: then the board's mouse flies it -- middle-drag turns and"
+echo "tinycreature: tilts, left-drag slides, the wheel moves in and out"
+if "$FILE" != ""
+    ae350run "$PLAYER" "$FILE"
+else
+    ae350run "$PLAYER"
+endif
+RESULT=$?
+echo "tinycreature: the program stopped ($RESULT)"
+return $RESULT

@@ -123,6 +123,13 @@ static void wait_scan(void)
 			fail("CRC BUSY");
 }
 
+/* Whether the program hands the link back to the desk layer once it is about
+ * to draw, so that the board's own mouse and keyboard drive it.  Off by
+ * default: see the use, and what it does to a gated run. */
+#ifndef TC_HANDOVER
+#define TC_HANDOVER 0
+#endif
+
 /* ---- input: the mouse, as TinyTang sends it ---- */
 
 /* What a report carried, one slot a frame, and what the untagged reports of a
@@ -440,6 +447,19 @@ int main(void)
 	uint64_t tris = 0, pixels = 0, draw = 0, longest = 0, finish = 0;
 	uint32_t vbl_min = ~0u, vbl_max = 0;
 	uint64_t start = tn_cycles64();
+	/* The link goes back to the desk layer here, before the first frame, which
+	 * is what lets the board's own mouse and keyboard reach this program:
+	 * TinyTang sends them as input frames only while no host holds the link
+	 * (core-reference TANG-001), and a loader holds it until it sees this line.
+	 * Tiny89's program prints the same one for the same reason.  It is off in
+	 * the gated builds -- `HANDOVER=0` is the default and `run_tang32.sh`
+	 * passes nothing -- because their frames come from the input replayed out
+	 * of the land file's tail and must not have a live mouse moving the camera
+	 * under them. */
+#if TC_HANDOVER
+	printf("TinyNES LINK\n");
+	fflush(stdout);
+#endif
 	for (uint32_t frame = 0; frame < FRAMES; frame++) {
 		uint32_t blanks = TN_VIDEO_FRAMES;
 		in_applied += input_frame(frame);

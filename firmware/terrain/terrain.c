@@ -1659,10 +1659,12 @@ static void draw_sprite(void)
 #endif
 
 /* Whether a card's faces are drawn as textured triangles rather than as columns
- * of rectangles. Off by default because a target only has a tex function when
- * its rasterizer can fill one, and the fabric's cannot yet: a board build falls
- * back to the columns whatever this says, which is what keeps the gates the
- * board and the twin are compared on the same build. */
+ * of rectangles. Off by default, and it has to reach both the program and the
+ * host twin or they would be asked for different frames, which is why the gate
+ * runs pass CARD_TEX either way. It is a choice and not a limit on the board:
+ * the fabric fills textured triangles (entry 49), and entry 52's demo is built
+ * with this on and draws its cards that way. A target whose rasterizer has no
+ * tex function still falls back to the columns whatever this says. */
 #ifndef TC_TEX
 #define TC_TEX 0
 #endif
