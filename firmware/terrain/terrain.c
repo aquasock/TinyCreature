@@ -1408,6 +1408,75 @@ void tc_soft_card(void *soft, const struct tc_card *c)
 	}
 }
 
+/* A textured triangle, as fpga/raster.sv fills one: the same coverage rule as
+ * a shaded triangle, three planes stepped a Q4 unit at a time instead of a
+ * weight the fill counts, and the texel the quotient of the first two by the
+ * third names. The quotient truncates towards zero and the texel is clamped
+ * into the tile, which is what the fabric's restoring divide and its address
+ * arithmetic do. The planes' own steps are the integers the caller worked out,
+ * so the twin and the fabric advance by the same increments and cannot drift. */
+void tc_soft_tex(void *soft, const struct tc_tex *t)
+{
+	struct tc_soft *s = soft;
+	const uint8_t *art = art_tile(t->tile);
+	if (art == NULL)
+		return;
+	int32_t lo = t->x[0], hi = t->x[0], top = t->y[0], bottom = t->y[0];
+	for (unsigned k = 1; k < 3; k++) {
+		lo = t->x[k] < lo ? t->x[k] : lo;
+		hi = t->x[k] > hi ? t->x[k] : hi;
+		top = t->y[k] < top ? t->y[k] : top;
+		bottom = t->y[k] > bottom ? t->y[k] : bottom;
+	}
+	int32_t i0 = lo >> 4, i1 = hi >> 4, j0 = top >> 4, j1 = bottom >> 4;
+	if (i0 < 0)
+		i0 = 0;
+	if (j0 < 0)
+		j0 = 0;
+	if (i1 > TC_WIDTH - 1)
+		i1 = TC_WIDTH - 1;
+	if (j1 > TC_HEIGHT - 1)
+		j1 = TC_HEIGHT - 1;
+	s->triangles++;
+	for (int32_t j = j0; j <= j1; j++) {
+		int32_t py = j * 16 + 8;
+		uint8_t *row = s->fb + (size_t)j * s->stride;
+		for (int32_t i = i0; i <= i1; i++) {
+			int32_t px = i * 16 + 8;
+			int32_t f[3];
+			for (unsigned k = 0; k < 3; k++) {
+				int32_t ax = t->x[k], ay = t->y[k];
+				int32_t bx = t->x[(k + 1) % 3];
+				int32_t by = t->y[(k + 1) % 3];
+				f[k] = (by - ay) * (px - ax) - (bx - ax) * (py - ay);
+			}
+			if (f[0] < 0 || f[1] < 0 || f[2] < 0)
+				continue;
+			int32_t dx = px - t->x[0], dy = py - t->y[0];
+			int64_t num_u = (int64_t)t->u0 + (int64_t)dx * t->ux +
+					(int64_t)dy * t->uy;
+			int64_t num_v = (int64_t)t->v0 + (int64_t)dx * t->vx +
+					(int64_t)dy * t->vy;
+			int64_t den = (int64_t)t->r0 + (int64_t)dx * t->rx +
+				      (int64_t)dy * t->ry;
+			if (den == 0)
+				continue;
+			int32_t u = (int32_t)(num_u / den) >> 4;
+			int32_t v = (int32_t)(num_v / den) >> 4;
+			if (u < 0)
+				u = 0;
+			if (u > TC_TILE_SIZE - 1)
+				u = TC_TILE_SIZE - 1;
+			if (v < 0)
+				v = 0;
+			if (v > TC_TILE_SIZE - 1)
+				v = TC_TILE_SIZE - 1;
+			row[i] = (uint8_t)(TC_ART_FIRST + art[v * TC_TILE_SIZE + u]);
+			s->pixels++;
+		}
+	}
+}
+
 /* The camera readout: where the eye and its focus are, in the island's own
  * cells, and which way it looks, along the bottom of the frame. This
  * renderer has rectangles and no font, and a seven-segment digit is seven of
@@ -1580,6 +1649,15 @@ static void draw_sprite(void)
 #define TC_CARD_COLUMNS_MAX 24
 #endif
 
+/* Whether a card's faces are drawn as textured triangles rather than as columns
+ * of rectangles. Off by default because a target only has a tex function when
+ * its rasterizer can fill one, and the fabric's cannot yet: a board build falls
+ * back to the columns whatever this says, which is what keeps the gates the
+ * board and the twin are compared on the same build. */
+#ifndef TC_TEX
+#define TC_TEX 0
+#endif
+
 /* The box's eight corners: corner c has bit 2 for +u, bit 1 for +v and bit 0
  * for +n, where u runs across the face, v up and n out of its front. */
 static void card_corners(int32_t wx, int32_t wy, int32_t wz, uint32_t yaw,
@@ -1628,9 +1706,51 @@ static unsigned card_columns(int32_t width)
 	return (unsigned)n;
 }
 
+/* The plane through three screen points and the values at them, as the value
+ * at the first point and its step a Q4 unit across and down. The determinant is
+ * twice the triangle's own area, and the caller's winding keeps it off zero. */
+static void tex_plane(const int32_t *x, const int32_t *y, const int64_t *v,
+		      int32_t *v0, int32_t *vx, int32_t *vy)
+{
+	int64_t d1x = x[1] - x[0], d1y = y[1] - y[0];
+	int64_t d2x = x[2] - x[0], d2y = y[2] - y[0];
+	int64_t det = d1x * d2y - d2x * d1y;
+	int64_t a1 = v[1] - v[0], a2 = v[2] - v[0];
+	*v0 = (int32_t)v[0];
+	if (det == 0) {
+		*vx = 0;
+		*vy = 0;
+		return;
+	}
+	*vx = (int32_t)((a1 * d2y - a2 * d1y) / det);
+	*vy = (int32_t)((a2 * d1x - a1 * d2x) / det);
+}
+
+/* A quad as the two triangles the fill draws it with, from four Q4 screen
+ * corners in the perimeter order and the winding the edge functions want: down
+ * the left side, along the bottom, and back along the diagonal, the same pair
+ * hand_rect's two triangles are. The split is on the first corner's diagonal to
+ * the third, which is the pair of triangles that covers the quad once; a split
+ * on the other diagonal leaves one of them wound the wrong way and the fill
+ * rejects it. */
+static void hand_quad(const int32_t *sx, const int32_t *sy, uint8_t colour)
+{
+	static const unsigned tri[2][3] = { { 0, 1, 2 }, { 0, 2, 3 } };
+	uint32_t colours = colour * 0x010101u;
+	for (unsigned t = 0; t < 2; t++) {
+		int32_t x[3], y[3];
+		for (unsigned k = 0; k < 3; k++) {
+			x[k] = sx[tri[t][k]];
+			y[k] = sy[tri[t][k]];
+		}
+		out->triangle(out->ctx, x, y, colours);
+		counts->triangles++;
+	}
+}
+
 static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 {
-	if (out->card == NULL)
+	if (out->card == NULL && out->tex == NULL)
 		return;
 	int32_t bx[8], by[8], bz[8];
 	card_corners(wx, wy, wz, TC_CARD_YAW, bx, by, bz);
@@ -1651,6 +1771,9 @@ static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 		int32_t z;                          /* how far away its middle is */
 		uint32_t tile;                      /* TC_FACE_SOLID for the edges */
 		uint8_t c0, c1, c2, c3;             /* the sweep: c0->c1, c2->c3 */
+		int32_t sx[4], sy[4];               /* the four corners, Q4 screen */
+		int32_t cz[4];                      /* their camera-space depths, Q4 */
+		int32_t tu[4], tv[4];               /* the tile's Q4 texels at each */
 	};
 	struct card_face face[6];
 	unsigned used = 0;
@@ -1696,6 +1819,7 @@ static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 		int32_t lo = 0x7fffffff, hi = -0x7fffffff;
 		int32_t top = 0x7fffffff, bottom = -0x7fffffff;
 		int32_t zsum = 0;
+		int32_t fx4[4], fy4[4], fz4[4];
 		for (unsigned k = 0; k < 4; k++) {
 			unsigned c = face_corner[f][k];
 			int32_t x, y, z, sx, sy;
@@ -1703,6 +1827,9 @@ static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 			if (z < NEAR)
 				z = NEAR;
 			project_xy(x, y, z, &sx, &sy);
+			fx4[k] = sx;
+			fy4[k] = sy;
+			fz4[k] = z;
 			lo = sx < lo ? sx : lo;
 			hi = sx > hi ? sx : hi;
 			top = sy < top ? sy : top;
@@ -1755,6 +1882,24 @@ static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 			p->c0 = (uint8_t)k0; p->c1 = (uint8_t)k1;
 			p->c2 = (uint8_t)k2; p->c3 = (uint8_t)k3;
 		}
+		for (unsigned k = 0; k < 4; k++) {
+			p->sx[k] = fx4[k];
+			p->sy[k] = fy4[k];
+			p->cz[k] = fz4[k];
+			/* The tile's own axes on this face: u across its width --
+			 * the same pairing the sweep above is read from -- and v up
+			 * it, so the tile's top row is the face's top. Both are Q4
+			 * texels of the tile. u runs against the box's own u because
+			 * that is the way the rectangle fill has always laid the art
+			 * down, and the way a face toward the camera reads as the
+			 * tile: this projection puts the world's u on the left of a
+			 * camera looking along -z, so the tile's left edge has to be
+			 * the world's u end to keep the picture the same way round. */
+			unsigned c = face_corner[f][k];
+			p->tu[k] = ((k0 ^ k2) & 4u) ? (k < 2 ? TC_TILE_SIZE * 16 : 0)
+						  : (k % 2 == 0 ? TC_TILE_SIZE * 16 : 0);
+			p->tv[k] = (c & 2) ? 0 : TC_TILE_SIZE * 16;
+		}
 	}
 
 	/* Farthest first, so a near face paints over the one behind it. */
@@ -1768,6 +1913,62 @@ static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 
 	for (unsigned a = 0; a < used; a++) {
 		const struct card_face *p = &face[a];
+		if (TC_TEX && out->tex != NULL) {
+			/* The face as two triangles built from its own four
+			 * projected corners, which is the point of the command: the
+			 * outline is the quadrilateral exactly, a textured face's
+			 * texels are the projective quotient of the planes the fill
+			 * steps, and a solid edge is two flat triangles. The winding
+			 * the fill's edge functions want has the interior to the left
+			 * of every directed edge, and the perimeter is reversed if the
+			 * projection came out the other way round. */
+			int ord[4] = { 0, 1, 3, 2 };
+			int64_t area = 0;
+			for (unsigned k = 0; k < 4; k++) {
+				int q0 = ord[k], q1 = ord[(k + 1) & 3];
+				area += (int64_t)p->sx[q0] * p->sy[q1] -
+					(int64_t)p->sx[q1] * p->sy[q0];
+			}
+			if (area > 0) {
+				int t = ord[1];
+				ord[1] = ord[3];
+				ord[3] = t;
+			}
+			int32_t qx[4], qy[4];
+			for (unsigned k = 0; k < 4; k++) {
+				qx[k] = p->sx[ord[k]];
+				qy[k] = p->sy[ord[k]];
+			}
+			if (p->tile == TC_FACE_SOLID) {
+				hand_quad(qx, qy, TC_CURSOR_EDGE);
+				continue;
+			}
+			for (unsigned tri = 0; tri < 2; tri++) {
+				int c[3];
+				/* The perimeter's positions, not the box corners they
+				 * index: this split is the first-to-third diagonal. */
+				c[0] = 0;
+				c[1] = tri == 0 ? 1 : 2;
+				c[2] = tri == 0 ? 2 : 3;
+				struct tc_tex t;
+				int64_t U[3], V[3], R[3];
+				t.tile = p->tile;
+				for (unsigned n = 0; n < 3; n++) {
+					int32_t z = p->cz[ord[c[n]]];
+					t.x[n] = qx[c[n]];
+					t.y[n] = qy[c[n]];
+					U[n] = ((int64_t)p->tu[ord[c[n]]] << TC_TEX_SCALE) / z;
+					V[n] = ((int64_t)p->tv[ord[c[n]]] << TC_TEX_SCALE) / z;
+					R[n] = ((int64_t)1 << TC_TEX_SCALE) / z;
+				}
+				tex_plane(t.x, t.y, U, &t.u0, &t.ux, &t.uy);
+				tex_plane(t.x, t.y, V, &t.v0, &t.vx, &t.vy);
+				tex_plane(t.x, t.y, R, &t.r0, &t.rx, &t.ry);
+				out->tex(out->ctx, &t);
+				counts->triangles++;
+			}
+			continue;
+		}
 		/* A face is drawn as a run of columns rather than as one
 		 * rectangle, and every column is drawn from its own four
 		 * projected corners, so the outline follows the quadrilateral the

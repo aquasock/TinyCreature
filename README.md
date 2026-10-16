@@ -257,6 +257,40 @@ with `TRIS` 20609 to 20676 and `PIXELS` 35611 to 35839, while the pinned view,
 which opens facing the card, drew the identical frame at `8e9ba88f` and wrote
 114 more pixels where columns meet. `CELLS` is unchanged at 18,158.
 
+The columns are the cheap stop before the real thing, and the real thing has a
+model now. A textured triangle's command carries three Q4 screen corners, a
+tile, and, for each of the tile's u, its v and the reciprocal of the
+camera-space depth, the plane the fill interpolates: the value at the first
+corner and a step a Q4 unit across and down, which the caller works out because
+the fabric has no divider. The fill steps those planes, adds, and writes the
+texel the quotient of the first two by the third names, which is what makes the
+mapping projective rather than affine. The planes are scaled by twenty bits so
+that a card at ten cells has a denominator near a hundred and one at two hundred
+cells a denominator above five, and the quotient resolves better than a
+sixteenth of a texel at both. `TEX=1` draws a card's faces as two triangles each
+from their own four projected corners, and its solid edges as two flat
+triangles, so no part of a card is a rectangle any more except the tile itself.
+
+What that measures, at seventy-one degrees of tilt and thirty of yaw, against
+the card's true outline of 645 pixels: one rectangle a face painted 885 pixels
+with 408 of them outside the outline and 168 of it missed; three-pixel columns
+painted the face's 496 art pixels with 64 outside it; the triangles paint 645
+with none outside and none missed, and the texel the fill produces sits a mean
+0.048 and at most 0.144 texels of 32 from the exact homography, where a column's
+rows stepped 3.3 texels at every seam. `TEX=0` is the default and draws the
+columns exactly as before, so every card frame CRC on record is untouched: the
+board's fabric has no TEX command yet, and `TEX=1` on a board build falls back
+to the columns, which is what keeps the gate the board and the twin are compared
+on one build. The fabric follows in its own cycle.
+
+One thing the model turned up and does not fix: this projection puts the world's
+u on the left of a camera looking along -z with up +y, where a right-handed one
+puts it on the right, so the 3D image is left-right mirrored against the world's
+own axes. The tile's u therefore runs against the box's u, which is what the
+rectangle fill always did and what keeps the art reading the way the user
+accepted it. Whether the projection itself should be corrected is its own
+question, and every scripted frame would move if it were.
+
 A tall sprite stands on the island's middle: `tools/convert_sprite.py` stacks
 one of the tile set's two-tile creatures into 32 by 64, trims it to the art,
 tints it and quantises it to the seven palette entries the sea gave up when it

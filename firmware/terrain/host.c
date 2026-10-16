@@ -60,6 +60,29 @@ static void card(void *ctx, const struct tc_card *c)
 	tc_soft_card(ctx, c);
 }
 
+// A textured triangle's words, in the shape fpga/raster.sv will take them when
+// it gains the command: the opcode and the tile, the three Q4 screen corners,
+// then the nine plane numbers the fill steps. The twin's own fill follows from
+// the same fields, so the file the testbench replays and the pixels it is
+// compared against cannot disagree about a triangle. The exact packing is the
+// fabric cycle's business; what matters here is that both renderers take the
+// numbers the caller worked out.
+static void tex(void *ctx, const struct tc_tex *t)
+{
+	if (commands) {
+		fprintf(commands, "%08x\n", 4u << 28 | t->tile << 16);
+		for (int k = 0; k < 3; k++)
+			fprintf(commands, "%08x\n",
+				(uint32_t)(uint16_t)t->y[k] << 16 |
+					(uint32_t)(uint16_t)t->x[k]);
+		const int32_t n[9] = { t->u0, t->ux, t->uy, t->v0, t->vx,
+				       t->vy, t->r0, t->rx, t->ry };
+		for (int k = 0; k < 9; k++)
+			fprintf(commands, "%08x\n", (uint32_t)n[k]);
+	}
+	tc_soft_tex(ctx, t);
+}
+
 // What the fabric needs before its first triangle: the palette in the five
 // bits a channel the shading works in, and the table from a colour those
 // channels make back to a land entry. $readmemh reads both in this form.
@@ -226,7 +249,7 @@ int main(int argc, char **argv)
 	struct tc_soft soft = {.fb = &frame[0][0], .stride = TC_WIDTH,
 			       .pal5 = shade.pal5, .lut = shade.lut};
 	const struct tc_target target = {.rows = rows, .triangle = triangle,
-					.ctx = &soft, .card = card};
+					.ctx = &soft, .card = card, .tex = tex};
 	for (uint32_t i = 0; i < frames; i++) {
 		int chosen = 0;
 		char path[4096];

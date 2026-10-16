@@ -61,6 +61,31 @@ struct tc_card {
 	uint32_t u0, v0;          /* Q8 texels the first pixel stands at */
 };
 
+/* A textured triangle: three Q4 screen corners, one tile of the art, and the
+ * three planes the fill interpolates -- the tile's u, its v and the reciprocal
+ * of the camera-space depth -- each as its value at the first corner and its
+ * step a Q4 screen unit across and down. The fill steps those planes, adds,
+ * and writes the texel the quotient of the first two by the third names, which
+ * is what makes the mapping projective rather than affine; the caller works
+ * the planes out because the fabric has no divider at setup and does not need
+ * one if it is handed the coefficients.
+ *
+ * A corner's numerator is (u << TC_TEX_SCALE) / z and its denominator
+ * (1 << TC_TEX_SCALE) / z, so the quotient is the texel coordinate in Q4 with
+ * the scale cancelled. u and v are Q4 texels of the tile, z is Q4 camera-space
+ * units, and TC_TEX_SCALE is what keeps the steps and the products the fill
+ * takes with them inside 32 bits: at twenty bits a card at ten cells has a
+ * denominator near 100 and one at two hundred cells a denominator above 5,
+ * so the quotient resolves better than a sixteenth of a texel at both. */
+#define TC_TEX_SCALE 20
+struct tc_tex {
+	uint32_t tile;             /* which tile of the art */
+	int32_t x[3], y[3];        /* Q4 screen corners, in the fill's order */
+	int32_t u0, ux, uy;        /* tile u at corner 0, per Q4 across, per Q4 down */
+	int32_t v0, vx, vy;        /* tile v the same way */
+	int32_t r0, rx, ry;        /* 1/z the same way */
+};
+
 /* Where a frame goes. rows fills rows first to end - 1 with one colour;
  * triangle fills a triangle given as three Q4 screen corners, each
  * coordinate within -32768 to 32767, in the order fpga/raster.sv requires,
@@ -75,6 +100,9 @@ struct tc_target {
 	void (*triangle)(void *ctx, const int32_t *x, const int32_t *y,
 			 uint32_t colours);
 	void (*card)(void *ctx, const struct tc_card *card);
+	/* A target with no tex function is one whose rasterizer cannot draw a
+	 * textured triangle yet, and the program falls back to the columns. */
+	void (*tex)(void *ctx, const struct tc_tex *tex);
 	void *ctx;
 	/* The board's cycle counter and the durations it measures into, both NULL
 	 * for the host twin: a profile is the board's alone, and the host's frames
@@ -134,6 +162,10 @@ int tc_pin(int32_t *x, int32_t *z);
  * way, so that a mismatch between the two is a mismatch of this arithmetic
  * and not of a duplicated copy of it. */
 void tc_soft_card(void *soft, const struct tc_card *c);
+/* The same for a textured triangle: the twin implements fpga/raster.sv's fill
+ * rule for the TEX command, stepping the three planes the caller handed over
+ * and dividing, with the same truncation and the same clamp on the texel. */
+void tc_soft_tex(void *soft, const struct tc_tex *t);
 
 /* What one frame sent: triangles, after culling, and the cells the walk drew. */
 struct tc_stats {

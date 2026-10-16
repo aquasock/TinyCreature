@@ -81,12 +81,18 @@ CARD_DEPTH  ?= 48
 # closer and costs a command a column. 1000 draws the single rectangle of
 # before.
 CARD_COLUMN_PX ?= 3
+# A card's faces as textured triangles from their own projected corners rather
+# than as columns of rectangles: the outline is the quadrilateral exactly and
+# the texels are the projective quotient of the planes the fill steps. Off
+# until the fabric's rasterizer can fill one, which the host twin and the
+# board's software path already can.
+TEX         ?= 0
 COMMON_CPPFLAGS := $(SPRITE_CPPFLAGS) -DTC_CARDS=$(CARDS) \
                    -DTC_CARDS_N=$(CARDS_N) -DTC_READOUT=$(READOUT) \
                    -DTC_PIN_X=$(PIN_X) -DTC_PIN_Z=$(PIN_Z) \
                    -DTC_PIN_DIST=$(PIN_DIST) -DTC_PIN_PITCH=$(PIN_PITCH) \
                    -DTC_CARD_YAW=$(CARD_YAW) -DTC_CARD_DEPTH=$(CARD_DEPTH) \
-                   -DTC_CARD_COLUMN_PX=$(CARD_COLUMN_PX)
+                   -DTC_CARD_COLUMN_PX=$(CARD_COLUMN_PX) -DTC_TEX=$(TEX)
 
 # The art's tiles: a generated header, off by default because the art is
 # fetched rather than committed, so a fresh clone builds. TILES=1 wants the
