@@ -1788,3 +1788,34 @@ The user reported that cards remain visible through mountains, and source inspec
 - User Test: PASS
 
 ---
+
+## 55 COMMIT Unreleased 2026-10-18T20:09:34-07:00
+
+#### Coming From:
+
+Unreleased 041ea04
+
+#### Purpose:
+
+Make the 256 textured cards disappear behind nearer landscape without rebuilding the FPGA core.
+
+#### Outcome:
+
+The terrain cell walk was already back to front, but the card grid was emitted only after that walk and therefore painted over every mountain; `terrain.c` now derives a card index from each visited terrain cell in constant time and emits that card immediately after its own ground, allowing cells nearer the camera to paint over it later. The accepted 16 by 16 grid remains 256 cards at `48` by `48` by `12` Q4 with the same sixty-four textures repeated four times. A clean 600-frame host and board gate agreed at `TRIS=20654`, `PIXELS=33245` and frame CRC `a7a6f31b`; the board reported zero stalls and late line fetches, a mean draw time of 36,440 us, a maximum of 41,648 us, and three to four vertical blanks per frame over an average 50,004 us period. A cards-off control retained the historical `TRIS=20445`, `PIXELS=33158` and CRC `566ccf4e`, establishing that the terrain path did not move. An AddressSanitizer and UndefinedBehaviorSanitizer run found a pre-existing signed-left-shift fault in the software triangle twin; replacing that shift with equivalent multiplication removed the fault without changing the frame CRC. The host target now depends on its generated tile header when `TILES=1`, fixing the clean-build dependency recorded in entry 46. The interactive artifact was `build/feel/terrain.elf` with SHA-256 `c4818ba29f76185bfde6acc4bbb81bcaf63b1e55f0c6501b505f3a76018074b1`; it was deployed with the link returned to the board's mouse, and the user flew it and reported that landscape occlusion passes. This was firmware-only, so the core was not rebuilt or seed-swept and remained entry 49's image with SHA-256 `f9f9e2ea15e1f4975e68596d792143438b5cfcf66790b0dec7da92e775498c67`. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The next approved firmware-only experiment is a tree made from crossed textured cards using corresponding tiles from Meph's `_Meph_trees.png`, `_Meph_trees-bg.png` and `_Meph_trees-top.png`: the white `-bg` alpha mask will be tinted as a dark backing, the base and sparse top detail will be composited over it, and two perpendicular cards will use the flattened result so the tree reads from every flight direction. Because the present texture path writes transparent source pixels as the palette's darkest entry, this first prototype will deliberately remain opaque and use a dark leafy backing to make the rectangle less conspicuous; the user wants to judge that result before considering a transparent-texel FPGA change, so this next cycle requires no core rebuild or seed sweep.
+
+#### Files Modified:
+
+- firmware/terrain/Makefile
+- firmware/terrain/terrain.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

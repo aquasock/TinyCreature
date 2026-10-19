@@ -547,6 +547,9 @@ static int32_t height(uint32_t altitude)
 #ifndef TC_CARDS
 #define TC_CARDS 0
 #endif
+#ifndef TC_CARDS_N
+#define TC_CARDS_N 64
+#endif
 
 /* The art, and the cards drawn from it. A card is an axis-aligned rectangle
  * filled with one tile, its texels written as palette entries from
@@ -834,7 +837,7 @@ void tc_soft_triangle(void *ctx, const int32_t *x, const int32_t *y,
 		step_y[k] = -(int64_t)dx * 16;
 	}
 	int64_t s = row[0] + row[1] + row[2];
-	int64_t s2 = s << 1, s3 = s + s2;
+	int64_t s2 = s * 2, s3 = s + s2;
 	for (int32_t j = j0; j <= j1; j++) {
 		uint8_t *line = soft->fb + (uint32_t)j * soft->stride;
 		int64_t e0 = row[0], e1 = row[1], e2 = row[2];
@@ -2095,6 +2098,43 @@ static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 	}
 }
 
+/* Emit the grid card whose base is this terrain cell. The terrain walk is
+ * back to front, so drawing a card immediately after its own ground leaves it
+ * in front of that cell while terrain nearer to the camera is drawn later and
+ * hides it. Deriving the index from the cell avoids searching all cards for
+ * every one of the land's cells. */
+static void draw_card_grid_cell(uint32_t gx, uint32_t gz)
+{
+#if TC_CARDS
+	if (out->card == NULL)
+		return;
+	uint32_t side = 1;
+	while (side * side < (uint32_t)TC_CARDS_N)
+		side++;
+	int32_t first_gx = (int32_t)sprite_gx - (int32_t)(side * 3 / 2);
+	int32_t first_gz = (int32_t)sprite_gz - (int32_t)(side * 3 / 2);
+	int32_t dx = (int32_t)gx - first_gx;
+	int32_t dz = (int32_t)gz - first_gz;
+	int32_t last = (int32_t)(side - 1) * 3;
+	if (dx < 0 || dz < 0 || dx > last || dz > last ||
+	    dx % 3 || dz % 3)
+		return;
+	uint32_t ix = (uint32_t)(dx / 3);
+	uint32_t iz = (uint32_t)(dz / 3);
+	if (ix >= side || iz >= side)
+		return;
+	uint32_t i = iz * side + ix;
+	if (i >= (uint32_t)TC_CARDS_N)
+		return;
+	int32_t wx = (int32_t)gx * CELL + CELL / 2;
+	int32_t wz = (int32_t)gz * CELL + CELL / 2;
+	card_at(wx, ground(wx, wz), wz, i % ART_TILES);
+#else
+	(void)gx;
+	(void)gz;
+#endif
+}
+
 void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 	     struct tc_stats *stats)
 {
@@ -2186,6 +2226,7 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 				if (gx == sprite_gx && gz == sprite_gz)
 					draw_sprite();
 			}
+			draw_card_grid_cell(gx, gz);
 		}
 	}
 
@@ -2194,40 +2235,6 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 		out->phase[TC_PHASE_WALK] = (uint32_t)(t - phase_at);
 		phase_at = t;
 	}
-
-	/* How many cards to stand on the land, and the side of the square they stand
- * in. One a tile by default, which is the shelf that shows the art; more than
- * the art holds re-uses tiles, which is what a crowd is. */
-#ifndef TC_CARDS_N
-#define TC_CARDS_N 64
-#endif
-
-/* The four cards, standing in a row beside the sprite, one tile each,
- * drawn where the sprite is drawn so that the land in front of that
- * cell still paints over them. A card is three cells tall and as wide
- * as it is tall, and the steps it hands the fill are the tile's 32
- * texels across that width, which is the divide the fabric does not
- * have. */
-#if TC_CARDS
-	if (out->card != NULL) {
-		uint32_t side = 1;
-		while (side * side < (uint32_t)TC_CARDS_N)
-			side++;
-		for (uint32_t i = 0; i < (uint32_t)TC_CARDS_N; i++) {
-			/* A square of them, three cells apart, standing on the
-			 * ground by the island's middle. Past the art's last tile
-			 * they start again from the first, which is how a crowd of
-			 * one kind is drawn. */
-			int32_t gx = sprite_gx - (int32_t)(side * 3 / 2) +
-				     (int32_t)(i % side) * 3;
-			int32_t gz = sprite_gz - (int32_t)(side * 3 / 2) +
-				     (int32_t)(i / side) * 3;
-			int32_t wx = gx * CELL + CELL / 2;
-			int32_t wz = gz * CELL + CELL / 2;
-			card_at(wx, ground(wx, wz), wz, i % ART_TILES);
-		}
-	}
-#endif
 
 	/* The pin, if this build was given one: one card standing where it was
 	 * asked to stand, on the ground of the cell it names. It is drawn wherever
