@@ -1855,3 +1855,33 @@ The user requested four flat top tiles on each tree for the next build. The prop
 - User Test: PASS
 
 ---
+
+## 57 COMMIT Unreleased 2026-10-18T20:39:52-07:00
+
+#### Coming From:
+
+Unreleased f36f41d
+
+#### Purpose:
+
+Add four flat foliage tiles to the top of every accepted four-high tree.
+
+#### Outcome:
+
+The card geometry now accepts a pitch as well as a yaw, deriving the local width, height and normal axes in firmware so a textured card can lie horizontal while the established zero-pitch path retains its previous Q4 corner rounding exactly. Each of the sixteen accepted trees keeps entry 56's two crossed vertical stacks, each with three trunk cards and one crown card, and gains four crown-textured cards laid flat as a centered two by two cap at the top of the fourth level; the result is twelve 32 by 32 textured card objects per tree. This remains painter-ordered with its terrain cell and uses the same opaque Meph trunk-and-crown sheet. AddressSanitizer and UndefinedBehaviorSanitizer were clean, the HDL rasterizer matched the host for frames 0, 75, 450 and 599, and the tree-disabled 256-card regression retained CRC `a7a6f31b`, showing that pitch-zero cards did not move. The clean 600-frame tree host and board gate agreed at `TRIS=20953`, `PIXELS=33712` and CRC `68c76e73`; the board reported zero late line fetches, a mean draw time of 34,216 us, a maximum of 39,525 us and three to four vertical blanks per frame over an average 50,004 us period. The interactive artifact was `build/feel/terrain.elf` with SHA-256 `7867d043fb9d3544a9d1b5542bb3b8c5da55b2ab0c5f018b18c9cee237b6efe4`; it was deployed with the mouse link released, and the user reported that the horizontal canopy build passes. This was firmware-only, so the FPGA core was not rebuilt or seed-swept and remained entry 49's image with SHA-256 `f9f9e2ea15e1f4975e68596d792143438b5cfcf66790b0dec7da92e775498c67`. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+No work remains in the approved cycle. The handoff state is the accepted sixteen-tree grove, with twelve opaque cards per tree and the existing entry 49 FPGA core; future work can tune tree composition or pursue transparent foliage, but exact transparent texels remain a separate hardware proposal that would require a core rebuild and the user's eight-seed sweep.
+
+#### Files Modified:
+
+- firmware/terrain/terrain.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

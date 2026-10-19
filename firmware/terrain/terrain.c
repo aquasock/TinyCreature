@@ -1678,28 +1678,72 @@ static void draw_sprite(void)
 #define TC_TEX 0
 #endif
 
-/* The box's eight corners: corner c has bit 2 for +u, bit 1 for +v and bit 0
- * for +n, where u runs across the face, v up and n out of its front. */
-static void card_corners(int32_t wx, int32_t wy, int32_t wz, uint32_t yaw,
-			 int32_t *cx, int32_t *cy, int32_t *cz)
+/* A card's three local axes in Q14. Yaw turns its face around world up, then
+ * pitch turns v and n around its already-yawed u axis: pitch zero is the
+ * established standing card and pitch -90 degrees makes its front face point
+ * up. The axes remain orthogonal apart from the sine approximation's rounding. */
+static void card_axes(uint32_t yaw, uint32_t pitch, int32_t axis[3][3])
 {
 	int32_t sn = isin(yaw), cs = icos(yaw);
+	int32_t sp = isin(pitch), cp = icos(pitch);
+	axis[0][0] = cs;
+	axis[0][1] = 0;
+	axis[0][2] = -sn;
+	axis[1][0] = (int32_t)((int64_t)sn * sp >> 14);
+	axis[1][1] = cp;
+	axis[1][2] = (int32_t)((int64_t)cs * sp >> 14);
+	axis[2][0] = (int32_t)((int64_t)sn * cp >> 14);
+	axis[2][1] = -sp;
+	axis[2][2] = (int32_t)((int64_t)cs * cp >> 14);
+}
+
+/* The box's eight corners: corner c has bit 2 for +u, bit 1 for +v and bit 0
+ * for +n, where u runs across the face, v up at pitch zero and n out of its
+ * front. wy still names the bottom of a standing card; a caller laying it flat
+ * subtracts half its height to put the box's centre at the requested y. */
+static void card_corners(int32_t wx, int32_t wy, int32_t wz, uint32_t yaw,
+			 uint32_t pitch, int32_t *cx, int32_t *cy,
+			 int32_t *cz)
+{
 	int32_t hw = TC_CARD_UNITS / 2, hh = TC_CARD_UNITS / 2;
 	int32_t hd = TC_CARD_DEPTH / 2;
-	/* The three axes, a unit long in Q4: u is (cos, 0, -sin), v up, n is
-	 * (sin, 0, cos). */
-	int32_t ux = (int32_t)((int64_t)cs * 16 >> 14);
-	int32_t uz = (int32_t)(-(int64_t)sn * 16 >> 14);
-	int32_t nx = (int32_t)((int64_t)sn * 16 >> 14);
-	int32_t nz = (int32_t)((int64_t)cs * 16 >> 14);
+	/* Preserve the standing path's Q4 axis rounding exactly: CARD_YAW is an
+	 * existing build dial and adding pitch must not move any of its pixels. */
+	if ((pitch & 0xffffu) == 0) {
+		int32_t sn = isin(yaw), cs = icos(yaw);
+		int32_t ux = (int32_t)((int64_t)cs * 16 >> 14);
+		int32_t uz = (int32_t)(-(int64_t)sn * 16 >> 14);
+		int32_t nx = (int32_t)((int64_t)sn * 16 >> 14);
+		int32_t nz = (int32_t)((int64_t)cs * 16 >> 14);
+		for (unsigned c = 0; c < 8; c++) {
+			int32_t su = (c & 4) ? 1 : -1;
+			int32_t sv = (c & 2) ? 1 : -1;
+			int32_t sw = (c & 1) ? 1 : -1;
+			cx[c] = wx + su * ((ux * hw) >> 4) +
+				      sw * ((nx * hd) >> 4);
+			cy[c] = wy + hh + sv * hh;
+			cz[c] = wz + su * ((uz * hw) >> 4) +
+				      sw * ((nz * hd) >> 4);
+		}
+		return;
+	}
+	int32_t axis[3][3];
+	card_axes(yaw, pitch, axis);
 
 	for (unsigned c = 0; c < 8; c++) {
 		int32_t su = (c & 4) ? 1 : -1;
 		int32_t sv = (c & 2) ? 1 : -1;
 		int32_t sw = (c & 1) ? 1 : -1;
-		cx[c] = wx + su * ((ux * hw) >> 4) + sw * ((nx * hd) >> 4);
-		cy[c] = wy + hh + sv * hh;
-		cz[c] = wz + su * ((uz * hw) >> 4) + sw * ((nz * hd) >> 4);
+		cx[c] = wx + su * (int32_t)((int64_t)axis[0][0] * hw >> 14) +
+			      sv * (int32_t)((int64_t)axis[1][0] * hh >> 14) +
+			      sw * (int32_t)((int64_t)axis[2][0] * hd >> 14);
+		cy[c] = wy + hh +
+			      su * (int32_t)((int64_t)axis[0][1] * hw >> 14) +
+			      sv * (int32_t)((int64_t)axis[1][1] * hh >> 14) +
+			      sw * (int32_t)((int64_t)axis[2][1] * hd >> 14);
+		cz[c] = wz + su * (int32_t)((int64_t)axis[0][2] * hw >> 14) +
+			      sv * (int32_t)((int64_t)axis[1][2] * hh >> 14) +
+			      sw * (int32_t)((int64_t)axis[2][2] * hd >> 14);
 	}
 }
 
@@ -1800,13 +1844,15 @@ static void hand_quad(const int32_t *sx, const int32_t *sy, uint8_t colour)
 	}
 }
 
-static void card_at_yaw(int32_t wx, int32_t wy, int32_t wz, uint32_t tile,
-			uint32_t yaw)
+static void card_at_pose(int32_t wx, int32_t wy, int32_t wz, uint32_t tile,
+			 uint32_t yaw, uint32_t pitch)
 {
 	if (out->card == NULL && out->tex == NULL)
 		return;
 	int32_t bx[8], by[8], bz[8];
-	card_corners(wx, wy, wz, yaw, bx, by, bz);
+	card_corners(wx, wy, wz, yaw, pitch, bx, by, bz);
+	int32_t axis[3][3];
+	card_axes(yaw, pitch, axis);
 
 	/* The four corners of each face, and which way it looks: the front out
 	 * along the yaw, the back against it, the right and left across the face,
@@ -1849,17 +1895,13 @@ static void card_at_yaw(int32_t wx, int32_t wy, int32_t wz, uint32_t tile,
 		to_camera(mx, my, mz, &ox, &oy, &oz);
 		if (oz < NEAR)
 			continue;
-		int32_t ax = 0, ay = 0, az = 0;
-		int32_t sn = isin(yaw), cs = icos(yaw);
-		if (face_axis[f] == 0) {
-			ax = face_sign[f] * (int32_t)((int64_t)cs * CELL >> 14);
-			az = face_sign[f] * (int32_t)(-(int64_t)sn * CELL >> 14);
-		} else if (face_axis[f] == 1) {
-			ay = face_sign[f] * CELL;
-		} else {
-			ax = face_sign[f] * (int32_t)((int64_t)sn * CELL >> 14);
-			az = face_sign[f] * (int32_t)((int64_t)cs * CELL >> 14);
-		}
+		unsigned a = (unsigned)face_axis[f];
+		int32_t ax = face_sign[f] *
+			(int32_t)((int64_t)axis[a][0] * CELL >> 14);
+		int32_t ay = face_sign[f] *
+			(int32_t)((int64_t)axis[a][1] * CELL >> 14);
+		int32_t az = face_sign[f] *
+			(int32_t)((int64_t)axis[a][2] * CELL >> 14);
 		to_camera(mx + ax, my + ay, mz + az, &px, &py, &pz);
 		px -= ox;
 		py -= oy;
@@ -2105,6 +2147,12 @@ static void card_at_yaw(int32_t wx, int32_t wy, int32_t wz, uint32_t tile,
 	}
 }
 
+static void card_at_yaw(int32_t wx, int32_t wy, int32_t wz, uint32_t tile,
+			uint32_t yaw)
+{
+	card_at_pose(wx, wy, wz, tile, yaw, 0);
+}
+
 static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 {
 	card_at_yaw(wx, wy, wz, tile, TC_CARD_YAW);
@@ -2148,11 +2196,11 @@ static void draw_card_grid_cell(uint32_t gx, uint32_t gz)
 }
 
 /* A first tree made without asking the texture fill for transparency: three
- * trunk tiles and one crown tile stand one above the other, and the same stack
- * crosses them at a quarter turn so that the tree keeps some body when the
- * camera sees either plane edge-on. The source sheet gives both tiles a
- * deliberately dark leafy backing to make their opaque rectangles read as
- * dense foliage rather than as an accidental black key colour. */
+ * trunk tiles and one crown tile stand one above the other, the same stack
+ * crosses them at a quarter turn, and a two-by-two square of crown tiles lies
+ * flat across the top. The source sheet gives both tiles a deliberately dark
+ * leafy backing to make their opaque rectangles read as dense foliage rather
+ * than as an accidental black key colour. */
 static void draw_tree_grid_cell(uint32_t gx, uint32_t gz)
 {
 #if TC_TREES
@@ -2187,6 +2235,12 @@ static void draw_tree_grid_cell(uint32_t gx, uint32_t gz)
 				    wz, 0, yaw);
 		card_at_yaw(wx, wy + 3 * TC_CARD_UNITS, wz, 1, yaw);
 	}
+	int32_t cap_y = wy + 4 * TC_CARD_UNITS;
+	int32_t offset = TC_CARD_UNITS / 2;
+	for (int32_t dz = -offset; dz <= offset; dz += TC_CARD_UNITS)
+		for (int32_t dx = -offset; dx <= offset; dx += TC_CARD_UNITS)
+			card_at_pose(wx + dx, cap_y - TC_CARD_UNITS / 2,
+				     wz + dz, 1, TC_CARD_YAW, (uint32_t)-16384);
 #else
 	(void)gx;
 	(void)gz;
