@@ -53,6 +53,7 @@ make -C "$root/firmware/terrain" TINYNES="$source_dir" BUILD="$build" \
     PLANTS="${TINYCREATURE_PLANTS:-0}" \
     PLANT_ART="${TINYCREATURE_PLANT_ART:-0}" \
     PLANT_TILES="${TINYCREATURE_PLANT_TILES:-16}" \
+    PLANT_STRETCH="${TINYCREATURE_PLANT_STRETCH:-100}" \
     PLANT_UNITS="${TINYCREATURE_PLANT_UNITS:-160}" \
     PLANT_SCRIPT="${TINYCREATURE_PLANT_SCRIPT:-$root/build/wineprefix/drive_c/Program Files (x86)/Lionhead Studios Ltd/Black & White/Scripts/Land1.txt}" \
     PLANT_LAND="${TINYCREATURE_PLANT_LAND:-$root/build/wineprefix/drive_c/Program Files (x86)/Lionhead Studios Ltd/Black & White/Data/Landscape/Land1.lnd}" \

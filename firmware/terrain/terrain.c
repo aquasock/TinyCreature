@@ -567,6 +567,9 @@ static int32_t height(uint32_t altitude)
 #ifndef TC_PLANTS
 #define TC_PLANTS 0
 #endif
+#ifndef TC_PLANT_STRETCH
+#define TC_PLANT_STRETCH 100
+#endif
 
 /* The art, and the cards drawn from it. A card is an axis-aligned rectangle
  * filled with one tile, its texels written as palette entries from
@@ -1726,15 +1729,18 @@ static void card_axes(uint32_t yaw, uint32_t pitch, int32_t axis[3][3])
  * for +n, where u runs across the face, v up at pitch zero and n out of its
  * front. wy still names the bottom of a standing card; a caller laying it flat
  * subtracts half its height to put the box's centre at the requested y. */
-/* A plant's card may be any size, so the corner builder reads this rather
- * than the compile-time CARD_UNITS; every other caller leaves it there. */
+/* A plant's card may be any size, so the corner builder reads these rather
+ * than the compile-time CARD_UNITS; every other caller leaves them there.
+ * card_height is separate so a species can be drawn taller than it is wide,
+ * which is how a conifer reads as a conifer at the same base scale as a bush. */
 static int32_t card_units = TC_CARD_UNITS;
+static int32_t card_height = TC_CARD_UNITS;
 
 static void card_corners(int32_t wx, int32_t wy, int32_t wz, uint32_t yaw,
 			 uint32_t pitch, int32_t *cx, int32_t *cy,
 			 int32_t *cz)
 {
-	int32_t hw = card_units / 2, hh = card_units / 2;
+	int32_t hw = card_units / 2, hh = card_height / 2;
 	int32_t hd = TC_CARD_DEPTH / 2;
 	/* Preserve the standing path's Q4 axis rounding exactly: CARD_YAW is an
 	 * existing build dial and adding pitch must not move any of its pixels. */
@@ -2194,6 +2200,15 @@ static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 /* Emit the plants whose grid cell this is.  The table is sorted by cell, so
  * the walk pays a binary search a cell and each plant is drawn with the
  * rotation and size the level script gave it, one card each. */
+/* Height as a percentage of the plant's card width, by script tree type:
+ * conifers, pines and palms stand tall, oaks and beeches are middling, and
+ * the bushes stay near square.  The card is a picture, so this stretches the
+ * sprite; the user asked for the shape first and better art after. */
+static const uint8_t plant_stretch[23] = {
+	125, 140, 150, 220, 200, 135, 130, 120, 220, 210, 230, 190,
+	220, 90, 85, 95, 100, 100, 100, 100, 100, 100, 120,
+};
+
 static void draw_plant_cell(uint32_t gx, uint32_t gz)
 {
 	if (out->card == NULL && out->tex == NULL)
@@ -2209,18 +2224,22 @@ static void draw_plant_cell(uint32_t gx, uint32_t gz)
 		else
 			hi = mid;
 	}
-	int32_t saved = card_units;
+	int32_t saved_units = card_units, saved_height = card_height;
 	for (; lo < TC_PLANT_COUNT; lo++) {
 		const struct tc_plant *p = &tc_plants[lo];
 		if ((((uint32_t)p->gz << 16) | p->gx) != key)
 			break;
+		int32_t height = (int32_t)p->units * plant_stretch[p->kind] *
+				 TC_PLANT_STRETCH / 10000;
 		card_units = p->units;
+		card_height = height;
 		/* A quarter of the card's height goes below the ground so the
 		 * sprite reads as rooted rather than standing on the surface. */
-		card_at_yaw(p->x, ground(p->x, p->z) - p->units / 4, p->z,
+		card_at_yaw(p->x, ground(p->x, p->z) - height / 4, p->z,
 			    p->tile % ART_TILES, p->yaw);
 	}
-	card_units = saved;
+	card_units = saved_units;
+	card_height = saved_height;
 }
 #endif
 

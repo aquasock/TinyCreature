@@ -2159,3 +2159,38 @@ Tiles 0 to 15 now name fixed sprites and their source cells are in the generated
 - User Test: PASS
 
 ---
+
+## 66 COMMIT Unreleased 2026-10-19T07:42:00-07:00
+
+#### Coming From:
+
+Unreleased 4445479
+
+#### Purpose:
+
+Give each plant species its own vertical proportion so conifers and palms read as tall trees and bushes stay low on the same square cards.
+
+#### Outcome:
+
+`terrain.c` now separates a card's width from its height: `card_height` sits beside `card_units` and `card_corners` reads it, so every other caller is unchanged at `TC_CARD_UNITS`. A 23-entry `plant_stretch` table gives each script tree type a height as a percentage of the plant's width -- 220 for pine and conifer, 230 for PalmB, 220 for the palm and 200 for ConiferA, 150 down to 120 for cedar, oak, beech, olive and burnt, and 90, 85 and 95 for the three bushes -- and `PLANT_STRETCH`, a build knob defaulting to 100, scales the whole table. The quarter-height sink now follows the stretched height, so a tall plant still sits a quarter of itself into the ground. This is a deliberate approximation of what openblack does: its `TreeArchetype` assigns one uniform `glm::vec3(scale)` and the species shape is the mesh, and its growth fields (`growing`, `growthAmount`, `minSize`, `maxSize`) are parsed but never used, so the original's tall conifer is a tall mesh rather than a stretched one. The 600-frame host and board gate passed at `TRIS=22571`, `PIXELS=35332`, `DRAW=51903us`, `MAX=58650us`, period 60,855 us, `LATE=0` and CRC `fd5bf570`, on seed 13's unchanged core; the extra fill over entry 65 cost 0.9 ms. The interactive artifact was `build/feel/terrain.elf`, SHA-256 `7707ab4ac33a2025af76f614ea1cfd1e3738df30690056800c3dc8596c0a3d68`, and the user flew it and passed it. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The user accepted the stretched proportions and named authored-tall sprites as the likely follow-up: the same 16 species drawn at their final aspect instead of stretched from square art, which is an art change and needs no renderer change beyond what is here. The wider queue is the user's to choose; it still holds grass as ground cover, the 13 unused plant sprites if the tile store is enlarged, the two size dials (`PLANT_UNITS` and `PLANT_STRETCH`), and entry 51's `BAD TINYCREATURE PIXELS` at 2,000 and 3,000 villager-sized cards.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/Makefile
+- firmware/terrain/terrain.c
+- tools/build_tang32.sh
+- tools/run_tang32_feel.sh
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

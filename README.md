@@ -485,7 +485,12 @@ the 16 greenest, and lays them in a 4 by 4 sheet, and the script's 16 tree
 types map one-to-one onto the tiles in type order, so each species keeps its
 plant. Every card's base sits a quarter of its height below the ground so the
 sprite reads as rooted. The board and host matched at CRC `319d2c52` with
-`PIXELS=34638`, `DRAW=51041us` and a 60.3 ms period.
+`PIXELS=34638`, `DRAW=51041us` and a 60.3 ms period. Each species is also
+drawn at its own proportion: `plant_stretch` in `terrain.c` makes pines,
+conifers and palms about twice as tall as wide, oaks and beeches a third
+taller, and bushes a little shorter, with `PLANT_STRETCH` scaling the whole
+table, and the sink follows the stretched height. That build matched at CRC
+`fd5bf570` with `PIXELS=35332`, `DRAW=51903us` and a 60.9 ms period.
 
 A build that times its own phases with the core's cycle counter reports the
 mean cells a frame drew and the time it spent in the sky and sea rows, the

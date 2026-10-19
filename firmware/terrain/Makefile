@@ -107,6 +107,8 @@ CARD_TEX    ?= 0
 # sides show at an angle; off, it is a two-faced billboard and cutout art has
 # no black frame. The transparent texel is skipped either way.
 CARD_EDGE   ?= 0
+# Overall multiplier on the per-type plant height, in percent.
+PLANT_STRETCH ?= 100
 COMMON_CPPFLAGS := $(SPRITE_CPPFLAGS) -DTC_CARDS=$(CARDS) \
                    -DTC_CARDS_N=$(CARDS_N) -DTC_TREES=$(TREES) \
                    -DTC_TREES_N=$(TREES_N) -DTC_READOUT=$(READOUT) \
@@ -116,7 +118,8 @@ COMMON_CPPFLAGS := $(SPRITE_CPPFLAGS) -DTC_CARDS=$(CARDS) \
                    -DTC_CARD_UNITS=$(CARD_UNITS) \
                    -DTC_CARD_COLUMN_PX=$(CARD_COLUMN_PX) -DTC_TEX=$(CARD_TEX) \
                    -DTC_CARD_EDGE=$(CARD_EDGE) -DTC_HANDOVER=$(HANDOVER) \
-                   -DTC_TREE_WHOLE=$(TREE_WHOLE) -DTC_PLANTS=$(PLANTS)
+                   -DTC_TREE_WHOLE=$(TREE_WHOLE) -DTC_PLANTS=$(PLANTS) \
+                   -DTC_PLANT_STRETCH=$(PLANT_STRETCH)
 
 # The art's tiles: a generated header, off by default because the art is
 # fetched rather than committed, so a fresh clone builds. TILES=1 wants the
