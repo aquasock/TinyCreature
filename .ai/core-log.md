@@ -2122,3 +2122,40 @@ The look is accepted, so what remains is tuning against it: the script's 16 type
 - User Test: PASS
 
 ---
+
+## 65 COMMIT Unreleased 2026-10-19T07:33:00-07:00
+
+#### Coming From:
+
+Unreleased 3c0949c
+
+#### Purpose:
+
+Replace the fruit tiles with the 16 greenest sprites of Meph's plants sheet and sink each plant a quarter of its height so it reads as rooted.
+
+#### Outcome:
+
+`tools/make_plant_sheet.py` is new: it treats the 77 cells of `_Meph_plants.png` that are neither fully opaque nor nearly full as cutout sprites -- rows 2, 3, 6, 9 and 12, with row 0's 992-pixel tiles and the solid ground cells excluded -- scores each by its opaque pixels' excess green over the stronger of red and blue, keeps the 16 highest, and lays them in a 4 by 4 sheet with their alpha preserved. The chosen cells are 108, 98, 103, 154, 96, 33, 44, 40, 200, 201, 202, 203, 55, 99, 199 and 45, and the cut fell just above cell 156. `tools/convert_plants.py` gained `--tiles` and now maps the script's 16 tree types one-to-one onto the tiles in type order, storing both the tile and the type, so Beech is tile 0 through Burnt at tile 15. `firmware/terrain/Makefile` gained `PLANT_ART` and `PLANT_TILES`, which override the tree sheet when asked, and the three build scripts forward them; the generated sheet fits 471 source colours into the 63 entries at 13.39 mean and 83.8 worst error, half the error the 43-tile fruit sheet had. `terrain.c` places each plant's base at `ground - units / 4`, so the bottom quarter of the card overlaps the terrain; the same table otherwise draws as entry 64 recorded. The 600-frame host and board gate passed at `TRIS=22515`, `PIXELS=34638`, `DRAW=51041us`, `MAX=57452us`, period 60,299 us, `LATE=0` and CRC `319d2c52`, on seed 13's unchanged core. The interactive artifact was `build/feel/terrain.elf`, SHA-256 `77f21724f0fdd4ca60a0fdc43472332b2a6f66a09ec7978118966041dfbac605`, and the user flew it and passed it. A labelled tile map and the labelled source sheet were generated under `build/` so a tile can be named by one number; they are build products and are not committed. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+Tiles 0 to 15 now name fixed sprites and their source cells are in the generated maps, so the art can be discussed without ambiguity. The 13 sprites the selection dropped remain in the source sheet if the tile store is ever enlarged from 64 to 128, which is a core rebuild and a seed sweep. Whether the quarter-height sink is the right depth and whether `PLANT_UNITS=160` is the right base size are the two dials the flight tests judge next. Grass is still ground cover, not placement data, and entry 51's `BAD TINYCREATURE PIXELS` at 2,000 and 3,000 villager-sized cards remains open.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/Makefile
+- firmware/terrain/terrain.c
+- tools/build_tang32.sh
+- tools/convert_plants.py
+- tools/make_plant_sheet.py
+- tools/run_tang32_feel.sh
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

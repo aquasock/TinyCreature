@@ -478,6 +478,15 @@ Two faults were caught before it flew: the board's tile store was uploaded only
 for cards and trees, and the first table kept absolute script coordinates,
 which put every plant in the ocean.
 
+The art is Meph's plants sheet now. Of its 16 by 16 cells only 77 are cutout
+sprites -- rows 2, 3, 6, 9 and 12; row 0 is nearly full tiles and the rest are
+solid ground. `tools/make_plant_sheet.py` ranks those by excess green, keeps
+the 16 greenest, and lays them in a 4 by 4 sheet, and the script's 16 tree
+types map one-to-one onto the tiles in type order, so each species keeps its
+plant. Every card's base sits a quarter of its height below the ground so the
+sprite reads as rooted. The board and host matched at CRC `319d2c52` with
+`PIXELS=34638`, `DRAW=51041us` and a 60.3 ms period.
+
 A build that times its own phases with the core's cycle counter reports the
 mean cells a frame drew and the time it spent in the sky and sea rows, the
 block cull and the cell walk: `CELLS=18158 PHROWS=2us PHCULL=48us

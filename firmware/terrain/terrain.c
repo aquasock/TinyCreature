@@ -2215,7 +2215,9 @@ static void draw_plant_cell(uint32_t gx, uint32_t gz)
 		if ((((uint32_t)p->gz << 16) | p->gx) != key)
 			break;
 		card_units = p->units;
-		card_at_yaw(p->x, ground(p->x, p->z), p->z,
+		/* A quarter of the card's height goes below the ground so the
+		 * sprite reads as rooted rather than standing on the surface. */
+		card_at_yaw(p->x, ground(p->x, p->z) - p->units / 4, p->z,
 			    p->tile % ART_TILES, p->yaw);
 	}
 	card_units = saved;

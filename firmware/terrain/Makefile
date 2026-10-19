@@ -144,6 +144,21 @@ else
 TILES_LIMIT   := 2
 endif
 endif
+# The plants sheet overrides the tree sheet when both knobs are asked for;
+# a build uses one art set at a time.  PLANT_TILES is also the number of
+# script tree types the plant converter maps onto it.
+PLANT_ART     ?= 0
+PLANT_TILES   ?= 16
+PLANT_ART_DIR ?= $(abspath ../../build/tiles/Meph/data/art)
+PLANT_SHEET   := $(BUILD)/plants/meph-plants.png
+PLANT_SHEET_TOOL := $(abspath ../../tools/make_plant_sheet.py)
+ifeq ($(PLANT_ART),1)
+ifneq ($(TILES),1)
+$(error PLANT_ART=1 requires TILES=1)
+endif
+TILES_SHEET   := $(PLANT_SHEET)
+TILES_LIMIT   := $(PLANT_TILES)
+endif
 TILES_H       := $(BUILD)/tiles/meph-$(TILES_COLOURS)c-$(TILES_LIMIT)t.h
 TILES_TOOL    := $(abspath ../../tools/convert_tiles.py)
 
@@ -160,6 +175,15 @@ $(TREE_SHEET): $(TREE_TOOL) $(TREE_ART_DIR)/_Meph_trees.png \
 	@python3 $(TREE_TOOL) --base "$(TREE_ART_DIR)/_Meph_trees.png" \
 		--background "$(TREE_ART_DIR)/_Meph_trees-bg.png" \
 		--top "$(TREE_ART_DIR)/_Meph_trees-top.png" $(TREE_TOOL_ARGS) --out $@
+endif
+
+ifeq ($(PLANT_ART),1)
+$(PLANT_SHEET): $(PLANT_SHEET_TOOL) $(PLANT_ART_DIR)/_Meph_plants.png \
+                                $(PLANT_ART_DIR)/_Meph_plants-top.png
+	@mkdir -p $(dir $@)
+	@python3 $(PLANT_SHEET_TOOL) --base "$(PLANT_ART_DIR)/_Meph_plants.png" \
+		--top "$(PLANT_ART_DIR)/_Meph_plants-top.png" \
+		--count $(PLANT_TILES) --out $@
 endif
 
 $(TILES_H): $(TILES_TOOL) $(TILES_SHEET)
@@ -189,7 +213,8 @@ CPPFLAGS += $(PLANT_FLAGS)
 $(PLANT_H): $(PLANT_TOOL)
 	@mkdir -p $(dir $@)
 	@python3 $(PLANT_TOOL) --script "$(PLANT_SCRIPT)" \
-		--land "$(PLANT_LAND)" --units $(PLANT_UNITS) --out $@
+		--land "$(PLANT_LAND)" --units $(PLANT_UNITS) --tiles $(PLANT_TILES) \
+		--out $@
 $(call objects,terrain.c): $(PLANT_H)
 endif
 
