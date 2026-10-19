@@ -433,7 +433,14 @@ full FIFO climb from 15,000 to 92,000 bus cycles a frame, so at some point the
 fabric's filling, not the CPU's sending, is what limits a crowd. Ten thousand
 cards would be 13.6 ms of sending and about 12 ms of filling, which puts the
 wall near there -- extrapolated, not measured. The count is `TC_CARDS_N`, and
-one a tile is the default shelf.
+one a tile is the default shelf. With the textured cutout cards the current
+binary draws, the ladder is dearer and the ceiling lower: 64 cards draw
+32.97 ms, 1000 draw 43.40 ms and 1500 draw 47.19 ms, where a worst frame of
+51.76 ms no longer fits the three-blank hold and the period rises to 55.08 ms;
+2000 draw 50.61 ms at 16.6 fps and 3000 draw 57.23 ms at 15.4 fps. The
+marginal cost falls from 14.9 to 6.4 us a card over that range because the
+grid widens with the count and most added cards fall outside the view, so this
+measures a spreading crowd rather than a densifying one.
 
 The art's transparent texels are holes now. Palette-relative texel 0 is the
 key: `tools/convert_tiles.py` fits the art into the 63 colours beside it in

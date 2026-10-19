@@ -11,12 +11,19 @@
 # The two sweeps are what vary: TINYCREATURE_MEASURE_DIST (Q4 camera distance
 # for one pinned card, default "3200 1600 800 320") and
 # TINYCREATURE_MEASURE_CARDS (cards on the island, default "64 256 1000 2000").
-# The card is a villager: CARD_UNITS 80 is half a cell.
+# TINYCREATURE_MEASURE_SWEEPS picks which run (default "distance cards").
+# The card is a villager by default: CARD_UNITS 80 is half a cell. Geometry
+# and art are TINYCREATURE_MEASURE_UNITS (80), TINYCREATURE_MEASURE_DEPTH (8)
+# and TINYCREATURE_MEASURE_SHEET (empty, the Makefile's Meph sheet).
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 out="${1:-$root/build/measure.tsv}"
+sweeps="${TINYCREATURE_MEASURE_SWEEPS-distance cards}"
 dist="${TINYCREATURE_MEASURE_DIST-3200 1600 800 320}"
 cards="${TINYCREATURE_MEASURE_CARDS-64 256 1000 2000}"
+units="${TINYCREATURE_MEASURE_UNITS:-80}"
+depth="${TINYCREATURE_MEASURE_DEPTH:-8}"
+sheet="${TINYCREATURE_MEASURE_SHEET:-}"
 src="${TINYCREATURE_TANG_SOURCE:-$root/build/tang32-src}"
 build="$root/build/tang32/terrain"
 
@@ -24,11 +31,13 @@ printf 'sweep\tvalue\ttris\tpixels\tcells\tdraw_us\tmax_us\tperiod_us\tstalls\tl
 
 run_one() { # sweep value <make args...>
     local sweep="$1" value="$2"; shift 2
+    local sheet_arg=()
+    [[ -n "$sheet" ]] && sheet_arg=(TILES_SHEET="$sheet")
     echo "== $sweep $value ==" >&2
     make -s -C "$root/firmware/terrain" TINYNES="$src" BUILD="$build" \
-        CARDS=0 TILES=1 READOUT=0 CARD_TEX=1 CARD_UNITS=80 CARD_DEPTH=8 \
+        CARDS=0 TILES=1 READOUT=0 CARD_TEX=1 CARD_UNITS="$units" CARD_DEPTH="$depth" \
         CARD_EDGE="${TINYCREATURE_CARD_EDGE:-0}" \
-        PIN_X=0xffff PIN_Z=0xffff "$@" clean all host >/dev/null
+        PIN_X=0xffff PIN_Z=0xffff "${sheet_arg[@]}" "$@" clean all host >/dev/null
     local log line why
     # The board's own output is kept whole, so a run that fails its cadence
     # check says so in the table rather than leaving an unexplained dash.
@@ -48,16 +57,28 @@ run_one() { # sweep value <make args...>
         return
     fi
     field() { echo "$line" | grep -o "$1=[0-9a-f]*" | head -1 | cut -d= -f2; }
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$sweep" "$value" "$(field TRIS)" "$(field PIXELS)" "$(field CELLS)" \
         "$(field DRAW)" "$(field MAX)" "$(field PERIOD)" "$(field STALLS)" \
         "$(field LATE)" "$(field CRC)" "$why" >>"$out"
 }
 
-for d in $dist; do
-    run_one distance "$d" CARDS=0 PIN_X=80 PIN_Z=90 PIN_DIST="$d"
-done
-for n in $cards; do
-    run_one cards "$n" CARDS=1 CARDS_N="$n" PIN_DIST=3200
+for sweep in $sweeps; do
+    case "$sweep" in
+    distance)
+        for d in $dist; do
+            run_one distance "$d" CARDS=0 PIN_X=80 PIN_Z=90 PIN_DIST="$d"
+        done
+        ;;
+    cards)
+        for n in $cards; do
+            run_one cards "$n" CARDS=1 CARDS_N="$n" PIN_DIST=3200
+        done
+        ;;
+    *)
+        echo "unknown sweep: $sweep" >&2
+        exit 2
+        ;;
+    esac
 done
 cat "$out"

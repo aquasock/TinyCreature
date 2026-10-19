@@ -1957,3 +1957,34 @@ SPINE27 is now the only bridge pip the surviving seeds used that the gate still 
 - User Test: PASS
 
 ---
+
+## 60 COMMIT Unreleased 2026-10-19T06:37:00-07:00
+
+#### Coming From:
+
+Unreleased 4a12723
+
+#### Purpose:
+
+Find the card count at which the accepted animal cards stop holding the three-blank twenty-a-second cadence, and make the measuring tool write each rung as one row.
+
+#### Outcome:
+
+`tools/measure_tang32.sh` gained `TINYCREATURE_MEASURE_SWEEPS`, `TINYCREATURE_MEASURE_UNITS`, `TINYCREATURE_MEASURE_DEPTH` and `TINYCREATURE_MEASURE_SHEET`, so the card ladder can run at the accepted 48 by 48 by 12 Q4 geometry with the animal sheet instead of the tool's villager defaults, and its success row carried eleven conversions for twelve fields, which printed the `why` value `ok` on a line of its own; both are fixed, and repeating the 256-card rung reproduced the ladder's CRC `6bb282cc` with the same triangle and pixel counts. The ladder ran on the board with the seed 13 core and `CARD_TEX=1`, `CARD_EDGE=0`, from 64 to 3000 cards. 64 cards drew 32,966 us with a worst frame of 38,508, 256 drew 35,826, 512 drew 38,893, and 1000 drew 43,397 with a worst frame of 47,982, all inside the 49,996 us three-blank hold at 20.00 frames a second. At 1500 cards the worst frame reached 51,758 us, the hold no longer fit, and the period rose to 55,079 us, 18.16 frames a second; 2000 drew 50,613 us over a 60,330 us period at 16.58 frames a second, 2500 drew 54,038 over 62,163 at 16.09, and 3000 drew 57,232 over 65,107 at 15.36. The first dip is therefore between 1000 and 1500 cards, and interpolating the worst frame puts the ceiling near 1,270. The marginal cost falls from 14.9 us a card between 64 and 256 to 6.4 us between 2500 and 3000 because the grid's side is the square root of the count rounded up and its spacing is three cells, so added cards spread across the island and most fall outside the view: `TRIS` rises by only 1,098 over the whole ladder against 2,936 added cards, which makes this a spreading crowd rather than a densifying one. Every rung matched its host twin on the frame CRC with zero late line fetches, and the 2000 and 3000 rungs that stopped entry 51's villager cards with `BAD TINYCREATURE PIXELS` passed at this geometry, so that defect did not reproduce and remains open for its own configuration. The core was not rebuilt and remained seed 13's `ae350_soc.bin` SHA-256 `7aeaa671da52ae4c3cf38aa8e9886b39ff96f2cad436a39252909bd5781aa10b`. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The ladder measured the engine as built; the numbers' largest caveat is the layout, because the crowd spreads rather than densifies, so a fixed-area crowd would move the knee earlier and needs a placement knob before it can be measured. Entry 51's `BAD TINYCREATURE PIXELS` at 2,000 and 3,000 villager-sized cards is now a one-command reproduction with `TINYCREATURE_MEASURE_UNITS=80 TINYCREATURE_MEASURE_DEPTH=8`, and it is the open defect that should be settled before its geometry is used again. If the user wants more animals in one view rather than more across the island, the three-cell spacing or stacking sets on one cell is the code change to make and then re-measure, and if the dip must move later at the accepted layout, the per-card setup the cell walk pays for every card, visible or not, is where the time is.
+
+#### Files Modified:
+
+- README.md
+- tools/measure_tang32.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
