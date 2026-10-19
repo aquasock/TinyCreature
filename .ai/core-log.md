@@ -2230,3 +2230,37 @@ Every non-terrain card is one size now, so future work can assume the 80 Q4 tile
 - User Test: PASS
 
 ---
+
+## 68 COMMIT Unreleased 2026-10-19T10:38:00-07:00
+
+#### Coming From:
+
+Unreleased c1d3437
+
+#### Purpose:
+
+Make the ground sample openblack's material and bump textures per vertex instead of using material means, then replace all 17 Lionhead material textures with Meph art.
+
+#### Outcome:
+
+`tools/convert_land.py` now follows openblack's terrain path per vertex: the block-local UV from `vs_terrain.sc` (`zx / yx`, so `(x & 15) / 16` by `(z & 15) / 16`) samples both of the cell's materials and the bump map, the two texels are blended by the country coefficient, and the result is scaled by the bump texel times two and the luminosity clamp. Land 1's distinct vertex colours rose from 817 to 6,452 and the palette fit moved from 4.06 to 8.28 mean with 32.9 worst; the board and host gate passed at LAND CRC `96a94274`, frame CRC `a3392a0d`, `DRAW=50004us` and a 60.0 ms period, and the user accepted the look. The material textures were then replaced with Meph's. `tools/ground_map.tsv` maps all 17 Celtic materials to a source sheet, a tile and a gain computed as material luminance over tile luminance: 14 come from `Meph_32x32.png` at gains 0.93 to 2.82, and m0, m3 and m5 come from the ice family in `_Meph_decorations_2.png` at tiles 233, 246 and 232 with gains 1.16, 1.09 and 1.18. `convert_land.py` gained `--materials-map` and `--meph-dir`, which substitute the tiles into the 256 by 256 material slots before sampling, and `tools/run_tang32.sh` and `tools/run_tang32_feel.sh` forward `TINYCREATURE_GROUND_MAP`. The Meph investigation also corrected a wrong turn: `Meph_Map_32x32.png` is the map-screen font, not terrain, and the DF raws' marble `[TILE:137]` is a font character, so the marble graphics are the constructed overrides (`_Meph_furniture.png:173` floor, `_Meph_constructions.png:160` to `175` walls, stairs and pillar, `_Meph_extra_decorations_2.png:186` and `:197` roads, `_Meph_extra_decorations.png:202` and `:203` ramps) and the pack has an optional ice family but no snow family. The Celtic gate with the Meph ground passed at LAND CRC `a59c0a9a`, frame CRC `a386870f`, `TRIS=28358`, `PIXELS=35212`, `DRAW=75827us`, `MAX=90445us`, period 84,084 us and `LATE=0` -- identical timing to the same map before the replacement, so the swap is colour-only. The palette fit is 10.24 mean and 44.2 worst over 173 entries. The interactive artifact was `build/feel/terrain.elf`, SHA-256 `9d06b612e206b4e08be6973da305f75c5696c7a0fe695da39d1a705a7ace26ab`; the ELF does not carry the land, which is converted at run time. The user flew it and reported it looks better than Lionhead's textures. The core was not rebuilt. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The ground is Meph's now, so the next visual questions are the plants: authored-tall sprites for the 16 species instead of square art, the 13 sprites the green selection dropped if the tile store is widened, and grass, which the original draws as ground cover rather than placement data. The three ice tiles chosen for the near-white materials are paler and cooler than the rest, which is a deliberate start; individual materials can be changed in `tools/ground_map.tsv` without touching code. Entry 51's `BAD TINYCREATURE PIXELS` at 2,000 and 3,000 villager-sized cards remains open, and the FPGA optimisation queue still begins with splitting the 75.8 ms Celtic walk by phase before choosing between the depth buffer, the command expander and the hardware walker.
+
+#### Files Modified:
+
+- README.md
+- tools/convert_land.py
+- tools/ground_map.tsv
+- tools/run_tang32.sh
+- tools/run_tang32_feel.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

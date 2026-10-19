@@ -30,7 +30,9 @@ remote=/root/cores/console138k/tinycreature-tang32.bin
 }
 land="$root/build/land/$(basename "${lnd%.*}").tcl"
 mkdir -p "$(dirname "$land")"
-python3 -I "$root/tools/convert_land.py" "$lnd" "$land"
+map_args=()
+[[ -n "${TINYCREATURE_GROUND_MAP:-}" ]] && map_args=(--materials-map "$TINYCREATURE_GROUND_MAP")
+python3 -I "$root/tools/convert_land.py" "$lnd" "$land" "${map_args[@]}"
 
 [[ -f "$out/ae350_soc.bin" ]] || {
     echo "Tang32 core missing; run tools/build_tang32.sh" >&2

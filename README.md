@@ -56,15 +56,23 @@ baseline so this first board gate does not depend on unverified hardware.
 
 ## Terrain on the Tang
 
-The Tang32 core also runs a first terrain renderer, `firmware/terrain/`. The
-user's own Land 1 is converted on the PC by `tools/convert_land.py` into a
-142 KB file under `build/land/`. The converter reads the `.lnd` format as
-openblack does and gives each vertex the daylight colour openblack's terrain
-shader would give it, from the cell's materials, noise, bump map and
-luminosity, then fits those vertex colours to 237 palette entries. The rest of
-the 256 are the sky's eight-entry ramp, the cursor's two colours and its
-outline in entry 0, and the sea is one blue, so the seven entries its ramp used
-to take are free; the land's own colours start at entry 19. The AE350 receives
+The Tang32 core also runs a first terrain renderer, `firmware/terrain/`. A
+landscape the user owns -- Land 1, or a map pack's `.lnd` such as Celtic -- is
+converted on the PC by `tools/convert_land.py` into a land file under
+`build/land/`. The converter reads the `.lnd` format as openblack does and
+gives each vertex the daylight colour openblack's terrain shader would give
+it: both of the cell's materials and the bump map are sampled at the vertex's
+block-local UV (openblack's `zx / yx` mapping), blended by the country
+coefficient and scaled by the luminosity clamp, then the vertex colours are
+fitted to 173 palette entries. The palette's other entries are the sky's
+eight-entry ramp, the sea, the cursor's two colours and its outline in entry 0,
+and the art's 64 at 192 to 255; the land's own colours start at entry 19.
+The material textures are Meph's now. `tools/ground_map.tsv` maps all 17
+Celtic materials to Meph tiles -- 14 from `Meph_32x32.png` and 3 from the ice
+family in `_Meph_decorations_2.png` -- each with a gain that matches the
+original material's luminance, and `convert_land.py --materials-map`
+substitutes them before sampling; `TINYCREATURE_GROUND_MAP` selects the table
+for a run. The AE350 receives
 the file over the loader, orbits the island once over 600 frames, and draws
 shaded triangles back to front into the 320 by 180 indexed framebuffers in
 integer arithmetic. Each pixel takes the palette entry

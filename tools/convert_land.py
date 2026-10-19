@@ -6,9 +6,10 @@ The terrain is read as openblack a243c6b2 reads it
 (components/lnd/src/LNDFile.cpp) and each vertex is coloured as its terrain
 shader would colour it in daylight (src/3D/LandBlock.cpp BuildVertexList,
 assets/shaders/fs_terrain.sc): the cell's country, altitude and noise pick a
-pair of materials blended by the pair's coefficient, scaled by the bump map's
-mean and by clamp(2 * luminosity, 0.5, 1). Each material is reduced to its
-mean colour, each *vertex* is given its own colour, and those colours are
+pair of materials blended by the pair's coefficient; each material is sampled
+at the vertex's block-local UV, the bump map is sampled at the same UV, and
+the result is scaled by clamp(2 * luminosity, 0.5, 1). Each *vertex* is given
+its own colour, and those colours are
 fitted to TERRAIN_COLOURS palette entries by median cut weighted by how many
 drawn triangles use the vertex, so the output is deterministic for a given
 .lnd file. A vertex carries one colour rather than a triangle one mean,
@@ -41,6 +42,7 @@ import argparse
 import struct
 import sys
 import zlib
+from pathlib import Path
 
 HEADER = struct.Struct("<I1024s6I")
 BLOCK_BYTES = 2520
@@ -105,15 +107,11 @@ def read_lnd(data):
     return lut, blocks, countries, materials, noise, bump
 
 
-def mean_colour(texels):
+def texel_colour(t):
     # B5G5R5A1, normalised per channel as the GPU samples it.
-    r = g = b = 0
-    for t in texels:
-        b += t & 31
-        g += (t >> 5) & 31
-        r += (t >> 10) & 31
-    n = len(texels) * 31
-    return (r * 255 / n, g * 255 / n, b * 255 / n)
+    return (((t >> 10) & 31) * 255 / 31,
+            ((t >> 5) & 31) * 255 / 31,
+            (t & 31) * 255 / 31)
 
 
 def median_cut(weighted, count):
@@ -171,7 +169,26 @@ def fit_error(usage, palette, index):
     return mean, worst ** 0.5
 
 
-def convert(data, terrain_colours=TERRAIN_COLOURS):
+def load_material_map(path, meph_dir):
+    """{material index: (source, tile, gain)} replaced by Meph tile images."""
+    from PIL import Image
+    overrides = {}
+    images = {}
+    for line in Path(path).read_text().splitlines():
+        if not line or line.startswith("#"):
+            continue
+        material, source, tile, gain = line.split("\t")
+        material, tile, gain = int(material), int(tile), float(gain)
+        if source not in images:
+            images[source] = Image.open(Path(meph_dir) / source).convert("RGBA")
+        x, y = tile % 16, tile // 16
+        piece = images[source].crop((x * 32, y * 32, (x + 1) * 32, (y + 1) * 32))
+        piece = piece.point(lambda v: min(255, int(v * gain)) if v else 0)
+        overrides[material] = piece.resize((256, 256), Image.NEAREST)
+    return overrides
+
+
+def convert(data, terrain_colours=TERRAIN_COLOURS, overrides=None):
     lut, blocks, countries, materials, noise, bump = read_lnd(data)
     by_index = {}
     for i, (block_x, block_z, cells) in enumerate(blocks):
@@ -196,8 +213,13 @@ def convert(data, terrain_colours=TERRAIN_COLOURS):
         o = ((x & 15) * 17 + (z & 15)) * 8
         return cells[o + 4], cells[o + 6], cells[o + 3]
 
-    means = [mean_colour(m) for m in materials]
-    bump_scale = sum(bump) * 2 / 255 / len(bump)
+
+    def sample(material, idx):
+        if overrides and material in overrides:
+            pixel = overrides[material].getpixel((idx % 256, idx // 256))
+            if pixel[3] >= 128:
+                return pixel[:3]
+        return texel_colour(materials[material][idx])
 
     def vertex_colour(x, z):
         altitude, properties, luminosity = cell(x, z)
@@ -205,11 +227,17 @@ def convert(data, terrain_colours=TERRAIN_COLOURS):
         # GetNoise takes a u8vec2, so the cell coordinates wrap at 256.
         n = noise[(x & 255) * 256 + (z & 255)]
         first, second, coefficient = country[(altitude + n) % 256]
-        if (first & 255) >= len(means) or (second & 255) >= len(means):
+        if (first & 255) >= len(materials) or (second & 255) >= len(materials):
             raise LandError(f"material out of range at {x},{z}")
-        a, b = means[first & 255], means[second & 255]
+        # openblack's terrain UV is the vertex's block-local position over
+        # the block (vs_terrain.sc), so for a 16-cell block it is
+        # (x & 15) / 16 by (z & 15) / 16; the 256-texel maps therefore step
+        # 16 texels a cell.  v_texcoord0 is zx / yx, so x picks the row.
+        idx = (x & 15) * 16 * 256 + (z & 15) * 16
+        a = sample(first & 255, idx)
+        b = sample(second & 255, idx)
         blend = (coefficient & 255) / 255
-        light = min(max(luminosity * 2 / 255, 0.5), 1.0) * bump_scale
+        light = min(max(luminosity * 2 / 255, 0.5), 1.0) * (bump[idx] * 2.0 / 255.0)
         return tuple(min(255.0, (a[i] + (b[i] - a[i]) * blend) * light)
                      for i in range(3))
 
@@ -297,14 +325,24 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("lnd")
     parser.add_argument("out")
+    parser.add_argument("--materials-map",
+                        help="tools/ground_map.tsv: replace material textures "
+                             "with Meph tiles")
+    parser.add_argument("--meph-dir",
+                        default=str(Path(__file__).resolve().parent.parent /
+                                    "build/tiles/Meph/data/art"),
+                        help="Meph art directory for --materials-map")
     parser.add_argument("--colours", type=int, default=TERRAIN_COLOURS,
                         help="palette entries fitted to the land (default "
                              f"{TERRAIN_COLOURS}, the ones the program does not own)")
     args = parser.parse_args()
     with open(args.lnd, "rb") as f:
         data = f.read()
+    overrides = None
+    if args.materials_map:
+        overrides = load_material_map(args.materials_map, args.meph_dir)
     try:
-        out, summary = convert(data, args.colours)
+        out, summary = convert(data, args.colours, overrides=overrides)
     except (LandError, struct.error, IndexError) as error:
         print(f"{args.lnd}: {error}", file=sys.stderr)
         return 1
