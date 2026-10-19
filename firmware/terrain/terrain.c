@@ -41,6 +41,10 @@
 #define ART_TILES TC_ART_TILES
 #endif
 
+#ifdef TC_PLANTS_HEADER
+#include TC_PLANTS_HEADER
+#endif
+
 /* Draw the sprite, or only carry its palette: the switch exists so that the
  * six scripted lands can be drawn with the ramp admitted and the sprite
  * absent, which is what shows that admitting it moved nothing the island
@@ -559,6 +563,9 @@ static int32_t height(uint32_t altitude)
 #endif
 #ifndef TC_TREE_WHOLE
 #define TC_TREE_WHOLE 0
+#endif
+#ifndef TC_PLANTS
+#define TC_PLANTS 0
 #endif
 
 /* The art, and the cards drawn from it. A card is an axis-aligned rectangle
@@ -1719,11 +1726,15 @@ static void card_axes(uint32_t yaw, uint32_t pitch, int32_t axis[3][3])
  * for +n, where u runs across the face, v up at pitch zero and n out of its
  * front. wy still names the bottom of a standing card; a caller laying it flat
  * subtracts half its height to put the box's centre at the requested y. */
+/* A plant's card may be any size, so the corner builder reads this rather
+ * than the compile-time CARD_UNITS; every other caller leaves it there. */
+static int32_t card_units = TC_CARD_UNITS;
+
 static void card_corners(int32_t wx, int32_t wy, int32_t wz, uint32_t yaw,
 			 uint32_t pitch, int32_t *cx, int32_t *cy,
 			 int32_t *cz)
 {
-	int32_t hw = TC_CARD_UNITS / 2, hh = TC_CARD_UNITS / 2;
+	int32_t hw = card_units / 2, hh = card_units / 2;
 	int32_t hd = TC_CARD_DEPTH / 2;
 	/* Preserve the standing path's Q4 axis rounding exactly: CARD_YAW is an
 	 * existing build dial and adding pitch must not move any of its pixels. */
@@ -2179,6 +2190,38 @@ static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 	card_at_yaw(wx, wy, wz, tile, TC_CARD_YAW);
 }
 
+#if TC_PLANTS
+/* Emit the plants whose grid cell this is.  The table is sorted by cell, so
+ * the walk pays a binary search a cell and each plant is drawn with the
+ * rotation and size the level script gave it, one card each. */
+static void draw_plant_cell(uint32_t gx, uint32_t gz)
+{
+	if (out->card == NULL && out->tex == NULL)
+		return;
+	const uint32_t key = (gz << 16) | gx;
+	unsigned lo = 0, hi = TC_PLANT_COUNT;
+	while (lo < hi) {
+		unsigned mid = (lo + hi) / 2;
+		uint32_t at = ((uint32_t)tc_plants[mid].gz << 16) |
+			      tc_plants[mid].gx;
+		if (at < key)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	int32_t saved = card_units;
+	for (; lo < TC_PLANT_COUNT; lo++) {
+		const struct tc_plant *p = &tc_plants[lo];
+		if ((((uint32_t)p->gz << 16) | p->gx) != key)
+			break;
+		card_units = p->units;
+		card_at_yaw(p->x, ground(p->x, p->z), p->z,
+			    p->tile % ART_TILES, p->yaw);
+	}
+	card_units = saved;
+}
+#endif
+
 /* Emit the grid card whose base is this terrain cell. The terrain walk is
  * back to front, so drawing a card immediately after its own ground leaves it
  * in front of that cell while terrain nearer to the camera is drawn later and
@@ -2368,6 +2411,9 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 			}
 			draw_card_grid_cell(gx, gz);
 			draw_tree_grid_cell(gx, gz);
+#if TC_PLANTS
+			draw_plant_cell(gx, gz);
+#endif
 		}
 	}
 

@@ -464,6 +464,20 @@ clocks 74.25 MHz through the same `SPINE18` entry and the same `SPINE19` and
 animal build, reported the transparency perfect, and preferred the flat cards
 with the texture visible from either side to the box cards they replace.
 
+Plants now come from the game rather than a fixed grid.
+`tools/convert_plants.py` reads the level script's `CREATE_NEW_TREE` and
+`CREATE_DEAD_TREE` commands, keeps each position, rotation and scale, and
+converts the position into the land grid with the same `.lnd` block origin
+`convert_land.py` uses; `PLANTS=1` compiles the table in, one card a plant,
+sorted by cell so the walk finds a cell's plants with a binary search, and
+`PLANT_UNITS` (default 160 Q4 at scale 1.0) sets the card's size. Land 1 gives
+1,398 plants across 16 types, 3.7 to 30 units, at the rotations and scales the
+original states. The board and host matched at CRC `05319cf9` with 2,071 plant
+triangles visible, `DRAW=51014us` and a 60.2 ms period in the scripted orbit.
+Two faults were caught before it flew: the board's tile store was uploaded only
+for cards and trees, and the first table kept absolute script coordinates,
+which put every plant in the ocean.
+
 A build that times its own phases with the core's cycle counter reports the
 mean cells a frame drew and the time it spent in the sky and sea rows, the
 block cull and the cell walk: `CELLS=18158 PHROWS=2us PHCULL=48us

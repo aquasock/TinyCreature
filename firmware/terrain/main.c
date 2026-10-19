@@ -349,7 +349,7 @@ static void fabric_tables(const struct tc_shade *shade)
 		RASTER_LUT = (uint32_t)shade->lut[i] << 24 | i;
 }
 
-#if TC_CARDS || TC_TREES
+#if TC_CARDS || TC_TREES || TC_PLANTS
 // The art's tiles, four bytes a write through TILES_ADDR and TILES_DATA,
 // which is the shape the frame read-back and the palette already use. Without
 // this the store is whatever the block RAM powers up as, and a card or tree
@@ -417,7 +417,7 @@ int main(void)
 		TN_VIDEO_PALETTE(i) = tc_palette(&land, i);
 	if (FABRIC)
 		fabric_tables(&shade);
-#if TC_CARDS || TC_TREES
+#if TC_CARDS || TC_TREES || TC_PLANTS
 	if (FABRIC)
 		fabric_tiles();
 #endif

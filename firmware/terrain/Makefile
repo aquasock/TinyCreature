@@ -116,7 +116,7 @@ COMMON_CPPFLAGS := $(SPRITE_CPPFLAGS) -DTC_CARDS=$(CARDS) \
                    -DTC_CARD_UNITS=$(CARD_UNITS) \
                    -DTC_CARD_COLUMN_PX=$(CARD_COLUMN_PX) -DTC_TEX=$(CARD_TEX) \
                    -DTC_CARD_EDGE=$(CARD_EDGE) -DTC_HANDOVER=$(HANDOVER) \
-                   -DTC_TREE_WHOLE=$(TREE_WHOLE)
+                   -DTC_TREE_WHOLE=$(TREE_WHOLE) -DTC_PLANTS=$(PLANTS)
 
 # The art's tiles: a generated header, off by default because the art is
 # fetched rather than committed, so a fresh clone builds. TILES=1 wants the
@@ -168,6 +168,29 @@ $(TILES_H): $(TILES_TOOL) $(TILES_SHEET)
 		--colours $(TILES_COLOURS) --limit $(TILES_LIMIT) --out $@
 
 $(call objects,terrain.c): $(TILES_H)
+endif
+
+# The level script's own tree placements, one card each.  The script and the
+# landscape it loads live outside the repository and their paths contain
+# spaces, so they are read by the recipe and are not prerequisites; the tool
+# is.  A build with no game data keeps PLANTS=0 and needs none of this.
+PLANTS        ?= 0
+PLANT_UNITS   ?= 160
+PLANT_SCRIPT  ?= ../../build/wineprefix/drive_c/Program Files (x86)/Lionhead Studios Ltd/Black & White/Scripts/Land1.txt
+PLANT_LAND    ?= ../../build/wineprefix/drive_c/Program Files (x86)/Lionhead Studios Ltd/Black & White/Data/Landscape/Land1.lnd
+PLANT_TOOL    := $(abspath ../../tools/convert_plants.py)
+PLANT_H       := $(BUILD)/plants/land1-plants.h
+
+ifeq ($(PLANTS),1)
+PLANT_FLAGS := -I$(BUILD)/plants -DTC_PLANTS_HEADER='"$(notdir $(PLANT_H))"'
+COMMON_CPPFLAGS += $(PLANT_FLAGS)
+CPPFLAGS += $(PLANT_FLAGS)
+
+$(PLANT_H): $(PLANT_TOOL)
+	@mkdir -p $(dir $@)
+	@python3 $(PLANT_TOOL) --script "$(PLANT_SCRIPT)" \
+		--land "$(PLANT_LAND)" --units $(PLANT_UNITS) --out $@
+$(call objects,terrain.c): $(PLANT_H)
 endif
 
 CPPFLAGS += $(COMMON_CPPFLAGS)

@@ -2085,3 +2085,40 @@ The next cycle the user wants takes plant positions from openblack's own data in
 - User Test: PASS
 
 ---
+
+## 64 COMMIT Unreleased 2026-10-19T07:18:00-07:00
+
+#### Coming From:
+
+Unreleased 9a92056
+
+#### Purpose:
+
+Place the game's own plant positions, rotations and scales on the Tang, one card each, instead of the fixed sixteen-cell grid.
+
+#### Outcome:
+
+`tools/convert_plants.py` reads the level script's 1,395 `CREATE_NEW_TREE` and 3 `CREATE_DEAD_TREE` commands, keeps each position, rotation and scale, converts the position into the land grid with the same `.lnd` block origin `convert_land.py` computes, and writes a C table sorted by cell; `firmware/terrain/Makefile` gained `PLANTS`, `PLANT_UNITS` (160 Q4 at scale 1.0 by default), `PLANT_SCRIPT` and `PLANT_LAND`, and `terrain.c` found each cell's plants with a binary search during the walk and drew one card per plant at the script's yaw and size, with `card_corners` reading a per-card size and the tile chosen by the script's type. The table is 1,398 plants across 16 types, 59 to 480 Q4, cells 21 to 148 by 50 to 184. Two faults were caught by the gate before the first flight. The board drew the terrain-only CRC because `main.c` uploaded the tile store only under `TC_CARDS || TC_TREES`; the guard now includes `TC_PLANTS`. The first deployed table then put every plant in the ocean because it kept absolute script coordinates while the firmware's world starts at the island origin; the converter now subtracts the `.lnd` origin, and the regenerated table sits on the land. The 600-frame host and board gate passed at `TRIS=22516`, `PIXELS=33962`, `DRAW=51014us`, `MAX=57603us`, period 60,185 us, `LATE=0` and CRC `05319cf9`, with 2,071 plant triangles visible in the scripted orbit; the cost is per-plant setup and is paid whether or not a plant is in view. The interactive artifact was `build/feel/terrain.elf`, SHA-256 `61d68a7d2fc88573fbf04fa4780bd552fe185f46faf98eb223b6e1a942472ccd`, on seed 13's unchanged core. The user rebooted, the same artifact was loaded again and rebuilt to the same hash, and the user passed it. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The look is accepted, so what remains is tuning against it: the script's 16 types are mapped to the 43 fruit tiles by type id, which is arbitrary until the user chooses a mapping, and `PLANT_UNITS=160` sets the base size the script's 0.37 to 3.0 multiplies. The scripted orbit runs at 16.6 frames a second because the walk pays for every plant's setup; a distance or cell-based cull is the lever if flight feels slow, not the fill. Grass is not placed by the script at all — the original draws it as ground cover, not objects — so grass remains a separate question. Entry 51's `BAD TINYCREATURE PIXELS` at 2,000 and 3,000 villager-sized cards is still open.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/Makefile
+- firmware/terrain/main.c
+- firmware/terrain/terrain.c
+- tools/build_tang32.sh
+- tools/convert_plants.py
+- tools/run_tang32_feel.sh
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
