@@ -75,6 +75,13 @@ def main():
     parser.add_argument("--base", required=True)
     parser.add_argument("--top", required=True)
     parser.add_argument("--count", type=int, default=16)
+    parser.add_argument("--also", default="",
+                        help="comma-separated source cells to append after "
+                             "the green selection, in this order")
+    parser.add_argument("--extra-base",
+                        help="sheet the --also cells come from (default: --base)")
+    parser.add_argument("--extra-top",
+                        help="detail sheet for the --also cells (default: --top)")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     if args.count < 1:
@@ -82,12 +89,24 @@ def main():
 
     base = load(args.base)
     top = load(args.top)
+    extra_base = load(args.extra_base) if args.extra_base else base
+    extra_top = load(args.extra_top) if args.extra_top else top
     found = sprites(base, top)
     if len(found) < args.count:
         die(f"only {len(found)} sprites, asked for {args.count}")
     found.sort(key=lambda item: (-item[0], item[1]))
     chosen = found[:args.count]
     chosen.sort(key=lambda item: item[1])
+    if args.also:
+        for value in args.also.split(","):
+            idx = int(value, 0)
+            if not 0 <= idx < GRID * GRID:
+                die(f"--also cell {idx} is outside the sheet")
+            y, x = divmod(idx, GRID)
+            box = (x * TILE, y * TILE, (x + 1) * TILE, (y + 1) * TILE)
+            chosen.append((0, idx, x, y,
+                           Image.alpha_composite(extra_base.crop(box),
+                                                 extra_top.crop(box))))
 
     across = 4
     down = (len(chosen) + across - 1) // across
@@ -98,7 +117,7 @@ def main():
     out.parent.mkdir(parents=True, exist_ok=True)
     sheet.save(out)
 
-    print(f"{out}: {len(chosen)} plants, greenest first")
+    print(f"{out}: {len(chosen)} tiles, {args.count} greenest plants first")
     for i, (score, index, x, y, _image) in enumerate(chosen):
         print(f"  tile {i:2d}: cell {index:3d} ({x:2d},{y:2d}) "
               f"greenness {score}")

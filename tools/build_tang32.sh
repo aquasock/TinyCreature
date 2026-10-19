@@ -91,8 +91,10 @@ make -C "$root/firmware/terrain" TINYNES="$source_dir" BUILD="$out/terrain" \
     PLANTS="${TINYCREATURE_PLANTS:-0}" \
     PLANT_ART="${TINYCREATURE_PLANT_ART:-0}" \
     PLANT_TILES="${TINYCREATURE_PLANT_TILES:-16}" \
-    PLANT_STRETCH="${TINYCREATURE_PLANT_STRETCH:-100}" \
-    PLANT_UNITS="${TINYCREATURE_PLANT_UNITS:-160}" \
+    PLANT_BIG="${TINYCREATURE_PLANT_BIG:-120}" \
+    PLANT_TREE_CELLS="${TINYCREATURE_PLANT_TREE_CELLS:-23,3,17,1}" \
+    PLANT_EXTRA_TILES="${TINYCREATURE_PLANT_EXTRA_TILES:-4}" \
+    PLANT_UNITS="${TINYCREATURE_PLANT_UNITS:-80}" \
     PLANT_SCRIPT="${TINYCREATURE_PLANT_SCRIPT:-$root/build/wineprefix/drive_c/Program Files (x86)/Lionhead Studios Ltd/Black & White/Scripts/Land1.txt}" \
     PLANT_LAND="${TINYCREATURE_PLANT_LAND:-$root/build/wineprefix/drive_c/Program Files (x86)/Lionhead Studios Ltd/Black & White/Data/Landscape/Land1.lnd}" \
     READOUT="${TINYCREATURE_READOUT:-1}" \
@@ -113,8 +115,10 @@ make -C "$root/firmware/terrain" TINYNES="$source_dir" FABRIC=0 \
     PLANTS="${TINYCREATURE_PLANTS:-0}" \
     PLANT_ART="${TINYCREATURE_PLANT_ART:-0}" \
     PLANT_TILES="${TINYCREATURE_PLANT_TILES:-16}" \
-    PLANT_STRETCH="${TINYCREATURE_PLANT_STRETCH:-100}" \
-    PLANT_UNITS="${TINYCREATURE_PLANT_UNITS:-160}" \
+    PLANT_BIG="${TINYCREATURE_PLANT_BIG:-120}" \
+    PLANT_TREE_CELLS="${TINYCREATURE_PLANT_TREE_CELLS:-23,3,17,1}" \
+    PLANT_EXTRA_TILES="${TINYCREATURE_PLANT_EXTRA_TILES:-4}" \
+    PLANT_UNITS="${TINYCREATURE_PLANT_UNITS:-80}" \
     PLANT_SCRIPT="${TINYCREATURE_PLANT_SCRIPT:-$root/build/wineprefix/drive_c/Program Files (x86)/Lionhead Studios Ltd/Black & White/Scripts/Land1.txt}" \
     PLANT_LAND="${TINYCREATURE_PLANT_LAND:-$root/build/wineprefix/drive_c/Program Files (x86)/Lionhead Studios Ltd/Black & White/Data/Landscape/Land1.lnd}" \
     READOUT="${TINYCREATURE_READOUT:-1}" \

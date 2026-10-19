@@ -485,12 +485,16 @@ the 16 greenest, and lays them in a 4 by 4 sheet, and the script's 16 tree
 types map one-to-one onto the tiles in type order, so each species keeps its
 plant. Every card's base sits a quarter of its height below the ground so the
 sprite reads as rooted. The board and host matched at CRC `319d2c52` with
-`PIXELS=34638`, `DRAW=51041us` and a 60.3 ms period. Each species is also
-drawn at its own proportion: `plant_stretch` in `terrain.c` makes pines,
-conifers and palms about twice as tall as wide, oaks and beeches a third
-taller, and bushes a little shorter, with `PLANT_STRETCH` scaling the whole
-table, and the sink follows the stretched height. That build matched at CRC
-`fd5bf570` with `PIXELS=35332`, `DRAW=51903us` and a 60.9 ms period.
+`PIXELS=34638`, `DRAW=51041us` and a 60.3 ms period. Every non-terrain card
+is now one size: 80 Q4, half a cell, the villager height this project has
+used since entry 51. A one-tile plant is exactly that card, whatever the
+script's scale said; a tree is the 3 by 3 picture of five cards -- 23 | 3 | 23,
+then 17, then 1 -- at the same 80 Q4 each, so a tree is three bush heights
+tall and wide. The five tree cells live at tiles 16 to 19 in the plant sheet,
+taken from `_Meph_trees.png`, and the per-type stretch is gone. That build
+matched at CRC `ab321e0c` with `TRIS=21957`, `PIXELS=33509`, `DRAW=49499us`
+and a 59.5 ms period. The middle-drag pitch is inverted at the user's request:
+dragging up now tilts the other way, and the other camera paths are unchanged.
 
 A build that times its own phases with the core's cycle counter reports the
 mean cells a frame drew and the time it spent in the sky and sea rows, the

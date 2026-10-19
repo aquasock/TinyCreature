@@ -2194,3 +2194,39 @@ The user accepted the stretched proportions and named authored-tall sprites as t
 - User Test: PASS
 
 ---
+
+## 67 COMMIT Unreleased 2026-10-19T08:59:00-07:00
+
+#### Coming From:
+
+Unreleased 586c94b
+
+#### Purpose:
+
+Make every non-terrain card one villager-height tile, build trees as a 3 by 3 block of those tiles from the tree sheet, and invert the middle-drag pitch axis.
+
+#### Outcome:
+
+The five-card tree first drew plant cells: `--also 23,3,17,1` cropped `_Meph_plants.png`, so the board showed stacks of plants. `tools/make_plant_sheet.py` gained `--extra-base` and `--extra-top`, the Makefile points them at `_Meph_trees.png` and its detail layer, and tiles 16 to 19 are now tree cells 23, 3, 17 and 1. The size reference then became uniform: every card is 80 Q4, half a cell, the villager height this project has used since entry 51, so `PLANT_UNITS` is 80 and `PLANT_BIG` 120 (script scale 1.5). A one-tile plant is exactly that card whatever the script's scale said, and the per-type stretch table and its `PLANT_STRETCH` knob were removed. An intermediate tree built as 45 cards at 720 Q4 was flown and read as about nine bush heights, too tall; the final tree is five cards in a 3 by 3 block -- 23 | 3 | 23, then 17, then 1 -- at the same 80 Q4 each, 240 Q4 or three bush heights tall and wide, with the picture's four empty corners not drawn. The middle-drag pitch changed from `cam_pitch -= dy * TC_PITCH_PER_COUNT` to `+=` at the user's request, inverting only that axis; the left drag, the wheel and the horizontal turn are untouched. The 600-frame host and board gate passed at `TRIS=21957`, `PIXELS=33509`, `DRAW=49499us`, `MAX=55420us`, period 59,479 us, `LATE=0` and CRC `ab321e0c`, on seed 13's unchanged core. The interactive artifact was `build/feel/terrain.elf`, SHA-256 `084a8d6dab14c161b79a51f388d0f389749dbb177b0a1a21e50f5035a07ebf87`; after a board reboot it was rebuilt to the same hash, the user flew it and passed it. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+Every non-terrain card is one size now, so future work can assume the 80 Q4 tile: bushes are one, trees are 3 by 3 of them, and the boundary between bush and tree is `PLANT_BIG` at 120 Q4. The 13 plant sprites the green selection dropped are still available, grass is still ground cover rather than placement data, and entry 51's `BAD TINYCREATURE PIXELS` at 2,000 and 3,000 villager-sized cards remains the open defect. The middle-drag inversion was asked for on the board; whether the PC reference patch should follow it is a separate decision.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/Makefile
+- firmware/terrain/terrain.c
+- tools/build_tang32.sh
+- tools/make_plant_sheet.py
+- tools/run_tang32_feel.sh
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

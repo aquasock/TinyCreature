@@ -567,8 +567,14 @@ static int32_t height(uint32_t altitude)
 #ifndef TC_PLANTS
 #define TC_PLANTS 0
 #endif
-#ifndef TC_PLANT_STRETCH
-#define TC_PLANT_STRETCH 100
+#ifndef TC_PLANT_TILES
+#define TC_PLANT_TILES 16
+#endif
+#ifndef TC_PLANT_UNITS
+#define TC_PLANT_UNITS 80
+#endif
+#ifndef TC_PLANT_BIG
+#define TC_PLANT_BIG 120
 #endif
 
 /* The art, and the cards drawn from it. A card is an axis-aligned rectangle
@@ -1315,7 +1321,7 @@ void tc_mouse(uint8_t buttons, int32_t dx, int32_t dy, int32_t wheel)
 		/* Turning: the angle moves with the drag and the tilt against it,
 		 * which is what makes dragging down look further down. */
 		cam_turn += dx * TC_TURN_PER_COUNT;
-		cam_pitch -= dy * TC_PITCH_PER_COUNT;
+		cam_pitch += dy * TC_PITCH_PER_COUNT;
 		if (cam_pitch < 4096)
 			cam_pitch = 4096;      /* about nine degrees: never flat */
 		if (cam_pitch > 0x3800)
@@ -2200,14 +2206,34 @@ static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 /* Emit the plants whose grid cell this is.  The table is sorted by cell, so
  * the walk pays a binary search a cell and each plant is drawn with the
  * rotation and size the level script gave it, one card each. */
-/* Height as a percentage of the plant's card width, by script tree type:
- * conifers, pines and palms stand tall, oaks and beeches are middling, and
- * the bushes stay near square.  The card is a picture, so this stretches the
- * sprite; the user asked for the shape first and better art after. */
-static const uint8_t plant_stretch[23] = {
-	125, 140, 150, 220, 200, 135, 130, 120, 220, 210, 230, 190,
-	220, 90, 85, 95, 100, 100, 100, 100, 100, 100, 120,
-};
+/* A tree above the threshold is the five-tile picture the user approved:
+ * 23 | 3 | 23 across the top, 17 below the middle, and 1 at the base, all
+ * square 32 by 32 tiles, so it is five cards rather than one 96 by 96 card
+ * the fabric cannot sample.  Bushes stay single cards whatever their size. */
+static void draw_big_tree(const struct tc_plant *p)
+{
+	/* Three villager-height cards each way: the picture's 3 by 3 cells at
+	 * the same card size as a bush, so a tree is exactly three bush heights
+	 * tall and wide.  The two lower cells hold the trunk and the base and
+	 * the top row the canopy; the four empty corners are not drawn. */
+	const int32_t unit = TC_PLANT_UNITS;
+	const uint32_t yaw = p->yaw;
+	int32_t su = isin(yaw), cu = icos(yaw);
+	int32_t dx = (int32_t)((int64_t)cu * unit >> 14);
+	int32_t dz = (int32_t)(-((int64_t)su * unit) >> 14);
+	int32_t gy = ground(p->x, p->z) - unit / 4;
+	int32_t saved_units = card_units, saved_height = card_height;
+
+	card_units = unit;
+	card_height = unit;
+	card_at_yaw(p->x, gy, p->z, TC_PLANT_TILES + 3, yaw);
+	card_at_yaw(p->x, gy + unit, p->z, TC_PLANT_TILES + 2, yaw);
+	for (int i = -1; i <= 1; i++)
+		card_at_yaw(p->x + i * dx, gy + 2 * unit, p->z + i * dz,
+			    i ? TC_PLANT_TILES : TC_PLANT_TILES + 1, yaw);
+	card_units = saved_units;
+	card_height = saved_height;
+}
 
 static void draw_plant_cell(uint32_t gx, uint32_t gz)
 {
@@ -2229,12 +2255,16 @@ static void draw_plant_cell(uint32_t gx, uint32_t gz)
 		const struct tc_plant *p = &tc_plants[lo];
 		if ((((uint32_t)p->gz << 16) | p->gx) != key)
 			break;
-		int32_t height = (int32_t)p->units * plant_stretch[p->kind] *
-				 TC_PLANT_STRETCH / 10000;
-		card_units = p->units;
+		if (p->units >= TC_PLANT_BIG && p->kind != 13 &&
+		    p->kind != 14 && p->kind != 15) {
+			draw_big_tree(p);
+			continue;
+		}
+		/* A one-tile plant is exactly one villager height, whatever the
+		 * script's scale said; the scale only decides tree or bush. */
+		const int32_t height = TC_PLANT_UNITS;
+		card_units = height;
 		card_height = height;
-		/* A quarter of the card's height goes below the ground so the
-		 * sprite reads as rooted rather than standing on the surface. */
 		card_at_yaw(p->x, ground(p->x, p->z) - height / 4, p->z,
 			    p->tile % ART_TILES, p->yaw);
 	}

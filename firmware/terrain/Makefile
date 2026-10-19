@@ -107,8 +107,6 @@ CARD_TEX    ?= 0
 # sides show at an angle; off, it is a two-faced billboard and cutout art has
 # no black frame. The transparent texel is skipped either way.
 CARD_EDGE   ?= 0
-# Overall multiplier on the per-type plant height, in percent.
-PLANT_STRETCH ?= 100
 COMMON_CPPFLAGS := $(SPRITE_CPPFLAGS) -DTC_CARDS=$(CARDS) \
                    -DTC_CARDS_N=$(CARDS_N) -DTC_TREES=$(TREES) \
                    -DTC_TREES_N=$(TREES_N) -DTC_READOUT=$(READOUT) \
@@ -118,8 +116,7 @@ COMMON_CPPFLAGS := $(SPRITE_CPPFLAGS) -DTC_CARDS=$(CARDS) \
                    -DTC_CARD_UNITS=$(CARD_UNITS) \
                    -DTC_CARD_COLUMN_PX=$(CARD_COLUMN_PX) -DTC_TEX=$(CARD_TEX) \
                    -DTC_CARD_EDGE=$(CARD_EDGE) -DTC_HANDOVER=$(HANDOVER) \
-                   -DTC_TREE_WHOLE=$(TREE_WHOLE) -DTC_PLANTS=$(PLANTS) \
-                   -DTC_PLANT_STRETCH=$(PLANT_STRETCH)
+                   -DTC_TREE_WHOLE=$(TREE_WHOLE) -DTC_PLANTS=$(PLANTS)
 
 # The art's tiles: a generated header, off by default because the art is
 # fetched rather than committed, so a fresh clone builds. TILES=1 wants the
@@ -152,6 +149,8 @@ endif
 # script tree types the plant converter maps onto it.
 PLANT_ART     ?= 0
 PLANT_TILES   ?= 16
+PLANT_TREE_CELLS ?= 23,3,17,1
+PLANT_EXTRA_TILES ?= 4
 PLANT_ART_DIR ?= $(abspath ../../build/tiles/Meph/data/art)
 PLANT_SHEET   := $(BUILD)/plants/meph-plants.png
 PLANT_SHEET_TOOL := $(abspath ../../tools/make_plant_sheet.py)
@@ -160,7 +159,7 @@ ifneq ($(TILES),1)
 $(error PLANT_ART=1 requires TILES=1)
 endif
 TILES_SHEET   := $(PLANT_SHEET)
-TILES_LIMIT   := $(PLANT_TILES)
+TILES_LIMIT   := $(shell expr $(PLANT_TILES) + $(PLANT_EXTRA_TILES))
 endif
 TILES_H       := $(BUILD)/tiles/meph-$(TILES_COLOURS)c-$(TILES_LIMIT)t.h
 TILES_TOOL    := $(abspath ../../tools/convert_tiles.py)
@@ -182,11 +181,15 @@ endif
 
 ifeq ($(PLANT_ART),1)
 $(PLANT_SHEET): $(PLANT_SHEET_TOOL) $(PLANT_ART_DIR)/_Meph_plants.png \
-                                $(PLANT_ART_DIR)/_Meph_plants-top.png
+                                $(PLANT_ART_DIR)/_Meph_plants-top.png \
+                                $(PLANT_ART_DIR)/_Meph_trees.png \
+                                $(PLANT_ART_DIR)/_Meph_trees-top.png
 	@mkdir -p $(dir $@)
 	@python3 $(PLANT_SHEET_TOOL) --base "$(PLANT_ART_DIR)/_Meph_plants.png" \
 		--top "$(PLANT_ART_DIR)/_Meph_plants-top.png" \
-		--count $(PLANT_TILES) --out $@
+		--count $(PLANT_TILES) --also $(PLANT_TREE_CELLS) \
+		--extra-base "$(PLANT_ART_DIR)/_Meph_trees.png" \
+		--extra-top "$(PLANT_ART_DIR)/_Meph_trees-top.png" --out $@
 endif
 
 $(TILES_H): $(TILES_TOOL) $(TILES_SHEET)
@@ -202,14 +205,17 @@ endif
 # spaces, so they are read by the recipe and are not prerequisites; the tool
 # is.  A build with no game data keeps PLANTS=0 and needs none of this.
 PLANTS        ?= 0
-PLANT_UNITS   ?= 160
+PLANT_UNITS   ?= 80
+PLANT_BIG     ?= 120
 PLANT_SCRIPT  ?= ../../build/wineprefix/drive_c/Program Files (x86)/Lionhead Studios Ltd/Black & White/Scripts/Land1.txt
 PLANT_LAND    ?= ../../build/wineprefix/drive_c/Program Files (x86)/Lionhead Studios Ltd/Black & White/Data/Landscape/Land1.lnd
 PLANT_TOOL    := $(abspath ../../tools/convert_plants.py)
 PLANT_H       := $(BUILD)/plants/land1-plants.h
 
 ifeq ($(PLANTS),1)
-PLANT_FLAGS := -I$(BUILD)/plants -DTC_PLANTS_HEADER='"$(notdir $(PLANT_H))"'
+PLANT_FLAGS := -I$(BUILD)/plants -DTC_PLANTS_HEADER='"$(notdir $(PLANT_H))"' \
+               -DTC_PLANT_TILES=$(PLANT_TILES) -DTC_PLANT_UNITS=$(PLANT_UNITS) \
+               -DTC_PLANT_BIG=$(PLANT_BIG)
 COMMON_CPPFLAGS += $(PLANT_FLAGS)
 CPPFLAGS += $(PLANT_FLAGS)
 
