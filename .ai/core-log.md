@@ -1926,3 +1926,34 @@ The core is the first thing to settle. Seed 6 is timing-clean and only the pixel
 - User Test: N/A
 
 ---
+
+## 59 COMMIT Unreleased 2026-10-19T06:21:00-07:00
+
+#### Coming From:
+
+Unreleased 20de62d
+
+#### Purpose:
+
+Deploy entry 58's transparent cutout by admitting the pixel-clock bridge pip TinyTang proved, in place of the single pip TinyNES measured on 2026-10-12.
+
+#### Outcome:
+
+TinyNES's build script required the pixel clock's only clock-bridge pip to be `SPINE26/CBRIDGEOUT_BOTTOM2`, an equality written from TinyNES core-log entry 14 when SPINE17 and SPINE18 had been measured dead. TinyTang's TOOL-021 established that those spines were dead because apicula tied their select ports to VCC, which the vendor's `.fse` cannot express, and that apicula `04bc3c5` holds them at VSS while nextpnr `8be8657b` keeps logic out of the select tiles; TinyTang's accepted open-flow desktop core clocks a 74.25 MHz pixel clock through the same `X88Y54` SPINE18 entry and the same SPINE19 and SPINE26 bridge set. This project was already building with that stack: `tools/build_tang32.sh` points `APICULA_FORK` at apicula `04bc3c5`, the nextpnr binary was built from that fork on 2026-10-18, and its embedded chipdb is the `aecb123e` digest TinyTang pins, so entry 58's sweep had already met its constraints and seed 13 at 75.06 MHz bus and 101.63 MHz pixel failed only the equality. `patches/tinynes-tang32.patch` now replaces the equality with a subset test against the measured set of SPINE19 and SPINE26, still refusing SPINE27; the regenerated patch applies cleanly to a pristine `f5011dd` and reproduces the working tree. `TINYCREATURE_SEEDS=13` selected seed 13 and the gate printed the measured set; the published core is `ae350_soc.bin` SHA-256 `7aeaa671da52ae4c3cf38aa8e9886b39ff96f2cad436a39252909bd5781aa10b` and `ae350_soc.fs` SHA-256 `28b0f4f2460220fef2c4ff189346ff31869642dcb460fc053787d83fa6be69a0`. The interactive artifact was `build/feel/terrain.elf` SHA-256 `707bcebc68a8dee8e76898652a16eb744d0ff982ff799d693a8354bf375560c6`, the accepted 256-card shelf at 48 by 48 by 12 Q4 with `CARD_TEX=1`, `CARD_EDGE=0` and the 64 animal tiles from `build/animals/sheet.png`; trees were left out because the tree sheet replaces `TILES_SHEET` and cannot share the build. The core loaded, the program uploaded 151,916 bytes at 186.0 KB/s, the run started, and the host released the link after twenty seconds. The user reported the transparency perfect and the cards reading as flat pictures with the texture visible from either side, and preferred them to the box cards. A cutout card now submits two textured triangles a frame, the face toward the camera, with the four solid sides existing only under `CARD_EDGE=1`, so an exactly edge-on card has zero width; the trees remain opaque rectangles because the Meph source has no alpha, and entry 51's 2,000-card BAD PIXELS defect is untouched. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+SPINE27 is now the only bridge pip the surviving seeds used that the gate still refuses, and seed 6 at 79.81 MHz bus and 93.69 MHz pixel offers a wider margin than seed 13's 75.06, so proving that spine on the board is the next clock step if the margin matters. The visual question has been answered in the cutout's favour; what remains is that the sixty-four animal tiles are still the first sixty-four by filename, sixteen of them butterflies, so a curated list is what would put wolves or bears in the crowd, and the trees need a silhouette source before they can cut out. Entry 51's 2,000-card BAD PIXELS defect still stands un-reproduced, with `tools/measure_tang32.sh` and `TINYCREATURE_MEASURE_CARDS` the command that brackets it.
+
+#### Files Modified:
+
+- README.md
+- patches/tinynes-tang32.patch
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

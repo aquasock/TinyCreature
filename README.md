@@ -44,7 +44,9 @@ Suite, nextpnr fork, and Apicula fork used by TinyNES. Every core build
 synthesises once and places and routes seeds 1 to 8 in parallel, keeping the
 clean seed with the fastest bus clock; a seed is clean when TinyNES's build
 script accepts it. `build/tang32/seeds.tsv` lists each seed's result and
-`TINYCREATURE_SEEDS` replaces the list. The first image routed at seed 11 at
+`TINYCREATURE_SEEDS` replaces the list. This project's patch admits `SPINE19`
+beside `SPINE26` in the pixel-clock bridge check, on TinyTang's measured
+result; every other bridge pip is still refused. The first image routed at seed 11 at
 82.41 MHz on the 75 MHz bus and 100.92 MHz on the 74.25 MHz pixel clock; the
 image with the rasterizer kept seed 4 at 80.45 and 98.16 MHz.
 
@@ -442,10 +444,15 @@ of the card box, so a cutout card is its art's silhouette with only the face
 toward the camera drawn; `CARD_EDGE=1` restores the box. The animal icons are
 the cards this actually cuts out. Meph's tree sheet is opaque in both its base
 layer and its uniform `-bg` layer, so the tree cards stay rectangles until
-they have a silhouette source of their own. The FPGA core did not find a clean
-seed for this change: seed 6 met both clocks at 79.81 and 93.69 MHz but the
-TinyNES build still rejects its pixel-clock bridge pips, so the entry 49 core
-remains the board image and no cutout build has been deployed.
+they have a silhouette source of their own. The core this first runs on is seed
+13, 75.06 MHz on the bus and 101.63 MHz on the pixel clock, published after
+`patches/tinynes-tang32.patch` admitted `SPINE19` beside `SPINE26` in the pixel
+clock's bridge check: TinyTang's TOOL-021 found those spines dead only because
+apicula tied their select ports to VCC, and its accepted open-flow desktop core
+clocks 74.25 MHz through the same `SPINE18` entry and the same `SPINE19` and
+`SPINE26` bridge set. `SPINE27` remains refused. The user flew the 256-card
+animal build, reported the transparency perfect, and preferred the flat cards
+with the texture visible from either side to the box cards they replace.
 
 A build that times its own phases with the core's cycle counter reports the
 mean cells a frame drew and the time it spent in the sky and sea rows, the
