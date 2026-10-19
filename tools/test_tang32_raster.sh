@@ -27,7 +27,8 @@ make -s -C "$root/firmware/terrain" BUILD="$out" \
     CARD_TEX="${TINYCREATURE_CARD_TEX:-0}" \
     CARD_UNITS="${TINYCREATURE_CARD_UNITS:-480}" \
     CARD_YAW="${TINYCREATURE_CARD_YAW:-0}" \
-    CARD_DEPTH="${TINYCREATURE_CARD_DEPTH:-48}" host
+    CARD_DEPTH="${TINYCREATURE_CARD_DEPTH:-48}" \
+    CARD_EDGE="${TINYCREATURE_CARD_EDGE:-0}" clean host
 # The defaults retain the two established views: frame 0 sees the whole
 # island; frame 75 is close in, with triangles cut at the near plane. The
 # overrides let a new primitive be checked at other points around the orbit.

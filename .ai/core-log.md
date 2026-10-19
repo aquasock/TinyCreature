@@ -1885,3 +1885,44 @@ No work remains in the approved cycle. The handoff state is the accepted sixteen
 - User Test: PASS
 
 ---
+## 58 COMMIT Unreleased 2026-10-18T21:40:00-07:00
+
+#### Coming From:
+
+Unreleased c94eccf
+
+#### Purpose:
+
+Make the cards' transparent texels holes rather than a near-black square, in the art pipeline, the host twin and the fabric.
+
+#### Outcome:
+
+The art's palette-relative texel 0 is the transparent key now. `tools/convert_tiles.py` reserves it, fits the art into the remaining 63 entries (palette entries 193 to 255, with entry 192 the key), writes `0x00` for every source pixel whose alpha is below the new `--alpha-threshold` (128 by default), and the four procedural test tiles moved to 1 to 63 as well. `tc_soft_card` and `tc_soft_tex` skip a key texel and do not count it, and `fpga/raster.sv`'s `S_CARD` and `S_TEXW` gate the framebuffer write and the `PIXELS` counter on `tile_q[7:0] != 0`, so the fabric and the twin still draw the same bytes. A new `CARD_EDGE` switch, default 0, drops the four solid near-black sides of the card box: a cutout card is its art's silhouette, with only the face toward the camera drawn; `CARD_EDGE=1` restores the box. The Meph tree sheet is the limit and the reason the feature is not yet true of every card: its base layer is opaque and its `-bg` layer is uniform white, so `tools/make_tree_sheet.py` still produces an opaque rectangle, and only the animal icons, whose source art carries alpha, actually cut out. The tool's own documentation now says that rather than claiming a silhouette the source does not have. Verification: the no-card Land 1 orbit still draws CRC `566ccf4e`, so nothing outside the cards moved; the animal cutout build (64 cards, `CARD_TEX=1`, `CARD_EDGE=0`) draws `TRIS=20570 PIXELS=33790 CRC=0d7fac18`; the tree build at 160 by 160 by 8 draws `TRIS=20445 PIXELS=33785 CRC=8c9f04a2`. AddressSanitizer and UndefinedBehaviorSanitizer are clean on the animal, tree and no-card hosts. `tests/raster_tb.sv` passes on the no-card frame (CRCs `e595892a` and `f02b19a1`), the animal cutout (`18c6b9c4` and `d2433b88`) and the tree columns (`c3d4ebd1` and `d0650862`); its push task now skips the four payload words of a `CARD` command, which it had been counting as commands, and `tools/test_tang32_raster.sh` now builds with `clean host` so a changed card knob cannot reuse the last object. The FPGA core rebuild did not produce a clean seed. The first sweep of seeds 1 to 8 failed seeds 1, 3, 4, 5, 6, 7 and 8 on the pixel-clock bridge check; a rerun of seed 2 met the pixel clock at 105.55 MHz but missed the bus at 70.95 MHz. The targeted sweep of 3, 5, 6, 9, 10, 11, 12 and 13 left seed 6 at 79.81 MHz bus and 93.69 MHz pixel and seed 13 at 75.06 and 101.63, both rejected only because the pixel clock used `SPINE19` and `SPINE26`/`SPINE27` bridge pips; seeds 5 and 11 failed the same check at 76.88/90.08 and 79.64/100.86, and seeds 3, 9, 10 and 12 were killed at the user's request. The old entry 49 core is therefore still the board image (`ae350_soc.bin` SHA-256 `f9f9e2ea15e1f4975e68596d792143438b5cfcf66790b0dec7da92e775498c67`, `ae350_soc.fs` SHA-256 `db57e932e7a5469ca0e8e987c1d31f9a4237472305fa441f3caab7d7030175a8`), and nothing was deployed or tested on the board. The core's bus critical path is the framebuffer readback (`lb_index` through `raster.w_rb` to the CPU's `HRDATA`), not the new key compare, so the failures are placement and the TinyNES bridge gate rather than the transparency logic being too slow. The tree cards' dark rectangles remain because their source art has no alpha.
+
+#### Next Steps:
+
+The core is the first thing to settle. Seed 6 is timing-clean and only the pixel-clock bridge gate rejects it, and TinyTang's TOOL-021 now explains those measured-dead bridge pips as a symptom of the spine select ports being tied to VCC rather than VSS; TinyCreature's apicula fork is already at `04bc3c5`, so the next step is the user's decision whether to relax TinyNES's `SPINE26`-only gate and take a seed like 6 to the board, or keep the gate and find a seed that routes the old measured pip. No board artifact exists for the cutout until that is settled. After that, the animal cards can be judged on the board, the tree cards need a real silhouette source or a mask of their own before they can cut out, and `CARD_EDGE` is the switch for keeping or dropping the box sides. The pending player-visible questions are whether the cutout silhouette reads well at distance and whether the removed box sides are worth the lost thickness.
+
+#### Files Modified:
+
+- .ai/core-log.md
+- README.md
+- firmware/terrain/Makefile
+- firmware/terrain/terrain.c
+- firmware/terrain/terrain.h
+- fpga/raster.sv
+- tests/raster_tb.sv
+- tools/build_tang32.sh
+- tools/convert_tiles.py
+- tools/make_tree_sheet.py
+- tools/measure_tang32.sh
+- tools/run_tang32_feel.sh
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: FAIL
+- Deployment: N/A
+- User Test: N/A
+
+---

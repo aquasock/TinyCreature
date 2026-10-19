@@ -27,6 +27,7 @@ run_one() { # sweep value <make args...>
     echo "== $sweep $value ==" >&2
     make -s -C "$root/firmware/terrain" TINYNES="$src" BUILD="$build" \
         CARDS=0 TILES=1 READOUT=0 CARD_TEX=1 CARD_UNITS=80 CARD_DEPTH=8 \
+        CARD_EDGE="${TINYCREATURE_CARD_EDGE:-0}" \
         PIN_X=0xffff PIN_Z=0xffff "$@" clean all host >/dev/null
     local log line why
     # The board's own output is kept whole, so a run that fails its cadence

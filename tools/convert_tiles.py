@@ -14,7 +14,10 @@
 # shares one small palette the way the island shares another.
 #
 # The output is a C header holding that palette and, per tile and per mosaic
-# cell, the palette entry the cell takes.  It is a build product and never
+# cell, the palette entry the cell takes.  Palette-relative texel 0 is the
+# transparent key: the fill does not write it, so the card's silhouette is the
+# art's own.  The opaque colours therefore start at 1, and the palette holds
+# one fewer colour than --colours asks for.  It is a build product and never
 # committed, because the art is Meph's, Vordak's and Denzi's and not ours; see
 # THIRD_PARTY.md for the credit and the source.
 #
@@ -35,7 +38,7 @@ def die(message):
     raise SystemExit(1)
 
 
-def load_sheet(path, tile=TILE):
+def load_sheet(path, tile=TILE, alpha_threshold=128):
     """Every 32 by 32 tile of a sheet, in reading order, blanks dropped."""
     try:
         image = Image.open(path).convert("RGBA")
@@ -52,7 +55,7 @@ def load_sheet(path, tile=TILE):
             crop = image.crop(box)
             crop.load()
             opaque = sum(1 for y in range(tile) for x in range(tile)
-                         if crop.getpixel((x, y))[3] > 0)
+                         if crop.getpixel((x, y))[3] >= alpha_threshold)
             if opaque == 0:
                 continue
             tiles.append(((tx, ty), crop, opaque))
@@ -109,8 +112,12 @@ def fit_error(weighted, palette, index):
     return ((total / weight) ** 0.5 if weight else 0.0), worst ** 0.5
 
 
-def cell_grid(tile_image, cell, palette):
-    """One palette index a cell, or EMPTY, over a whole tile."""
+def cell_grid(tile_image, cell, palette, alpha_threshold=128):
+    """One texel index a cell, or EMPTY, over a whole tile.
+
+    The index is the tile's own, so 0 is the transparent key and the fitted
+    colours run from 1.
+    """
     across = TILE // cell
     grid = []
     for cy in range(across):
@@ -119,7 +126,7 @@ def cell_grid(tile_image, cell, palette):
             for y in range(cy * cell, (cy + 1) * cell):
                 for x in range(cx * cell, (cx + 1) * cell):
                     pixel = tile_image.getpixel((x, y))
-                    if pixel[3] == 0:
+                    if pixel[3] < alpha_threshold:
                         continue
                     total += pixel[0] * 299 + pixel[1] * 587 + pixel[2] * 114
                     count += 1
@@ -132,7 +139,7 @@ def cell_grid(tile_image, cell, palette):
             for y in range(cy * cell, (cy + 1) * cell):
                 for x in range(cx * cell, (cx + 1) * cell):
                     pixel = tile_image.getpixel((x, y))
-                    if pixel[3] == 0:
+                    if pixel[3] < alpha_threshold:
                         continue
                     r += pixel[0]
                     g += pixel[1]
@@ -145,7 +152,7 @@ def cell_grid(tile_image, cell, palette):
                 d = sum((mean[ch] - p[ch]) ** 2 for ch in range(3))
                 if best_d is None or d < best_d:
                     best, best_d = i, d
-            grid.append(best)
+            grid.append(best + 1)
     return grid
 
 
@@ -157,7 +164,11 @@ def main():
     parser.add_argument("--first", type=int, default=211,
                         help="the pool's first palette entry (default 211)")
     parser.add_argument("--colours", type=int, default=45,
-                        help="the pool's size (default 45, entries 211 to 255)")
+                        help="the pool's size, including the transparent key "
+                             "(default 45, entries 211 to 255)")
+    parser.add_argument("--alpha-threshold", type=int, default=128,
+                        help="alpha at or above this is opaque; below it is "
+                             "the transparent key (default 128)")
     parser.add_argument("--cell", type=int, default=4,
                         help="source pixels a mosaic cell covers (default 4)")
     parser.add_argument("--limit", type=int,
@@ -172,8 +183,12 @@ def main():
         die(f"cell {args.cell} does not divide the tile's {TILE} pixels")
     if args.first + args.colours > 256:
         die(f"entries {args.first} to {args.first + args.colours} run past 255")
+    if args.colours < 2:
+        die("--colours must leave room for the key and one colour")
+    if not 1 <= args.alpha_threshold <= 255:
+        die("--alpha-threshold must be between 1 and 255")
 
-    tiles = load_sheet(args.sheet)
+    tiles = load_sheet(args.sheet, alpha_threshold=args.alpha_threshold)
     if args.limit:
         tiles = tiles[:args.limit]
     if not tiles:
@@ -184,12 +199,14 @@ def main():
         for y in range(TILE):
             for x in range(TILE):
                 pixel = crop.getpixel((x, y))
-                if pixel[3] == 0:
+                if pixel[3] < args.alpha_threshold:
                     continue
                 colour = (pixel[0], pixel[1], pixel[2])
                 weighted[colour] = weighted.get(colour, 0) + 1
-    palette, index = median_cut(weighted, args.colours)
+    # Texel 0 is the fill's transparent key, so the art gets one entry less.
+    palette, index = median_cut(weighted, args.colours - 1)
     mean, worst = fit_error(weighted, palette, index)
+    full_palette = [(0, 0, 0)] + palette
 
     lines = []
     lines.append("// Generated by tools/convert_tiles.py from a 32 by 32 tile")
@@ -197,21 +214,25 @@ def main():
     lines.append("// Not committed: the art is not this project's.  See the tool.")
     lines.append("")
     lines.append(f"#define TC_TILES_FIRST {args.first}")
-    lines.append(f"#define TC_TILES_COLOURS {len(palette)}")
+    lines.append(f"#define TC_TILES_COLOURS {len(full_palette)}")
     lines.append(f"#define TC_TILE_SIZE {TILE}")
     lines.append(f"#define TC_TILE_CELL {args.cell}")
     lines.append(f"#define TC_TILE_CELLS {TILE // args.cell}")
     lines.append(f"#define TC_TILE_EMPTY 0x{EMPTY:02x}")
     lines.append(f"#define TC_TILE_COUNT {len(tiles)}")
     lines.append("")
-    lines.append("/* The pool's colours, in the entries the land does not use. */")
+    lines.append("/* The pool's colours, in the entries the land does not use.")
+    lines.append(" * Entry 0 is the transparent key and is never written; the rest")
+    lines.append(" * are the fitted colours, starting at index 1. */")
     lines.append("static const uint32_t tc_tile_palette[] = {")
-    for i, (r, g, b) in enumerate(palette):
-        lines.append(f"\t0x{r:02x}{g:02x}{b:02x}, /* {args.first + i} */")
+    for i, (r, g, b) in enumerate(full_palette):
+        note = "transparent key" if i == 0 else str(args.first + i)
+        lines.append(f"\t0x{r:02x}{g:02x}{b:02x}, /* {note} */")
     lines.append("};")
     lines.append("")
     lines.append("/* The tiles themselves, one palette-relative index a pixel, row")
-    lines.append(" * major, a tile at a time: what the textured quad command reads. */")
+    lines.append(" * major, a tile at a time: what the textured quad command reads.")
+    lines.append(" * 0 is the transparent key; the art's colours run from 1. */")
     lines.append("static const uint8_t tc_tile_pixels[] = {")
     for (tx, ty), crop, _ in tiles:
         lines.append(f"\t/* sheet {tx},{ty} */")
@@ -219,13 +240,12 @@ def main():
             row = []
             for x in range(TILE):
                 pixel = crop.getpixel((x, y))
-                if pixel[3] == 0:
-                    # A card is opaque: what the art leaves transparent takes
-                    # the palette's darkest entry rather than nothing.
+                if pixel[3] < args.alpha_threshold:
+                    # The fill skips the key, so the card is a cutout.
                     row.append("0x00")
                     continue
                 colour = (pixel[0], pixel[1], pixel[2])
-                row.append(f"0x{index[colour]:02x}")
+                row.append(f"0x{index[colour] + 1:02x}")
             lines.append("\t" + ", ".join(row) + ",")
     lines.append("};")
     lines.append("")
@@ -236,7 +256,7 @@ def main():
     for (tx, ty), crop, _ in tiles:
         if not args.mosaic:
             break
-        grid = cell_grid(crop, args.cell, palette)
+        grid = cell_grid(crop, args.cell, palette, args.alpha_threshold)
         lines.append(f"\t/* sheet {tx},{ty} */")
         for y in range(row_cells):
             cells = grid[y * row_cells:(y + 1) * row_cells]
@@ -247,8 +267,8 @@ def main():
         lines.append("")
     summary = (f"{args.sheet}: {len(tiles)} tiles of {TILE} by {TILE} pixels, "
                f"{len(weighted)} source colours fitted to {len(palette)} entries "
-               f"at {args.first}, error {mean:.2f} mean and {worst:.1f} worst of "
-               f"255")
+               f"plus the key at {args.first}, error {mean:.2f} mean and "
+               f"{worst:.1f} worst of 255")
     lines.append("/* " + summary.replace("*/", "* /") + " */")
     lines.append("")
     with open(args.out, "w") as out:
@@ -258,7 +278,8 @@ def main():
         side = TILE // args.cell
         scale = 4
         across = 16
-        previews = [cell_grid(crop, args.cell, palette) for _, crop, _ in tiles]
+        previews = [cell_grid(crop, args.cell, palette, args.alpha_threshold)
+                    for _, crop, _ in tiles]
         down = (len(previews) + across - 1) // across
         image = Image.new("RGB", (across * side * scale, down * side * scale),
                           (0, 0, 0))
@@ -269,7 +290,7 @@ def main():
                     v = grid[cy * side + cx]
                     if v == EMPTY:
                         continue
-                    colour = palette[v]
+                    colour = full_palette[v]
                     for y in range(cy * scale, (cy + 1) * scale):
                         for x in range(cx * scale, (cx + 1) * scale):
                             image.putpixel((px + x, py + y), colour)

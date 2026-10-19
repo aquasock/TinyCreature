@@ -319,6 +319,9 @@ module raster #(
     // first in bits 7:0, which is the shape RB_ADDR and RB_DATA already use.
     localparam TILE_BYTES = 1024, TILE_COUNT = 64;
     localparam ART_FIRST_W = 192;
+    // The art's transparent key, palette-relative texel 0. The fill does not
+    // write it and does not count it, which is what makes a card a cutout.
+    localparam [7:0] TEX_KEY = 8'd0;
     (* ram_style = "block" *) reg [8:0] tiles [0:TILE_COUNT * TILE_BYTES - 1];
     reg [15:0] tiles_addr = 0;
     reg [1:0] tiles_step = 0;
@@ -601,10 +604,11 @@ module raster #(
                 end else if (card_phase == 2'd1) begin
                     card_phase <= 2'd2;
                 end else begin
-                    we <= 1;
+                    we <= (tile_q[7:0] != TEX_KEY);
                     waddr <= card_addr;
                     wdata <= ART_FIRST_W + tile_q[7:0];
-                    pixels <= pixels + 1'b1;
+                    if (tile_q[7:0] != TEX_KEY)
+                        pixels <= pixels + 1'b1;
                     card_phase <= 2'd0;
                     if (card_i + 1'b1 < card_i1) begin
                         card_i <= card_i + 1'b1;
@@ -860,10 +864,11 @@ module raster #(
                 end else if (tex_w == 2'd1) begin
                     tex_w <= 2'd2;
                 end else begin
-                    we <= 1;
+                    we <= (tile_q[7:0] != TEX_KEY);
                     waddr <= addr_r;
                     wdata <= ART_FIRST_W + tile_q[7:0];
-                    pixels <= pixels + 1'b1;
+                    if (tile_q[7:0] != TEX_KEY)
+                        pixels <= pixels + 1'b1;
                     tex_w <= 2'd0;
                     phase <= 1'b0;
                     if (last_p)

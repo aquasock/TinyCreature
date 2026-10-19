@@ -4,9 +4,13 @@
 
 The source art stays outside this repository.  Meph's base, background-mask
 and top sheets share the same 16 by 16 grid; this tool turns a lower trunk cell
-and an upper fork cell into ordinary opaque tiles for TinyCreature's present
-texture store.  The dark mask tint is intentional: until the rasterizer has a
-transparent texel, it makes the unavoidable square read as dense foliage.
+and an upper fork cell into tiles for TinyCreature's texture store.  The base
+layer of the current Meph sheet is opaque and its -bg layer is uniform white,
+so the result is still an opaque square: this tool does not invent a tree
+silhouette the source does not have.  What alpha the layers do carry is kept,
+and convert_tiles.py turns it into the rasterizer's transparent key; the animal
+icons are the art that has it.  The dark tint is what makes the unavoidable
+square read as dense foliage rather than an accidental black key colour.
 """
 
 import argparse
@@ -67,18 +71,12 @@ def flatten(base, background, top, cell, tint, base_alpha):
     alpha = colour.getchannel("A").point(lambda value: value * base_alpha // 255)
     colour.putalpha(alpha)
     result = Image.alpha_composite(backing, colour)
-    result = Image.alpha_composite(result, crop(top, cell))
-
-    # The current card fill writes every texel.  Flatten any remaining holes
-    # onto the same foliage tint instead of letting convert_tiles turn them
-    # into its darkest palette entry by accident.
-    opaque = Image.new("RGBA", (TILE, TILE), tint + (255,))
-    return Image.alpha_composite(opaque, result)
+    return Image.alpha_composite(result, crop(top, cell))
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Make an opaque two-tile tree sheet from Meph's layers.")
+        description="Make a cutout two-tile tree sheet from Meph's layers.")
     parser.add_argument("--base", required=True)
     parser.add_argument("--background", required=True)
     parser.add_argument("--top", required=True)
@@ -88,7 +86,7 @@ def main():
     parser.add_argument("--upper", type=parse_cell, default=(5, 2),
                         help="upper fork cell X,Y (default: 5,2)")
     parser.add_argument("--tint", type=parse_colour, default=(16, 36, 20),
-                        help="opaque foliage backing RRGGBB (default: 102414)")
+                        help="foliage backing RRGGBB (default: 102414)")
     parser.add_argument("--base-alpha", type=int, default=208,
                         help="base-layer opacity from 0 to 255 (default: 208)")
     args = parser.parse_args()
@@ -100,7 +98,7 @@ def main():
     top = load(args.top)
     tiles = [flatten(base, background, top, cell, args.tint, args.base_alpha)
              for cell in (args.lower, args.upper)]
-    sheet = Image.new("RGBA", (2 * TILE, TILE), args.tint + (255,))
+    sheet = Image.new("RGBA", (2 * TILE, TILE), (0, 0, 0, 0))
     for x, tile in enumerate(tiles):
         sheet.paste(tile, (x * TILE, 0))
     out = Path(args.out)

@@ -121,6 +121,10 @@ module raster_tb;
                     // the emitter counts it, and twelve words after its
                     // opcode -- three corners and nine plane numbers.
                     tris_sent[slot] = tris_sent[slot] + 1; rest = 12;
+                end else if (rest == 0 && w[31:28] == 4'd3) begin
+                    // A card: four words after its opcode. The fabric counts
+                    // it as a fill, not a triangle, so it is skipped here.
+                    rest = 4;
                 end else if (rest != 0)
                     rest = rest - 1;
                 write(15'h00, w);

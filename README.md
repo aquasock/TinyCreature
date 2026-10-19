@@ -417,8 +417,9 @@ wrong colours, which is what a card filled from a store the program had never
 written looks like; `fabric_tiles` in `main.c` now loads it four bytes a write
 before the first frame. The tiles it loads are the converted art when the build
 has them: `TILES=1` runs `tools/convert_tiles.py` over Meph's sheet and the
-header it writes names the tiles and the sixty-four palette entries at 192,
-while a build without the art still draws four synthetic tiles so the path can
+header it writes names the tiles, the transparent key at entry 192 and the
+art's sixty-three colours at 193 to 255, while a build without the art still
+draws four synthetic tiles so the path can
 be exercised with nothing fetched. The unit's store holds sixty-four tiles and
 Meph's sheet has 255, so the header takes the first sixty-four of them. What a
 card costs is measured rather than projected: with 64, 100, 500, 1,000 and
@@ -431,6 +432,20 @@ fabric's filling, not the CPU's sending, is what limits a crowd. Ten thousand
 cards would be 13.6 ms of sending and about 12 ms of filling, which puts the
 wall near there -- extrapolated, not measured. The count is `TC_CARDS_N`, and
 one a tile is the default shelf.
+
+The art's transparent texels are holes now. Palette-relative texel 0 is the
+key: `tools/convert_tiles.py` fits the art into the 63 colours beside it in
+entries 193 to 255, the host twin skips a key texel in both card fills, and
+`fpga/raster.sv` gates the write and the pixel count on it in `S_CARD` and
+`S_TEXW`. `CARD_EDGE=0`, the new default, drops the four solid near-black sides
+of the card box, so a cutout card is its art's silhouette with only the face
+toward the camera drawn; `CARD_EDGE=1` restores the box. The animal icons are
+the cards this actually cuts out. Meph's tree sheet is opaque in both its base
+layer and its uniform `-bg` layer, so the tree cards stay rectangles until
+they have a silhouette source of their own. The FPGA core did not find a clean
+seed for this change: seed 6 met both clocks at 79.81 and 93.69 MHz but the
+TinyNES build still rejects its pixel-clock bridge pips, so the entry 49 core
+remains the board image and no cutout build has been deployed.
 
 A build that times its own phases with the core's cycle counter reports the
 mean cells a frame drew and the time it spent in the sky and sea rows, the

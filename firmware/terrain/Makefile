@@ -103,6 +103,10 @@ CARD_COLUMN_PX ?= 3
 # until the fabric's rasterizer can fill one, which the host twin and the
 # board's software path already can.
 CARD_TEX    ?= 0
+# Whether a card keeps its four thin near-black sides. On, it is a box and the
+# sides show at an angle; off, it is a two-faced billboard and cutout art has
+# no black frame. The transparent texel is skipped either way.
+CARD_EDGE   ?= 0
 COMMON_CPPFLAGS := $(SPRITE_CPPFLAGS) -DTC_CARDS=$(CARDS) \
                    -DTC_CARDS_N=$(CARDS_N) -DTC_TREES=$(TREES) \
                    -DTC_TREES_N=$(TREES_N) -DTC_READOUT=$(READOUT) \
@@ -111,7 +115,7 @@ COMMON_CPPFLAGS := $(SPRITE_CPPFLAGS) -DTC_CARDS=$(CARDS) \
                    -DTC_CARD_YAW=$(CARD_YAW) -DTC_CARD_DEPTH=$(CARD_DEPTH) \
                    -DTC_CARD_UNITS=$(CARD_UNITS) \
                    -DTC_CARD_COLUMN_PX=$(CARD_COLUMN_PX) -DTC_TEX=$(CARD_TEX) \
-                   -DTC_HANDOVER=$(HANDOVER)
+                   -DTC_CARD_EDGE=$(CARD_EDGE) -DTC_HANDOVER=$(HANDOVER)
 
 # The art's tiles: a generated header, off by default because the art is
 # fetched rather than committed, so a fresh clone builds. TILES=1 wants the

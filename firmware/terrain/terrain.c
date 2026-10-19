@@ -384,7 +384,8 @@ static uint32_t art_palette[TC_ART_COLOURS];
 
 /* A sixteen-step grey ramp, then three hues at their own levels, which is
  * enough to tell the tiles and the stepping apart on screen, and four tiles: a
- * bordered ramp, an xor weave, a diagonal and a four-pixel checker. */
+ * bordered ramp, an xor weave, a diagonal and a four-pixel checker. Texel 0 is
+ * the transparent key, so the built-in tiles stay in 1 to 63. */
 static void art_build(void)
 {
 	for (int i = 0; i < 16; i++) {
@@ -404,8 +405,8 @@ static void art_build(void)
 				tile[y * 32 + x] = (uint8_t)(
 					t == 0 ? ((x == 0 || y == 0 || x == 31 || y == 31)
 						 ? 63 : (x >> 1 & 15) + 16)
-					: t == 1 ? ((x ^ y) & 31)
-					: t == 2 ? ((x + y) % TC_ART_COLOURS)
+					: t == 1 ? 1 + ((x ^ y) & 31)
+					: t == 2 ? 1 + ((x + y) % (TC_ART_COLOURS - 1))
 					: (((x >> 2) + (y >> 2)) & 1 ? 63 : 32));
 	}
 }
@@ -1398,7 +1399,8 @@ static void hand_rect(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
 /* A card, as fpga/raster.sv fills one and from the same fields: the
  * accumulators carry, one add a pixel, and the texel is the top five bits of
  * each, so neither side divides. The texel is written as a palette entry from
- * TC_ART_FIRST up, and nothing is mixed or looked up. */
+ * TC_ART_FIRST up, and nothing is mixed or looked up. Texel TC_TILE_KEY is the
+ * transparent key and is not written, which is what makes a card a cutout. */
 void tc_soft_card(void *soft, const struct tc_card *c)
 {
 	struct tc_soft *s = soft;
@@ -1410,8 +1412,10 @@ void tc_soft_card(void *soft, const struct tc_card *c)
 		uint8_t *row = s->fb + (size_t)j * s->stride;
 		uint32_t u = c->u0;
 		for (uint32_t i = c->i0; i < c->i1; i++, u += c->du) {
-			row[i] = (uint8_t)(TC_ART_FIRST +
-					   art[(v >> 8) * 32 + (u >> 8)]);
+			uint8_t texel = art[(v >> 8) * 32 + (u >> 8)];
+			if (texel == TC_TILE_KEY)
+				continue;
+			row[i] = (uint8_t)(TC_ART_FIRST + texel);
 			s->pixels++;
 		}
 	}
@@ -1482,7 +1486,10 @@ void tc_soft_tex(void *soft, const struct tc_tex *t)
 				v = 0;
 			if (v > TC_TILE_SIZE - 1)
 				v = TC_TILE_SIZE - 1;
-			row[i] = (uint8_t)(TC_ART_FIRST + art[v * TC_TILE_SIZE + u]);
+			uint8_t texel = art[v * TC_TILE_SIZE + u];
+			if (texel == TC_TILE_KEY)
+				continue;
+			row[i] = (uint8_t)(TC_ART_FIRST + texel);
 			s->pixels++;
 		}
 	}
@@ -1626,13 +1633,15 @@ static void draw_sprite(void)
  * the camera's angle uses. Its six faces are drawn as the axis-aligned
  * rectangles their corners project into, which is all this rasterizer's
  * textured fill can draw: the art on the front, the same art on the back for
- * now, and the four edges a thin near-black, which is what gives a card a side
- * and a top as the camera moves round it. A face that looks away from the
- * camera is dropped, and the rest are drawn farthest first, so the nearer ones
- * paint over the farther ones the way every other quad in this renderer does.
- * The consequence of a card keeping one facing is that the camera sees it
- * edge-on and then from behind as it circles the island, which is what a thing
- * standing there would do and not what a billboard does. */
+ * now, and, when TC_CARD_EDGE is on, the four edges a thin near-black, which is
+ * what gives a card a side and a top as the camera moves round it. A face that
+ * looks away from the camera is dropped, and the rest are drawn farthest first,
+ * so the nearer ones paint over the farther ones the way every other quad in
+ * this renderer does. The consequence of a card keeping one facing is that the
+ * camera sees it edge-on and then from behind as it circles the island, which
+ * is what a thing standing there would do and not what a billboard does. With
+ * the edges off, a cutout card shows its silhouette instead of a black frame:
+ * the two faces remain, but only the one looking at the camera is drawn. */
 #ifndef TC_CARD_YAW
 #define TC_CARD_YAW 0        /* looking along +z */
 #endif
@@ -1646,6 +1655,12 @@ static void draw_sprite(void)
 #endif
 #ifndef TC_CARD_DEPTH
 #define TC_CARD_DEPTH (TC_CARD_UNITS / 10)
+#endif
+/* Whether the four thin sides are drawn. They are the near-black frame around
+ * a cutout card, so a transparency build turns them off; one without it keeps
+ * the box's thickness. */
+#ifndef TC_CARD_EDGE
+#define TC_CARD_EDGE 0
 #endif
 #define TC_FACE_SOLID 0xffffffffu
 
@@ -1877,7 +1892,10 @@ static void card_at_pose(int32_t wx, int32_t wy, int32_t wz, uint32_t tile,
 	struct card_face face[6];
 	unsigned used = 0;
 
-	for (unsigned f = 0; f < 6; f++) {
+	/* Front and back only when the edges are off: the four solid sides are
+	 * what would otherwise draw a black rectangle around a cutout. */
+	const unsigned face_count = TC_CARD_EDGE ? 6u : 2u;
+	for (unsigned f = 0; f < face_count; f++) {
 		int32_t mx = 0, my = 0, mz = 0;
 		for (unsigned k = 0; k < 4; k++) {
 			unsigned c = face_corner[f][k];
@@ -2195,12 +2213,13 @@ static void draw_card_grid_cell(uint32_t gx, uint32_t gz)
 #endif
 }
 
-/* A first tree made without asking the texture fill for transparency: three
- * trunk tiles and one crown tile stand one above the other, the same stack
- * crosses them at a quarter turn, and a two-by-two square of crown tiles lies
- * flat across the top. The source sheet gives both tiles a deliberately dark
- * leafy backing to make their opaque rectangles read as dense foliage rather
- * than as an accidental black key colour. */
+/* A tree from crossed cards: three trunk tiles and one crown tile stand one
+ * above the other, the same stack crosses them at a quarter turn, and a
+ * two-by-two square of crown tiles lies flat across the top. Meph's base layer
+ * and its `-bg` layer are both opaque, so these cards remain rectangles until
+ * the tree art has a silhouette source; the fill's transparent key is ready
+ * for that art when it does. The dark tint behind the base layer is what keeps
+ * the foliage dense where the mask is set. */
 static void draw_tree_grid_cell(uint32_t gx, uint32_t gz)
 {
 #if TC_TREES
