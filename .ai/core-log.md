@@ -1988,3 +1988,33 @@ The ladder measured the engine as built; the numbers' largest caveat is the layo
 - User Test: NOT RUN
 
 ---
+
+## 61 COMMIT Unreleased 2026-10-19T06:42:00-07:00
+
+#### Coming From:
+
+Unreleased d1606b0
+
+#### Purpose:
+
+Fly the 3000-card rung interactively and record the configuration the user accepted as the project's reference scene.
+
+#### Outcome:
+
+`tools/run_tang32_feel.sh` built `build/feel/terrain.elf`, 479,220 bytes with SHA-256 `3ab6cf841e3fdde2d28a02708bd763955489d52c923bc1eabd1e4d06aee7e5cc`, as the reference scene: 3000 animal cards, `CARD_UNITS=48`, `CARD_DEPTH=12`, `CARD_TEX=1`, `CARD_EDGE=0`, 64 tiles from `build/animals/sheet.png`, no trees, with the on-screen readout, on seed 13's unchanged `ae350_soc.bin` SHA-256 `7aeaa671da52ae4c3cf38aa8e9886b39ff96f2cad436a39252909bd5781aa10b`. The core loaded, the program uploaded 151,924 bytes at 186.0 KB/s, the run started, and the host released the link after twenty seconds so the board's mouse could fly it. The user flew it, reported that it still plays normally under the stress the ladder measured, and named this configuration the project's reference going forward. Entry 60 recorded the ladder with the user test not run because the interactive rung had not been flown; this entry supplies that verdict for the 3000-card artifact without altering entry 60's measurements or its open defect. No engineering source changed, the core was not rebuilt, and `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The reference is now the 3000-card animal scene at the geometry above on the seed 13 core, so any later change to card count, art, edges, trees or clocking should be compared against it. Its measured cost stays the 57.2 ms draw and 65.1 ms period that entry 60 recorded, and the caveat there stands: the grid spreads 3000 cards across the island rather than stacking them, so a denser crowd needs a placement change before it can be judged. Entry 51's `BAD TINYCREATURE PIXELS` at 2,000 and 3,000 villager-sized cards remains the open defect, reproducible with `TINYCREATURE_MEASURE_UNITS=80 TINYCREATURE_MEASURE_DEPTH=8`. The defaults in the build scripts remain cards off; the reference is a named configuration, not a changed default.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
