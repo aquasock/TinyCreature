@@ -44,6 +44,7 @@ python3 -I "$root/tools/convert_land.py" "$lnd" "$land"
 echo "Building for $frames frames"
 make -C "$root/firmware/terrain" TINYNES="$source_dir" BUILD="$build" \
     FRAMES="$frames" CARDS="${TINYCREATURE_CARDS:-0}" \
+    CARDS_N="${TINYCREATURE_CARDS_N:-64}" \
     TILES="${TINYCREATURE_TILES:-0}" \
     READOUT="${TINYCREATURE_READOUT:-1}" \
     PIN_X="${TINYCREATURE_PIN_X:-0xffff}" \

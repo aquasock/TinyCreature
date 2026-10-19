@@ -84,6 +84,7 @@ make -C "$source_dir/firmware/apps/video_test" BUILD="$out/app" clean all
 # run with cards is always compared against a twin that drew them too.
 make -C "$root/firmware/terrain" TINYNES="$source_dir" BUILD="$out/terrain" \
     CARDS="${TINYCREATURE_CARDS:-0}" TILES="${TINYCREATURE_TILES:-0}" \
+    CARDS_N="${TINYCREATURE_CARDS_N:-64}" \
     READOUT="${TINYCREATURE_READOUT:-1}" \
     CARD_TEX="${TINYCREATURE_CARD_TEX:-0}" \
     CARD_COLUMN_PX="${TINYCREATURE_CARD_COLUMN_PX:-3}" \
@@ -94,6 +95,7 @@ make -C "$root/firmware/terrain" TINYNES="$source_dir" BUILD="$out/terrain" \
     clean all host
 make -C "$root/firmware/terrain" TINYNES="$source_dir" FABRIC=0 \
     CARDS="${TINYCREATURE_CARDS:-0}" TILES="${TINYCREATURE_TILES:-0}" \
+    CARDS_N="${TINYCREATURE_CARDS_N:-64}" \
     READOUT="${TINYCREATURE_READOUT:-1}" \
     CARD_TEX="${TINYCREATURE_CARD_TEX:-0}" \
     CARD_COLUMN_PX="${TINYCREATURE_CARD_COLUMN_PX:-3}" \

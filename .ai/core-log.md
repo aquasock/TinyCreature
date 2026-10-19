@@ -1757,3 +1757,34 @@ None.
 - User Test: PASS
 
 ---
+
+## 54 COMMIT Unreleased 2026-10-18T19:51:32-07:00
+
+#### Coming From:
+
+Unreleased e5384ef
+
+#### Purpose:
+
+Reduce the textured cards to one tenth of their accepted width and height and expand the shelf from sixty-four cards to four sets, 256 cards total.
+
+#### Outcome:
+
+The card geometry changed through its existing build parameters from `CARD_UNITS=480` to 48 Q4 while keeping the accepted `CARD_DEPTH=12`, making each card `48` by `48` by `12` Q4, and `CARDS_N=256` arranged them as the existing 16 by 16 square grid; the renderer's `i % ART_TILES` mapping repeats the same sixty-four textures across the four sets. `tools/build_tang32.sh` and `tools/run_tang32_feel.sh` now forward `TINYCREATURE_CARDS_N`, defaulting to 64, so the count reaches the fabric program and host twin reproducibly instead of requiring a direct Make invocation. This remained an AE350 firmware-only cycle, so the core was not rebuilt or seed-swept and retained entry 49's SHA-256 `f9f9e2ea15e1f4975e68596d792143438b5cfcf66790b0dec7da92e775498c67`. The clean 600-frame host and board gate matched at `TRIS=20654`, `PIXELS=33245` and frame CRC `83256a2c`; the board reported zero late line fetches, a mean draw time of 31,314 us, a maximum of 37,146 us and exactly three vertical blanks per frame. The interactive artifact was `build/feel/terrain.elf`, 499,412 bytes with SHA-256 `0b0c1ec83780460430ff42eef949521ad562ccf5913cbce954a3027b496841ea`. The mouse did not respond after its first deployment, the user rebooted the Tang, and the identical artifact was loaded again with the host releasing the link after twenty seconds; the user then flew it and reported that it looked good and passed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged and no settled entry rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The user reported that cards remain visible through mountains, and source inspection establishes why: the terrain cells are walked back to front, but the entire card grid is emitted only after that walk, so every card overwrites every terrain pixel regardless of depth. The next proposed cycle can remain firmware-only by deriving a card index from the current terrain cell in constant time and emitting that card as the walk reaches its ground cell, allowing nearer terrain drawn later to hide it; this provides painter-order terrain occlusion without a core rebuild or seed sweep, while a hardware depth buffer would be reserved for exact per-pixel intersections if the painter order proves insufficient.
+
+#### Files Modified:
+
+- tools/build_tang32.sh
+- tools/run_tang32_feel.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
