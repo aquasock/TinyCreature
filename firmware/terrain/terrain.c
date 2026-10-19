@@ -92,6 +92,13 @@ static const uint8_t *shade_lut;
 static uint8_t *block_low, *block_high, *block_shown;
 static uint32_t verts_x, blocks_x, blocks_z, generation;
 // Q4 world units
+#if TC_PHASE_DETAIL
+/* One cell in 64 is timed, so four clock reads a cell do not become a
+ * measurable part of the walk they are measuring. */
+static int profile_cell;
+static uint32_t profile_seen;
+#endif
+
 static int32_t cam_x, cam_y, cam_z, sin_yaw, cos_yaw, sin_pitch, cos_pitch;
 static uint8_t last_buttons;   // what the mouse's buttons were last report
 /* A left grab: the piece of land the hand took, and whether it is holding
@@ -796,6 +803,9 @@ static void vertex_camera(const struct vertex *v, int32_t *x, int32_t *y, int32_
 
 static struct vertex *vertex(uint32_t gx, uint32_t gz)
 {
+#if TC_PHASE_DETAIL
+	uint64_t t0 = profile_cell ? out->now() : 0;
+#endif
 	struct vertex *v = &vertices[gz * verts_x + gx];
 	if ((v->stamp >> 2) != generation) {
 		int32_t x, y, z, sx = 0, sy = 0;
@@ -816,6 +826,10 @@ static struct vertex *vertex(uint32_t gx, uint32_t gz)
 		v->sy = (int16_t)sy;
 		v->stamp = generation << 2 | state;
 	}
+#if TC_PHASE_DETAIL
+	if (t0)
+		out->phase[TC_PHASE_VERTEX] += out->now() - t0;
+#endif
 	return v;
 }
 
@@ -959,7 +973,14 @@ static void emit(const int32_t *x, const int32_t *y, uint32_t colours)
 	    x_lo + 7 >= TC_WIDTH * 16 || ((y_lo + 7) >> 4) > ((y_hi - 8) >> 4) ||
 	    y_hi < 8 || y_lo + 7 >= TC_HEIGHT * 16)
 		return;
+#if TC_PHASE_DETAIL
+	uint64_t t0 = profile_cell ? out->now() : 0;
 	out->triangle(out->ctx, x, y, colours);
+	if (t0)
+		out->phase[TC_PHASE_EMIT] += out->now() - t0;
+#else
+	out->triangle(out->ctx, x, y, colours);
+#endif
 	counts->triangles++;
 }
 
@@ -1059,6 +1080,9 @@ static void submit_slow(const struct vertex *a, const struct vertex *b,
 static void submit(const struct vertex *a, const struct vertex *b,
 		   const struct vertex *c, uint32_t colours)
 {
+#if TC_PHASE_DETAIL
+	uint64_t t0 = profile_cell ? out->now() : 0;
+#endif
 	if (!(a->stamp & 3u) && !(b->stamp & 3u) && !(c->stamp & 3u)) {
 		int32_t x[3] = {a->sx, b->sx, c->sx};
 		int32_t y[3] = {a->sy, b->sy, c->sy};
@@ -1068,10 +1092,18 @@ static void submit(const struct vertex *a, const struct vertex *b,
 				break;
 		if (i == 3) {
 			emit(x, y, colours);
+#if TC_PHASE_DETAIL
+			if (t0)
+				out->phase[TC_PHASE_SUBMIT] += out->now() - t0;
+#endif
 			return;
 		}
 	}
 	submit_slow(a, b, c, colours);
+#if TC_PHASE_DETAIL
+	if (t0)
+		out->phase[TC_PHASE_SUBMIT] += out->now() - t0;
+#endif
 }
 
 static int outside(int32_t x, int32_t y, int32_t z)
@@ -1113,6 +1145,11 @@ static void draw_cell(uint32_t gx, uint32_t gz)
 	if (!(flags & 6))
 		return;
 	counts->cells++;
+#if TC_PHASE_DETAIL
+	profile_cell = out->now != NULL && (profile_seen++ & 63u) == 0;
+	if (profile_cell)
+		out->phase[TC_PHASE_SAMPLES]++;
+#endif
 	struct vertex *tl = vertex(gx, gz), *tr = vertex(gx + 1, gz);
 	struct vertex *bl = vertex(gx, gz + 1), *br = vertex(gx + 1, gz + 1);
 	// Each corner carries its own colour, and they are handed over in the
@@ -2378,6 +2415,16 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 	stats->triangles = 0;
 	stats->cells = 0;
 	generation++;
+#if TC_PHASE_DETAIL
+	out->phase[TC_PHASE_VERTEX] = 0;
+	out->phase[TC_PHASE_SUBMIT] = 0;
+	out->phase[TC_PHASE_EMIT] = 0;
+	out->phase[TC_PHASE_PLANT] = 0;
+	out->phase[TC_PHASE_SPRITE] = 0;
+	out->phase[TC_PHASE_SAMPLES] = 0;
+	profile_seen = 0;
+	profile_cell = 0;
+#endif
 
 	// One orbit, swinging in to 40% and back out twice on the way round.
 	int32_t size = (land->cells_x > land->cells_z ? land->cells_x : land->cells_z) * CELL;
@@ -2458,13 +2505,32 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 				 * it stands on, so the nearer land, which the walk
 				 * has still to draw, paints over it and the farther
 				 * land, already drawn, stays behind it. */
-				if (gx == sprite_gx && gz == sprite_gz)
+				if (gx == sprite_gx && gz == sprite_gz) {
+#if TC_PHASE_DETAIL
+					uint64_t ts = out->now ? out->now() : 0;
 					draw_sprite();
+					if (ts)
+						out->phase[TC_PHASE_SPRITE] +=
+							out->now() - ts;
+#else
+					draw_sprite();
+#endif
+				}
 			}
 			draw_card_grid_cell(gx, gz);
 			draw_tree_grid_cell(gx, gz);
 #if TC_PLANTS
+#if TC_PHASE_DETAIL
+			{
+				uint64_t tp = out->now ? out->now() : 0;
+				draw_plant_cell(gx, gz);
+				if (tp)
+					out->phase[TC_PHASE_PLANT] +=
+						out->now() - tp;
+			}
+#else
 			draw_plant_cell(gx, gz);
+#endif
 #endif
 		}
 	}

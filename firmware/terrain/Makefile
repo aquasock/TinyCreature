@@ -206,6 +206,7 @@ endif
 # spaces, so they are read by the recipe and are not prerequisites; the tool
 # is.  A build with no game data keeps PLANTS=0 and needs none of this.
 PLANTS        ?= 0
+PHASE_DETAIL  ?= 0
 PLANT_UNITS   ?= 80
 PLANT_BIG     ?= 120
 PLANT_RANDOM  ?= 0
@@ -233,6 +234,7 @@ PLANT_FLAGS := -I$(BUILD)/plants -DTC_PLANTS_HEADER='"$(notdir $(PLANT_H))"' \
                -DTC_PLANT_BIG=$(PLANT_BIG)
 COMMON_CPPFLAGS += $(PLANT_FLAGS)
 CPPFLAGS += $(PLANT_FLAGS)
+CPPFLAGS += $(if $(filter 1,$(PHASE_DETAIL)),-DTC_PHASE_DETAIL=1)
 
 $(PLANT_STAMP): FORCE
 	@mkdir -p $(dir $@)

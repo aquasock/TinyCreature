@@ -583,5 +583,30 @@ int main(void)
 		printf(" PIN=%ld,%ld\n", (long)pin_x, (long)pin_z);
 	else
 		printf(" PIN=none\n");
+#if TC_PHASE_DETAIL
+	/* The walk split four ways, a sample of cells scaled to a frame: what a
+	 * sampled cell spent in its vertices, in submit(), inside the fill's
+	 * triangle call, and in the cell's own work, which is the walk less the
+	 * other two.  Zero on a build that did not ask for the detail. */
+	if (phase_sum[TC_PHASE_SAMPLES] != 0) {
+		uint64_t cells_a_frame = cells / FRAMES;
+		uint64_t vert = phase_sum[TC_PHASE_VERTEX] /
+				phase_sum[TC_PHASE_SAMPLES] * cells_a_frame / us;
+		uint64_t sub = phase_sum[TC_PHASE_SUBMIT] /
+			       phase_sum[TC_PHASE_SAMPLES] * cells_a_frame / us;
+		uint64_t emit = phase_sum[TC_PHASE_EMIT] /
+				phase_sum[TC_PHASE_SAMPLES] * cells_a_frame / us;
+		uint64_t walk = phase_sum[TC_PHASE_WALK] / FRAMES / us;
+		uint64_t plant = phase_sum[TC_PHASE_PLANT] / FRAMES / us;
+		uint64_t sprite = phase_sum[TC_PHASE_SPRITE] / FRAMES / us;
+		printf("TinyCreature PHASE CELL=%luus VERT=%luus SUB=%luus "
+		       "EMIT=%luus PLANT=%luus SPRITE=%luus SAMPLES=%lu\n",
+		       (unsigned long)(walk - vert - sub - plant - sprite),
+		       (unsigned long)vert, (unsigned long)sub,
+		       (unsigned long)emit, (unsigned long)plant,
+		       (unsigned long)sprite,
+		       (unsigned long)(phase_sum[TC_PHASE_SAMPLES] / FRAMES));
+	}
+#endif
 	return 0;
 }

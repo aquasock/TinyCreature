@@ -184,8 +184,23 @@ enum {
 	TC_PHASE_ROWS = 0,   /* the sky and the sea, a run of rows at a time */
 	TC_PHASE_CULL,       /* cull_blocks, once a frame */
 	TC_PHASE_WALK,       /* the cell walk and every triangle's submission */
+	/* The four below are cycles, not microseconds, and are collected only
+	 * when the build asks for them (TC_PHASE_DETAIL): they time a sample of
+	 * cells -- one in 64 -- so the clock reads do not cost more than the
+	 * work they measure.  TC_PHASE_SAMPLES counts the sampled cells, which
+	 * turns the cycle totals into a per-cell cost. */
+	TC_PHASE_VERTEX,     /* inside vertex() for the sampled cells */
+	TC_PHASE_SUBMIT,     /* inside submit(), emission included */
+	TC_PHASE_EMIT,       /* inside the fill's own triangle call */
+	TC_PHASE_PLANT,      /* draw_plant_cell, the ready-made plants */
+	TC_PHASE_SPRITE,     /* draw_sprite, the tall sprite */
+	TC_PHASE_SAMPLES,
 	TC_PHASE_COUNT
 };
+
+#ifndef TC_PHASE_DETAIL
+#define TC_PHASE_DETAIL 0
+#endif
 
 /* Check a TCL2 file's header and body CRC and point land into it; returns
  * 0, or a short reason. */

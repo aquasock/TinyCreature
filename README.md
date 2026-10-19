@@ -553,6 +553,20 @@ the grid, so the stamp saves no work; what costs is reaching them rather than
 the arithmetic, and both of the ways that promised cheaper reaches have now
 been measured and do not.
 
+The Celtic build changed the answer, and a `TC_PHASE_DETAIL` build measured it:
+the same walk, timing one cell in 64 and reporting the sample scaled to a frame.
+It put a mean 92.4 ms period at `PLANT=45856us SUB=21049us VERT=10241us
+CELL=4824us SPRITE=247us`, with the fill's own triangle call inside `SUB` at
+`EMIT=1672us`. The instrumented frame is about six per cent slower than the
+plain one, so the shares matter more than the absolute numbers. The plants are
+56 per cent of the frame: 953 five-card trees and 452 bushes, 5,217 cards at
+8.8 us each, which is the villager-card price the ladder measured. The terrain
+walk is 36 ms, of which the cull arithmetic in `submit()` is 21 ms and the
+command words 1.7 ms. On this landscape emission is two per cent of the frame,
+so a command list or an expander has almost nothing to win, and the next lever
+is fewer cards per tree at distance. `PHASE_DETAIL=0` is the default, so the
+plain build is unchanged.
+
 The run converts the land, prints the PC's totals, loads the program and the
 land file, and fails unless the board reports `TinyCreature TERRAIN OK` with
 the same land CRC, triangle and pixel means and frame CRC as the PC. Set

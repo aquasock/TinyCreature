@@ -2340,3 +2340,38 @@ The queue is unchanged: authored-tall plant sprites, grass as ground cover, entr
 - User Test: PASS
 
 ---
+
+## 71 COMMIT Unreleased 2026-10-19T12:59:18-07:00
+
+#### Coming From:
+
+Unreleased aea3c0e
+
+#### Purpose:
+
+Split the Celtic cell walk by phase on the board so the next renderer optimisation is chosen from where the frame actually goes rather than from the smaller scenes' history.
+
+#### Outcome:
+
+A `TC_PHASE_DETAIL` build times one cell in 64 and reports the sample scaled to a frame, so four clock reads a cell do not become a measurable part of what they measure; the knob is off by default and the plain build's frames are unchanged, which the host's `CRC=73f24771` against the same land confirms. The board gate passed with the board and the host matching on `LAND=a59c0a9a`, `TRIS=28606` and `PIXELS=35569`, at a mean 92,443 us period and 82,217 us of walk, about six per cent above the plain build's 76,914 us, so the shares matter more than the absolute times. The walk split into `PLANT=45856us`, `SUB=21049us`, `VERT=10241us`, `CELL=4824us` and `SPRITE=247us`, with the fill's own triangle call inside `SUB` at `EMIT=1672us`. The plants are 56 per cent of the frame: the table holds 953 five-card trees and 452 bushes, 5,217 cards if all are visible, at 8.8 us a card, which matches the 7.9 us villager card the earlier ladder measured. The terrain walk itself is 36 ms, 21 ms of it the cull arithmetic in `submit()` and only 1.7 ms the command words. That overturns the premise the FPGA queue was built on, entry 13's 39 per cent emission figure from a smaller scene: on Celtic a command expander or a command list has about two per cent to win, a depth buffer has nothing, and only a hardware walker would attack the 36 ms of terrain work while leaving the 56 per cent of plants untouched. The cycle also found that `tools/build_tang32.sh` rebuilds the core even when only firmware changed: the first build attempt was stopped during place and route after ten minutes and the existing seed 13 image, SHA-256 `7aeaa671da52ae4c3cf38aa8e9886b39ff96f2cad436a39252909bd5781aa10b`, was kept, with the firmware then built by invoking `make` in `firmware/terrain` directly. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+Plant level of detail is the next cycle: draw a distant tree as one card instead of five, with the distance measured, then re-run this phase build to see what remains; at 953 trees the four saved cards are on the order of 30 ms. If that lands the frame near 50 ms, the hardware walker becomes the next question with the 36 ms of terrain work and the 21 ms of cull arithmetic as its target. `build_tang32.sh` should also stop rebuilding the core when its sources have not changed, or the run scripts should be the documented way to build firmware alone.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/Makefile
+- firmware/terrain/main.c
+- firmware/terrain/terrain.c
+- firmware/terrain/terrain.h
+- tools/build_tang32.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---
