@@ -576,10 +576,6 @@ static int32_t height(uint32_t altitude)
 #ifndef TC_PLANT_BIG
 #define TC_PLANT_BIG 120
 #endif
-/* The plant sheet is the plants, then the four tree cells, then the canopy. */
-#ifndef TC_CANOPY_TILE
-#define TC_CANOPY_TILE (TC_PLANT_TILES + 4)
-#endif
 
 /* The art, and the cards drawn from it. A card is an axis-aligned rectangle
  * filled with one tile, its texels written as palette entries from
@@ -2277,37 +2273,6 @@ static void draw_plant_cell(uint32_t gx, uint32_t gz)
 }
 #endif
 
-#if TC_PLANTS && TC_FOREST_COUNT > 0
-static void draw_forest_cell(uint32_t gx, uint32_t gz)
-{
-	if (out->card == NULL && out->tex == NULL)
-		return;
-	const uint32_t key = (gz << 16) | gx;
-	unsigned lo = 0, hi = TC_FOREST_COUNT;
-	while (lo < hi) {
-		unsigned mid = (lo + hi) / 2;
-		uint32_t at = ((uint32_t)tc_forests[mid].gz << 16) |
-			      tc_forests[mid].gx;
-		if (at < key)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
-	int32_t saved_units = card_units, saved_height = card_height;
-	for (; lo < TC_FOREST_COUNT; lo++) {
-		const struct tc_forest *f = &tc_forests[lo];
-		if ((((uint32_t)f->gz << 16) | f->gx) != key)
-			break;
-		card_units = f->units;
-		card_height = f->units;
-		int32_t gy = ground(f->x, f->z) + 160 - f->units / 2;
-		card_at_pose(f->x, gy, f->z, TC_CANOPY_TILE, f->yaw,
-			     (uint32_t)-16384);
-	}
-	card_units = saved_units;
-	card_height = saved_height;
-}
-#endif
 
 /* Emit the grid card whose base is this terrain cell. The terrain walk is
  * back to front, so drawing a card immediately after its own ground leaves it
@@ -2500,9 +2465,6 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 			draw_tree_grid_cell(gx, gz);
 #if TC_PLANTS
 			draw_plant_cell(gx, gz);
-#endif
-#if TC_PLANTS && TC_FOREST_COUNT > 0
-			draw_forest_cell(gx, gz);
 #endif
 		}
 	}

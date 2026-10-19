@@ -507,16 +507,16 @@ dragging up now tilts the other way, and the other camera paths are unchanged.
 Plants now carry random rotations. `convert_plants.py --random-rotation
 --seed 1` replaces each script rotation with a uniform random yaw, deterministic
 for the seed, so the same island and seed give the same table. Big forests are
-terrain rather than cards: Celtic's 1,405 trees are 572 standalone and 833 in
-88 `CREATE_NEW_BIG_FOREST` commands, and `--forest-aware` drops the forest-owned
-trees while `convert_land.py --forests` raises a smooth cosine mound into the
-heightfield at each forest -- radius `--forest-radius` (160 world units at
-scale 1.0) and height `--forest-height` (100 altitude steps at scale 1.0),
-blending the mound's vertex colours toward `Meph_32x32.png` tile 5 or a solid
-`--canopy-colour`. The accepted diagnostic uses solid red `#ff0000`: 6,893 red
-vertices, no canopy cards, and the same frame cost. The canopy-card path stays
-in `terrain.c` behind a non-zero `PLANT_CANOPY_UNITS` but this build does not
-use it. The colour is the first thing to refine next.
+not drawn as anything of their own: all 1,405 of Celtic's trees are plants,
+including the 833 the script places inside its 88 `CREATE_NEW_BIG_FOREST`
+commands, and no canopy card, canopy mesh or raised mound is drawn. Three
+forest treatments were tried and rejected -- flat canopy cards read as roof
+tiles, a raised terrain mound read as a stain on the land, and a five-shell
+canopy mesh in the shape of openblack's `FeatureForest` models clashed with the
+terrain -- so the accepted build is the plain one: CRC `73f24771`,
+`TRIS=28606`, `PIXELS=35569`, `DRAW=76990us`, `MAX=84370us`, an 82.6 ms period
+and `LATE=0`. `convert_land.py --forests` still raises a cosine mound at each
+forest when asked, but no build uses it.
 
 A build that times its own phases with the core's cycle counter reports the
 mean cells a frame drew and the time it spent in the sky and sea rows, the

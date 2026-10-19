@@ -2303,3 +2303,40 @@ The red canopy is a diagnostic, not the final colour: the next cycle should repl
 - User Test: PASS
 
 ---
+
+## 70 COMMIT Unreleased 2026-10-19T12:29:09-07:00
+
+#### Coming From:
+
+Unreleased 3e85832
+
+#### Purpose:
+
+Make the all-trees landscape the accepted baseline by removing every big-forest canopy path and by making the plant table and its host twin rebuild when a plant knob changes.
+
+#### Outcome:
+
+Celtic's 1,405 trees are all drawn and no forest object is built or drawn. Three forest treatments were implemented and rejected in this cycle: flat canopy cards read as stretched roof tiles, a raised terrain mound read as a stain on the land, and a canopy mesh modelled on openblack's own big forest read as a jagged shape that clipped the terrain. The third one was built to openblack's recipe after reading its source: `BigForestArchetype` gives each `CREATE_NEW_BIG_FOREST` an entity with a mesh from `infoConstants.bigForest[type].meshId`, the four types are meshes 270 to 273 (`FeatureForest`), `MorphWithTerrain` shifts the whole mesh so its origin sits at the terrain height instead of deforming it, and each mesh is 136 world units wide and 13.6 high in three to five nested shells of 48 to 278 triangles with chroma alpha cut-offs from 113 to 239. A procedural five-shell dome at those proportions still looked wrong on the board, so the cycle ended by removing the forest path outright: `tools/convert_plants.py` no longer reads `CREATE_NEW_BIG_FOREST`, no longer drops the 833 forest-owned trees and no longer emits a forest table; `tools/make_plant_sheet.py` no longer appends a canopy tile, which restores the 20-tile sheet and the accepted art palette; `firmware/terrain/terrain.c` lost `draw_forest_cell`, `submit_tex_tri` and `TC_CANOPY_TILE`; the three run scripts lost `PLANT_FOREST` and `PLANT_CANOPY_UNITS`. The Makefile now gives the plant table a flags stamp listing every knob and makes `terrain_host` depend on the table. Without that, changing `PLANT_FOREST` neither regenerated the table nor relinked the host, and a gate reported `FAIL: board TRIS=28606, host TRIS=33812` while the board was in fact correct. With the fix the gate passed on seed 13's unchanged core at LAND CRC `a59c0a9a`, frame CRC `73f24771`, `TRIS=28606`, `PIXELS=35569`, `DRAW=76990us`, `MAX=84370us`, `STALLS=0`, period 82,612 us and `LATE=0`, board and host matching. The interactive artifact loaded 136,028 bytes; the user flew it, accepted the look, and named it the baseline. `README.md` now records the rejected treatments and the accepted numbers, and `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The queue is unchanged: authored-tall plant sprites, grass as ground cover, entry 51's `BAD TINYCREATURE PIXELS` at 2,000 and 3,000 villager-sized cards, and the FPGA optimisation that starts by splitting the 76.9 ms Celtic walk by phase. If forests are revisited, openblack's recipe and its measured dimensions are recorded in the entry above rather than rediscovered.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/Makefile
+- firmware/terrain/terrain.c
+- tools/build_tang32.sh
+- tools/convert_plants.py
+- tools/make_plant_sheet.py
+- tools/run_tang32_feel.sh
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
