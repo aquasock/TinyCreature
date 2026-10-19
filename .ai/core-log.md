@@ -1727,3 +1727,33 @@ Small and specific. TinyCreature's own `tools/run_tang32_feel.sh` should pass `H
 - User Test: PASS
 
 ---
+
+## 53 COMMIT Unreleased 2026-10-18T19:41:47-07:00
+
+#### Coming From:
+
+Unreleased 56699e9
+
+#### Purpose:
+
+Reduce the sixty-four textured cards to one quarter of their previous thickness while preserving their size, art, placement and renderer.
+
+#### Outcome:
+
+The accepted sixty-four-card shelf kept `CARD_UNITS=480`, `CARDS_N=64`, the first sixty-four Meph textures and the fabric's textured-triangle path, while its build-time `CARD_DEPTH` changed from 48 Q4 to 12 Q4, exactly one quarter of the previous thickness. This was an AE350 firmware-only build, so the FPGA core was not rebuilt; at the user's clarification no seed sweep was applicable, and the deployed core remained entry 49's `ae350_soc.bin` with SHA-256 `f9f9e2ea15e1f4975e68596d792143438b5cfcf66790b0dec7da92e775498c67`. A clean 600-frame build and its host twin agreed at `TRIS=20687`, `PIXELS=34454` and frame CRC `3bbd590b`; over the two-wire link the board matched those values, reported zero late line fetches, and held all 600 frames at three vertical blanks with a mean draw time of 30,805 us and a maximum of 36,707 us. The long-running interactive artifact was `build/feel/terrain.elf`, 499,412 bytes with SHA-256 `61b2f7488556db4a9fb47ffaead49c0413db61bd25d29b9a84b3413572467ec3`; it was deployed with the link released to the board's mouse, and the user reported that it looked good. No engineering source changed because card depth is already a deterministic Makefile parameter. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged and no settled entry rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The user named the next cycle as reducing both the width and height of these same cards to one tenth of the accepted build, which means changing `CARD_UNITS` from 480 Q4 to 48 Q4 while keeping `CARD_DEPTH=12`; the exact consequence is that the unchanged depth will become one quarter of each side, so that proportion should be stated in the plan before the build. The FPGA core still needs no rebuild or seed sweep because both dimensions are firmware geometry parameters.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
