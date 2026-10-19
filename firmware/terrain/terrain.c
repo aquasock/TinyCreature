@@ -2251,11 +2251,9 @@ static void draw_tree_grid_cell(uint32_t gx, uint32_t gz)
 	int32_t wz = (int32_t)gz * CELL + CELL / 2;
 	int32_t wy = ground(wx, wz);
 #if TC_TREE_WHOLE
-	/* A whole-tree sprite carries its own trunk and crown, so one crossed
-	 * pair is the tree; the part stack would draw the sprite four times. */
-	for (unsigned plane = 0; plane < 2; plane++)
-		card_at_yaw(wx, wy, wz, i % ART_TILES,
-			    TC_CARD_YAW + plane * 16384u);
+	/* A whole-plant sprite carries its own trunk and crown, so one card is
+	 * the plant; the part stack would draw the sprite four times. */
+	card_at_yaw(wx, wy, wz, i % ART_TILES, TC_CARD_YAW);
 #else
 	for (unsigned plane = 0; plane < 2; plane++) {
 		uint32_t yaw = TC_CARD_YAW + plane * 16384u;

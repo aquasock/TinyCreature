@@ -2054,3 +2054,34 @@ The whole-sprite path needs one card per plant instead of the crossed pair, whic
 - User Test: PASS
 
 ---
+
+## 63 COMMIT Unreleased 2026-10-19T07:02:00-07:00
+
+#### Coming From:
+
+Unreleased c000ab7
+
+#### Purpose:
+
+Make each whole-plant sprite cost one card instead of the crossed pair the user accepted in entry 62.
+
+#### Outcome:
+
+`TC_TREE_WHOLE` now draws one card per plant at `TC_CARD_YAW` rather than two crossed at a quarter turn; the parts stack is untouched and remains the default. The 600-frame host and board gate with `TREES=1 TREES_N=16 TREE_ART=1 TREE_WHOLE=1 CARD_TEX=1 CARD_EDGE=0 CARD_UNITS=320` agreed at `TRIS=20476`, `PIXELS=33182`, `DRAW=32087us`, `MAX=37873us`, `LATE=0` and CRC `0c8afb27`, with three vertical blanks held, and the core was not rebuilt. The interactive artifact was `build/feel/terrain.elf`, SHA-256 `c40f575a46a401a235b418437193f167e4fa2abc280b315eac3be083e95d6294`: sixteen fruit sprites at 20 units square, one card each. The user flew it and reported that it looks great. The cost of one card is the same edge-on dropout the animals have, so plants thin out at the two angles where their cards are side-on; the user has accepted that for now. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The next cycle the user wants takes plant positions from openblack's own data instead of the fixed sixteeen-cell grid, with a random rotation on each plant so some always face the camera, and the user is exploring openblack's grass and plant behaviour first to decide what the island should hold. The data source and the placement rule are therefore theirs to specify before any code changes; the one-card whole-sprite path and its 43 tiles are the renderer it will use.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/terrain.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

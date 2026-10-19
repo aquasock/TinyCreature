@@ -453,8 +453,8 @@ the cards this actually cuts out. Meph's tree sheet divides in two: rows 0 to
 5 are the trunk and fork parts the four-level stack draws, and they are fully
 opaque; rows 6 to 8 are 43 whole plant sprites whose own alpha, duplicated in
 `-bg`, is a real silhouette. `TREE_WHOLE=1` builds from those cells and draws
-each plant as a crossed pair of cards at `CARD_UNITS=320`; the user recognised
-the sprites as fruit, and the parts stack remains the default. The core this first runs on is seed
+each plant as one card at `CARD_UNITS=320`; the user recognised the sprites as
+fruit, and the parts stack remains the default. The core this first runs on is seed
 13, 75.06 MHz on the bus and 101.63 MHz on the pixel clock, published after
 `patches/tinynes-tang32.patch` admitted `SPINE19` beside `SPINE26` in the pixel
 clock's bridge check: TinyTang's TOOL-021 found those spines dead only because
