@@ -115,7 +115,8 @@ COMMON_CPPFLAGS := $(SPRITE_CPPFLAGS) -DTC_CARDS=$(CARDS) \
                    -DTC_CARD_YAW=$(CARD_YAW) -DTC_CARD_DEPTH=$(CARD_DEPTH) \
                    -DTC_CARD_UNITS=$(CARD_UNITS) \
                    -DTC_CARD_COLUMN_PX=$(CARD_COLUMN_PX) -DTC_TEX=$(CARD_TEX) \
-                   -DTC_CARD_EDGE=$(CARD_EDGE) -DTC_HANDOVER=$(HANDOVER)
+                   -DTC_CARD_EDGE=$(CARD_EDGE) -DTC_HANDOVER=$(HANDOVER) \
+                   -DTC_TREE_WHOLE=$(TREE_WHOLE)
 
 # The art's tiles: a generated header, off by default because the art is
 # fetched rather than committed, so a fresh clone builds. TILES=1 wants the
@@ -127,15 +128,21 @@ TILES_LIMIT   ?= 64
 TILES_COLOURS ?= 64
 TILES_FIRST   ?= 192
 TREE_ART      ?= 0
+TREE_WHOLE    ?= 0
 TREE_ART_DIR  ?= $(abspath ../../build/tiles/Meph/data/art)
 TREE_SHEET    := $(BUILD)/trees/meph-tree.png
 TREE_TOOL     := $(abspath ../../tools/make_tree_sheet.py)
+TREE_TOOL_ARGS := $(if $(filter 1,$(TREE_WHOLE)),--whole,)
 ifeq ($(TREE_ART),1)
 ifneq ($(TILES),1)
 $(error TREE_ART=1 requires TILES=1)
 endif
 TILES_SHEET   := $(TREE_SHEET)
+ifeq ($(TREE_WHOLE),1)
+TILES_LIMIT   := 64
+else
 TILES_LIMIT   := 2
+endif
 endif
 TILES_H       := $(BUILD)/tiles/meph-$(TILES_COLOURS)c-$(TILES_LIMIT)t.h
 TILES_TOOL    := $(abspath ../../tools/convert_tiles.py)
@@ -152,7 +159,7 @@ $(TREE_SHEET): $(TREE_TOOL) $(TREE_ART_DIR)/_Meph_trees.png \
 	@mkdir -p $(dir $@)
 	@python3 $(TREE_TOOL) --base "$(TREE_ART_DIR)/_Meph_trees.png" \
 		--background "$(TREE_ART_DIR)/_Meph_trees-bg.png" \
-		--top "$(TREE_ART_DIR)/_Meph_trees-top.png" --out $@
+		--top "$(TREE_ART_DIR)/_Meph_trees-top.png" $(TREE_TOOL_ARGS) --out $@
 endif
 
 $(TILES_H): $(TILES_TOOL) $(TILES_SHEET)

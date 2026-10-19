@@ -449,9 +449,12 @@ entries 193 to 255, the host twin skips a key texel in both card fills, and
 `S_TEXW`. `CARD_EDGE=0`, the new default, drops the four solid near-black sides
 of the card box, so a cutout card is its art's silhouette with only the face
 toward the camera drawn; `CARD_EDGE=1` restores the box. The animal icons are
-the cards this actually cuts out. Meph's tree sheet is opaque in both its base
-layer and its uniform `-bg` layer, so the tree cards stay rectangles until
-they have a silhouette source of their own. The core this first runs on is seed
+the cards this actually cuts out. Meph's tree sheet divides in two: rows 0 to
+5 are the trunk and fork parts the four-level stack draws, and they are fully
+opaque; rows 6 to 8 are 43 whole plant sprites whose own alpha, duplicated in
+`-bg`, is a real silhouette. `TREE_WHOLE=1` builds from those cells and draws
+each plant as a crossed pair of cards at `CARD_UNITS=320`; the user recognised
+the sprites as fruit, and the parts stack remains the default. The core this first runs on is seed
 13, 75.06 MHz on the bus and 101.63 MHz on the pixel clock, published after
 `patches/tinynes-tang32.patch` admitted `SPINE19` beside `SPINE26` in the pixel
 clock's bridge check: TinyTang's TOOL-021 found those spines dead only because

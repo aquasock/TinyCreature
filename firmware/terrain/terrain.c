@@ -557,6 +557,9 @@ static int32_t height(uint32_t altitude)
 #ifndef TC_TREES_N
 #define TC_TREES_N 16
 #endif
+#ifndef TC_TREE_WHOLE
+#define TC_TREE_WHOLE 0
+#endif
 
 /* The art, and the cards drawn from it. A card is an axis-aligned rectangle
  * filled with one tile, its texels written as palette entries from
@@ -2247,6 +2250,13 @@ static void draw_tree_grid_cell(uint32_t gx, uint32_t gz)
 	int32_t wx = (int32_t)gx * CELL + CELL / 2;
 	int32_t wz = (int32_t)gz * CELL + CELL / 2;
 	int32_t wy = ground(wx, wz);
+#if TC_TREE_WHOLE
+	/* A whole-tree sprite carries its own trunk and crown, so one crossed
+	 * pair is the tree; the part stack would draw the sprite four times. */
+	for (unsigned plane = 0; plane < 2; plane++)
+		card_at_yaw(wx, wy, wz, i % ART_TILES,
+			    TC_CARD_YAW + plane * 16384u);
+#else
 	for (unsigned plane = 0; plane < 2; plane++) {
 		uint32_t yaw = TC_CARD_YAW + plane * 16384u;
 		for (unsigned level = 0; level < 3; level++)
@@ -2260,6 +2270,7 @@ static void draw_tree_grid_cell(uint32_t gx, uint32_t gz)
 		for (int32_t dx = -offset; dx <= offset; dx += TC_CARD_UNITS)
 			card_at_pose(wx + dx, cap_y - TC_CARD_UNITS / 2,
 				     wz + dz, 1, TC_CARD_YAW, (uint32_t)-16384);
+#endif
 #else
 	(void)gx;
 	(void)gz;

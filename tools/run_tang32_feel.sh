@@ -49,6 +49,7 @@ make -C "$root/firmware/terrain" TINYNES="$source_dir" BUILD="$build" \
     TREES_N="${TINYCREATURE_TREES_N:-16}" \
     TILES="${TINYCREATURE_TILES:-0}" \
     TREE_ART="${TINYCREATURE_TREE_ART:-0}" \
+    TREE_WHOLE="${TINYCREATURE_TREE_WHOLE:-0}" \
     READOUT="${TINYCREATURE_READOUT:-1}" \
     PIN_X="${TINYCREATURE_PIN_X:-0xffff}" \
     PIN_Z="${TINYCREATURE_PIN_Z:-0xffff}" \

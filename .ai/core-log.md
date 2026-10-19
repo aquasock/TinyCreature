@@ -2018,3 +2018,39 @@ None.
 - User Test: PASS
 
 ---
+
+## 62 COMMIT Unreleased 2026-10-19T06:56:00-07:00
+
+#### Coming From:
+
+Unreleased 8455080
+
+#### Purpose:
+
+Test whether the whole-sprite trees can cut out now that the fill keys transparent texels, using one crossed card pair instead of the twelve-card stack.
+
+#### Outcome:
+
+`tools/make_tree_sheet.py` gained `--whole`, which crops the alpha-bearing cells of rows 6 to 8, keeps their own alpha instead of filling the square with the opaque tint backing, and lays them in a deterministic reading-order grid; the parts mode is unchanged and its docstring now says that rows 0 to 5 are the opaque trunk and fork cells it uses. `firmware/terrain/terrain.c` gained `TC_TREE_WHOLE`, which draws each tree as one crossed pair of cards with tile `i % ART_TILES` instead of the four-level stack and its flat cap; `firmware/terrain/Makefile` gained `TREE_WHOLE`, raises the tile limit to 64 in that mode and passes `--whole`, and `tools/build_tang32.sh`, `tools/run_tang32_feel.sh` and `tools/test_tang32_raster.sh` forward `TINYCREATURE_TREE_WHOLE`. The generated sheet holds 43 tiles because one cell in row 8 is fully opaque, and the art's 6,078 source colours fit the 63-entry pool at 29.20 mean and 115.0 worst error, which is coarser than the animal icons' fit. The 600-frame host and board gate with `TREES=1 TREES_N=16 TREE_ART=1 TREE_WHOLE=1 CARD_TEX=1 CARD_EDGE=0 CARD_UNITS=320` agreed at `TRIS=20504`, `PIXELS=33229`, `DRAW=32479us`, `MAX=38104us`, `LATE=0` and CRC `867005ac`, with three vertical blanks held, and the core was not rebuilt. The interactive artifact was `build/feel/terrain.elf`, SHA-256 `ef9fa503d3339905946debcee94671d1372a8892e9536610268cce4fc8e9e825`: sixteen plants at 20 units square, each a crossed pair of whole-sprite cards. The user flew it, confirmed the crossed pair worked as expected and passed the build, and then identified the sprites as fruit rather than trees; the whole-sprite path is validated, the art is not what the name promised, and the user asked that a plant cost one card and not two. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The whole-sprite path needs one card per plant instead of the crossed pair, which is a single loop change in `TC_TREE_WHOLE`, and the build that follows should be gated and flown like this one. Whether the island should then show fruit, a chosen subset of the 43 sprites, or art that is actually trees is the user's call before the art is treated as final; the palette fit of 29.20 mean is the likely reason a sprite reads coarsely at distance.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/Makefile
+- firmware/terrain/terrain.c
+- tools/build_tang32.sh
+- tools/make_tree_sheet.py
+- tools/run_tang32_feel.sh
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
