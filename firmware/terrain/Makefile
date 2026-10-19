@@ -151,6 +151,9 @@ PLANT_ART     ?= 0
 PLANT_TILES   ?= 16
 PLANT_TREE_CELLS ?= 23,3,17,1
 PLANT_EXTRA_TILES ?= 4
+PLANT_CANOPY_SOURCE ?= Meph_32x32.png
+PLANT_CANOPY_TILE ?= 5
+PLANT_CANOPY_UNITS ?= 640
 PLANT_ART_DIR ?= $(abspath ../../build/tiles/Meph/data/art)
 PLANT_SHEET   := $(BUILD)/plants/meph-plants.png
 PLANT_SHEET_TOOL := $(abspath ../../tools/make_plant_sheet.py)
@@ -159,7 +162,7 @@ ifneq ($(TILES),1)
 $(error PLANT_ART=1 requires TILES=1)
 endif
 TILES_SHEET   := $(PLANT_SHEET)
-TILES_LIMIT   := $(shell expr $(PLANT_TILES) + $(PLANT_EXTRA_TILES))
+TILES_LIMIT   := $(shell expr $(PLANT_TILES) + $(PLANT_EXTRA_TILES) + $(if $(PLANT_CANOPY_SOURCE),1,0))
 endif
 TILES_H       := $(BUILD)/tiles/meph-$(TILES_COLOURS)c-$(TILES_LIMIT)t.h
 TILES_TOOL    := $(abspath ../../tools/convert_tiles.py)
@@ -189,7 +192,9 @@ $(PLANT_SHEET): $(PLANT_SHEET_TOOL) $(PLANT_ART_DIR)/_Meph_plants.png \
 		--top "$(PLANT_ART_DIR)/_Meph_plants-top.png" \
 		--count $(PLANT_TILES) --also $(PLANT_TREE_CELLS) \
 		--extra-base "$(PLANT_ART_DIR)/_Meph_trees.png" \
-		--extra-top "$(PLANT_ART_DIR)/_Meph_trees-top.png" --out $@
+		--extra-top "$(PLANT_ART_DIR)/_Meph_trees-top.png" \
+		$(if $(PLANT_CANOPY_SOURCE),--canopy-source "$(PLANT_ART_DIR)/$(PLANT_CANOPY_SOURCE)" --canopy-tile $(PLANT_CANOPY_TILE),) \
+		--out $@
 endif
 
 $(TILES_H): $(TILES_TOOL) $(TILES_SHEET)
@@ -207,10 +212,14 @@ endif
 PLANTS        ?= 0
 PLANT_UNITS   ?= 80
 PLANT_BIG     ?= 120
+PLANT_RANDOM  ?= 0
+PLANT_SEED    ?= 0
+PLANT_FOREST  ?= 0
 PLANT_SCRIPT  ?= ../../build/wineprefix/drive_c/Program Files (x86)/Lionhead Studios Ltd/Black & White/Scripts/Land1.txt
 PLANT_LAND    ?= ../../build/wineprefix/drive_c/Program Files (x86)/Lionhead Studios Ltd/Black & White/Data/Landscape/Land1.lnd
 PLANT_TOOL    := $(abspath ../../tools/convert_plants.py)
 PLANT_H       := $(BUILD)/plants/land1-plants.h
+PLANT_ROTATION_FLAG := $(if $(filter 1,$(PLANT_RANDOM)),--random-rotation,)
 
 ifeq ($(PLANTS),1)
 PLANT_FLAGS := -I$(BUILD)/plants -DTC_PLANTS_HEADER='"$(notdir $(PLANT_H))"' \
@@ -223,7 +232,9 @@ $(PLANT_H): $(PLANT_TOOL)
 	@mkdir -p $(dir $@)
 	@python3 $(PLANT_TOOL) --script "$(PLANT_SCRIPT)" \
 		--land "$(PLANT_LAND)" --units $(PLANT_UNITS) --tiles $(PLANT_TILES) \
-		--out $@
+		$(PLANT_ROTATION_FLAG) --seed $(PLANT_SEED) \
+		$(if $(filter 1,$(PLANT_FOREST)),--forest-aware,) \
+		--canopy-units $(PLANT_CANOPY_UNITS) --out $@
 $(call objects,terrain.c): $(PLANT_H)
 endif
 

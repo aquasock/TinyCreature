@@ -39,6 +39,8 @@ repository.
 """
 
 import argparse
+import math
+import re
 import struct
 import sys
 import zlib
@@ -50,6 +52,7 @@ COUNTRY_BYTES = 3076
 MATERIAL_BYTES = 0x20002
 NOISE_BYTES = 0x10000
 CELLS_PER_BLOCK = 16
+CELL_UNITS = 10          # world units in a terrain cell
 # The palette is 256 entries and the program owns the first nineteen: 0 is
 # never drawn by the land, 1 to 8 are the sky's ramp, 9 to 16 the sea's, and
 # 17 and 18 are the cursor's two colours. Above them sit two blocks: entries
@@ -169,6 +172,22 @@ def fit_error(usage, palette, index):
     return mean, worst ** 0.5
 
 
+BIG_FOREST = re.compile(
+    r'CREATE_NEW_BIG_FOREST\(\s*"(-?[\d.]+),(-?[\d.]+)",\s*(\d+),'
+    r'\s*\d+,\s*([-\d.]+),\s*([-\d.]+)\)')
+
+
+def read_forests(path):
+    """[(x, z, rotation, scale)] from a level script's big forests."""
+    forests = []
+    for line in open(path, errors="replace"):
+        match = BIG_FOREST.match(line)
+        if match:
+            forests.append((float(match.group(1)), float(match.group(2)),
+                            float(match.group(4)), float(match.group(5))))
+    return forests
+
+
 def load_material_map(path, meph_dir):
     """{material index: (source, tile, gain)} replaced by Meph tile images."""
     from PIL import Image
@@ -188,7 +207,9 @@ def load_material_map(path, meph_dir):
     return overrides
 
 
-def convert(data, terrain_colours=TERRAIN_COLOURS, overrides=None):
+def convert(data, terrain_colours=TERRAIN_COLOURS, overrides=None,
+            forests=None, forest_radius=120.0, forest_height=30.0,
+            canopy=None):
     lut, blocks, countries, materials, noise, bump = read_lnd(data)
     by_index = {}
     for i, (block_x, block_z, cells) in enumerate(blocks):
@@ -252,6 +273,40 @@ def convert(data, terrain_colours=TERRAIN_COLOURS, overrides=None):
             altitudes[gz * vx + gx] = altitude
             water[gz * vx + gx] = 1 if properties & WATER else 0
             colours[gz * vx + gx] = vertex_colour(x, z)
+
+    # A big forest is a smooth mound in the terrain itself, not a card:
+    # inside the script's radius the vertex height rises on a cosine falloff
+    # and its colour moves to the canopy texture.  Heights are in the cell's
+    # altitude steps, positions in world units, so this is the same mesh the
+    # terrain already draws.
+    if forests:
+        centres = [(fx, fz, forest_radius * scale, forest_height * scale)
+                   for fx, fz, _rotation, scale in forests]
+        for gz in range(vz):
+            for gx in range(vx):
+                x, z = origin_x + gx, origin_z + gz
+                wx, wz = x * CELL_UNITS, z * CELL_UNITS
+                best_w = best_h = 0.0
+                for fx, fz, radius, height in centres:
+                    dx = wx - fx
+                    dz = wz - fz
+                    if dx * dx + dz * dz >= radius * radius:
+                        continue
+                    d = math.sqrt(dx * dx + dz * dz)
+                    w = 0.5 + 0.5 * math.cos(math.pi * d / radius)
+                    if w > best_w:
+                        best_w, best_h = w, height
+                if best_w <= 0.0:
+                    continue
+                i = gz * vx + gx
+                altitudes[i] = min(255, altitudes[i] +
+                                   int(round(best_h * best_w)))
+                if canopy is not None:
+                    tex = canopy.getpixel((int(wx * 2) % 32,
+                                           int(wz * 2) % 32))[:3]
+                    c = colours[i]
+                    colours[i] = tuple(c[k] * (1.0 - best_w) +
+                                       tex[k] * best_w for k in range(3))
 
     # Each cell's two triangles, as LandBlock::BuildVertexList splits it, as
     # the three grid vertices it joins.
@@ -328,6 +383,19 @@ def main():
     parser.add_argument("--materials-map",
                         help="tools/ground_map.tsv: replace material textures "
                              "with Meph tiles")
+    parser.add_argument("--forests",
+                        help="level script whose CREATE_NEW_BIG_FOREST "
+                             "commands become terrain mounds")
+    parser.add_argument("--forest-radius", type=float, default=120.0,
+                        help="mound radius in world units at scale 1 (120)")
+    parser.add_argument("--forest-height", type=float, default=30.0,
+                        help="mound height in altitude steps at scale 1 (30)")
+    parser.add_argument("--canopy-image",
+                        help="sheet for the canopy texture")
+    parser.add_argument("--canopy-colour",
+                        help="solid RRGGBB canopy colour, overriding the sheet")
+    parser.add_argument("--canopy-tile", type=int, default=5,
+                        help="cell index of the canopy tile (default 5)")
     parser.add_argument("--meph-dir",
                         default=str(Path(__file__).resolve().parent.parent /
                                     "build/tiles/Meph/data/art"),
@@ -341,8 +409,24 @@ def main():
     overrides = None
     if args.materials_map:
         overrides = load_material_map(args.materials_map, args.meph_dir)
+    forests = read_forests(args.forests) if args.forests else None
+    canopy = None
+    if args.canopy_colour:
+        from PIL import Image
+        value = args.canopy_colour.removeprefix("#")
+        rgb = tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
+        canopy = Image.new("RGB", (32, 32), rgb)
+    elif args.canopy_image:
+        from PIL import Image
+        sheet = Image.open(args.canopy_image).convert("RGBA")
+        x, y = args.canopy_tile % 16, args.canopy_tile // 16
+        canopy = sheet.crop((x * 32, y * 32, (x + 1) * 32, (y + 1) * 32))
     try:
-        out, summary = convert(data, args.colours, overrides=overrides)
+        out, summary = convert(data, args.colours, overrides=overrides,
+                               forests=forests,
+                               forest_radius=args.forest_radius,
+                               forest_height=args.forest_height,
+                               canopy=canopy)
     except (LandError, struct.error, IndexError) as error:
         print(f"{args.lnd}: {error}", file=sys.stderr)
         return 1

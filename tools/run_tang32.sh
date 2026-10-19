@@ -50,7 +50,10 @@ terrain|terrain-soft)
     mkdir -p "$(dirname "$land")"
     map_args=()
 [[ -n "${TINYCREATURE_GROUND_MAP:-}" ]] && map_args=(--materials-map "$TINYCREATURE_GROUND_MAP")
-python3 -I "$root/tools/convert_land.py" "$lnd" "$land" "${map_args[@]}"
+forest_args=()
+[[ -n "${TINYCREATURE_FORESTS:-}" ]] && forest_args=(--forests "$TINYCREATURE_FORESTS" --canopy-image "$root/build/tiles/Meph/data/art/Meph_32x32.png" --canopy-tile 5 --forest-radius "${TINYCREATURE_FOREST_RADIUS:-120}" --forest-height "${TINYCREATURE_FOREST_HEIGHT:-30}")
+[[ -n "${TINYCREATURE_CANOPY_COLOUR:-}" ]] && forest_args+=(--canopy-colour "$TINYCREATURE_CANOPY_COLOUR")
+python3 -I "$root/tools/convert_land.py" "$lnd" "$land" "${map_args[@]}" "${forest_args[@]}"
     # A run's recorded mouse input rides in the land file's tail, where the
     # program looks for it after the TCL2 header says where the land ends;
     # the PC twin is given the same reports on their own.

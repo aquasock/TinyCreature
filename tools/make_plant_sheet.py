@@ -82,6 +82,10 @@ def main():
                         help="sheet the --also cells come from (default: --base)")
     parser.add_argument("--extra-top",
                         help="detail sheet for the --also cells (default: --top)")
+    parser.add_argument("--canopy-source",
+                        help="a sheet to take one extra canopy tile from")
+    parser.add_argument("--canopy-tile", type=int, default=5,
+                        help="cell index of the canopy tile (default 5)")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     if args.count < 1:
@@ -107,6 +111,11 @@ def main():
             chosen.append((0, idx, x, y,
                            Image.alpha_composite(extra_base.crop(box),
                                                  extra_top.crop(box))))
+    if args.canopy_source:
+        canopy = load(args.canopy_source)
+        x, y = args.canopy_tile % GRID, args.canopy_tile // GRID
+        box = (x * TILE, y * TILE, (x + 1) * TILE, (y + 1) * TILE)
+        chosen.append((0, -1, x, y, canopy.crop(box)))
 
     across = 4
     down = (len(chosen) + across - 1) // across

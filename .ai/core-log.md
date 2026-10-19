@@ -2264,3 +2264,42 @@ The ground is Meph's now, so the next visual questions are the plants: authored-
 - User Test: PASS
 
 ---
+
+## 69 COMMIT Unreleased 2026-10-19T11:35:00-07:00
+
+#### Coming From:
+
+Unreleased 94c0fa4
+
+#### Purpose:
+
+Give every plant a random rotation and replace the trees owned by a big forest with a smooth mound raised from the terrain instead of a canopy card.
+
+#### Outcome:
+
+`tools/convert_plants.py` gained `--random-rotation` and `--seed`: every plant gets a uniform random yaw, deterministic for the seed, and the build with seed 1 was accepted. Celtic's 1,405 trees are 572 standalone and 833 that belong to 88 `CREATE_NEW_BIG_FOREST` commands, so the script gained `--forest-aware` to drop the forest-owned trees and a forest table with the big-forest positions, and `Meph_32x32.png` tile 5 was added to the plant sheet as a canopy tile. The first forest build drew 87 flat canopy cards (one forest falls outside the land) at `PLANT_CANOPY_UNITS=1600`; the user rejected it as square stretched tiles layered like roof tiles. The forests therefore became terrain: `tools/convert_land.py` gained `--forests`, `--forest-radius`, `--forest-height`, `--canopy-image`, `--canopy-tile` and `--canopy-colour`, and inside each forest's radius it raises the heightfield on a cosine falloff and blends the vertex colours toward the canopy texture or a solid colour, so the mound is part of the mesh the renderer already draws. At radius 120 and height 30 the 20-unit rise was invisible; at radius 160 and height 100 the rise is about 4.7 cells at scale 0.7, and a solid `#ff0000` canopy proved it: 6,893 red vertices of 54,225, and the user accepted the look. The final gate passed at LAND CRC `0023edd4`, frame CRC `08038c44`, `TRIS=25573`, `PIXELS=36166`, `DRAW=58818us`, `MAX=66727us`, period 64,865 us and `LATE=0`, on seed 13's unchanged core. Dropping the 833 forest trees took the frame from `DRAW=76990us` to `68018us`; the mounds add no triangles, only displaced vertices and blended colours, and the final frame is `58818us`. The interactive artifact was `build/feel/terrain.elf`, SHA-256 `e5de8f332d10e16ede5e708b96d116685bd5a1a3b05cb45800ed004cd38491a5`; the ELF does not carry the land, which is converted at run time. The canopy-card path remains in `terrain.c` behind a non-zero `PLANT_CANOPY_UNITS` but this build sets it to zero. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The red canopy is a diagnostic, not the final colour: the next cycle should replace it with a canopy colour or texture that reads as forest against the Meph ground, and tune `--forest-radius` and `--forest-height` against the result. The canopy-card code is dead in this build and should either be removed or kept deliberately. The rest of the queue stands: authored-tall plant sprites, grass as ground cover, entry 51's `BAD TINYCREATURE PIXELS` at 2,000 and 3,000 villager-sized cards, and the FPGA optimisation that begins by splitting the 58.8 ms Celtic walk by phase.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/Makefile
+- firmware/terrain/terrain.c
+- tools/build_tang32.sh
+- tools/convert_land.py
+- tools/convert_plants.py
+- tools/make_plant_sheet.py
+- tools/run_tang32.sh
+- tools/run_tang32_feel.sh
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

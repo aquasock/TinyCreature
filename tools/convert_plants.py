@@ -26,6 +26,7 @@ One card a plant, the tile chosen by the script's type, and the card's size is
 import argparse
 import importlib.util
 import math
+import random
 import re
 import sys
 from pathlib import Path
@@ -35,8 +36,11 @@ Q4 = 16                           # world units to Q4, since CELL is 160 Q4 / 10
 CELL_UNITS = 10                   # world units in a terrain cell
 
 NEW_TREE = re.compile(
-    r'CREATE_NEW_TREE\(\s*-?\d+,\s*"(-?[\d.]+),(-?[\d.]+)",\s*(\d+),'
+    r'CREATE_NEW_TREE\(\s*(-?\d+),\s*"(-?[\d.]+),(-?[\d.]+)",\s*(\d+),'
     r'\s*-?\d+,\s*(-?[\d.]+),\s*([-\d.]+),\s*[-\d.]+\)')
+BIG_FOREST = re.compile(
+    r'CREATE_NEW_BIG_FOREST\(\s*"(-?[\d.]+),(-?[\d.]+)",\s*(\d+),'
+    r'\s*\d+,\s*([-\d.]+),\s*([-\d.]+)\)')
 DEAD_TREE = re.compile(
     r'CREATE_DEAD_TREE\(\s*"(-?[\d.]+),(-?[\d.]+)",\s*"[^"]*",\s*(\d+),'
     r'\s*([-\d.]+),\s*[-\d.]+,\s*([-\d.]+),\s*[-\d.]+\)')
@@ -66,16 +70,27 @@ def read_script(path):
         for line in lines:
             match = NEW_TREE.match(line)
             if match:
-                plants.append((float(match.group(1)), float(match.group(2)),
-                               int(match.group(3)), float(match.group(4)),
-                               float(match.group(5))))
+                plants.append((int(match.group(1)), float(match.group(2)),
+                               float(match.group(3)), int(match.group(4)),
+                               float(match.group(5)), float(match.group(6))))
                 continue
             match = DEAD_TREE.match(line)
             if match:
-                plants.append((float(match.group(1)), float(match.group(2)),
+                plants.append((-1, float(match.group(1)), float(match.group(2)),
                                int(match.group(3)), float(match.group(5)),
                                float(match.group(4))))
     return plants
+
+
+def read_forests(path):
+    """[(x, z, rotation, scale)] from CREATE_NEW_BIG_FOREST."""
+    forests = []
+    for line in open(path, errors="replace"):
+        match = BIG_FOREST.match(line)
+        if match:
+            forests.append((float(match.group(1)), float(match.group(2)),
+                            float(match.group(4)), float(match.group(5))))
+    return forests
 
 
 def land_origin(land_path):
@@ -104,15 +119,28 @@ def main():
     parser.add_argument("--tiles", type=int, default=16,
                         help="tiles in the sheet; the script's types are "
                              "mapped onto them in type order (default 16)")
+    parser.add_argument("--random-rotation", action="store_true",
+                        help="give every plant a random yaw instead of the "
+                             "script's rotation")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="seed for --random-rotation (default 0)")
+    parser.add_argument("--forest-aware", action="store_true",
+                        help="drop trees that belong to a big forest and emit "
+                             "the forest table instead")
+    parser.add_argument("--canopy-units", type=int, default=640,
+                        help="canopy card size in Q4 at scale 1.0 (default 640)")
     parser.add_argument("--out", required=True, help="the C header to write")
     args = parser.parse_args()
     if args.units < 1:
         die("--units must be positive")
 
     origin_x, origin_z, cells_x, cells_z = land_origin(args.land)
+    rng = random.Random(args.seed)
     plants = []
     outside = 0
-    for x, z, kind, rotation, scale in read_script(args.script):
+    for forest_id, x, z, kind, rotation, scale in read_script(args.script):
+        if args.forest_aware and forest_id >= 0:
+            continue
         gx = math.floor(x / CELL_UNITS) - origin_x
         gz = math.floor(z / CELL_UNITS) - origin_z
         if not (0 <= gx < cells_x and 0 <= gz < cells_z):
@@ -122,7 +150,8 @@ def main():
         # absolute script position moves with it before it is stored.
         x -= origin_x * CELL_UNITS
         z -= origin_z * CELL_UNITS
-        yaw = int(round(rotation / (2.0 * math.pi) * TURN)) % TURN
+        yaw = (rng.randrange(TURN) if args.random_rotation
+               else int(round(rotation / (2.0 * math.pi) * TURN)) % TURN)
         units = max(1, min(32767, int(round(args.units * scale))))
         plants.append((gz, gx, int(round(x * Q4)), int(round(z * Q4)),
                        yaw, units, kind & 0xFF))
@@ -132,6 +161,22 @@ def main():
     slot = {kind: i % args.tiles for i, kind in enumerate(kinds)}
     plants = [plant[:6] + (slot[plant[6]], plant[6]) for plant in plants]
     plants.sort()
+
+    forests = []
+    if args.forest_aware and args.canopy_units > 0:
+        for x, z, rotation, scale in read_forests(args.script):
+            gx = math.floor(x / CELL_UNITS) - origin_x
+            gz = math.floor(z / CELL_UNITS) - origin_z
+            if not (0 <= gx < cells_x and 0 <= gz < cells_z):
+                continue
+            x -= origin_x * CELL_UNITS
+            z -= origin_z * CELL_UNITS
+            yaw = int(round(rotation / (2.0 * math.pi) * TURN)) % TURN
+            units = max(1, min(32767,
+                               int(round(args.canopy_units * scale))))
+            forests.append((gz, gx, int(round(x * Q4)), int(round(z * Q4)),
+                            yaw, units))
+        forests.sort()
 
     lines = [
         "// Generated by tools/convert_plants.py from a level script.",
@@ -150,6 +195,23 @@ def main():
         lines.append(f"\t{{{x}, {z}, {gx}u, {gz}u, {yaw}u, {units}, "
                      f"{tile}u, {kind}u}},")
     lines.append("};")
+    lines += [
+        f"#define TC_FOREST_COUNT {len(forests)}",
+        "struct tc_forest {",
+        "\tint32_t x, z;",
+        "\tuint16_t gx, gz;",
+        "\tuint16_t yaw;",
+        "\tint16_t units;",
+        "\tuint8_t tile, pad;",
+        "};",
+        "static const struct tc_forest "
+        "tc_forests[TC_FOREST_COUNT ? TC_FOREST_COUNT : 1] = {",
+    ]
+    for gz, gx, x, z, yaw, units in forests:
+        lines.append(f"\t{{{x}, {z}, {gx}u, {gz}u, {yaw}u, {units}, 0u, 0u}},")
+    if not forests:
+        lines.append("\t{0, 0, 0u, 0u, 0u, 0, 0u, 0u},")
+    lines.append("};")
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(lines) + "\n")
@@ -162,7 +224,7 @@ def main():
     sizes = [plant[5] for plant in plants]
     print(f"{out}: {len(plants)} plants, {outside} outside the land, "
           f"{len(counts)} types on {len(tiles)} tiles, "
-          f"units {min(sizes)} to {max(sizes)}")
+          f"units {min(sizes)} to {max(sizes)}, {len(forests)} forests")
 
 
 if __name__ == "__main__":

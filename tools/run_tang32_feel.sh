@@ -32,7 +32,10 @@ land="$root/build/land/$(basename "${lnd%.*}").tcl"
 mkdir -p "$(dirname "$land")"
 map_args=()
 [[ -n "${TINYCREATURE_GROUND_MAP:-}" ]] && map_args=(--materials-map "$TINYCREATURE_GROUND_MAP")
-python3 -I "$root/tools/convert_land.py" "$lnd" "$land" "${map_args[@]}"
+forest_args=()
+[[ -n "${TINYCREATURE_FORESTS:-}" ]] && forest_args=(--forests "$TINYCREATURE_FORESTS" --canopy-image "$root/build/tiles/Meph/data/art/Meph_32x32.png" --canopy-tile 5 --forest-radius "${TINYCREATURE_FOREST_RADIUS:-120}" --forest-height "${TINYCREATURE_FOREST_HEIGHT:-30}")
+[[ -n "${TINYCREATURE_CANOPY_COLOUR:-}" ]] && forest_args+=(--canopy-colour "$TINYCREATURE_CANOPY_COLOUR")
+python3 -I "$root/tools/convert_land.py" "$lnd" "$land" "${map_args[@]}" "${forest_args[@]}"
 
 [[ -f "$out/ae350_soc.bin" ]] || {
     echo "Tang32 core missing; run tools/build_tang32.sh" >&2
@@ -55,6 +58,10 @@ make -C "$root/firmware/terrain" TINYNES="$source_dir" BUILD="$build" \
     PLANTS="${TINYCREATURE_PLANTS:-0}" \
     PLANT_ART="${TINYCREATURE_PLANT_ART:-0}" \
     PLANT_TILES="${TINYCREATURE_PLANT_TILES:-16}" \
+    PLANT_RANDOM="${TINYCREATURE_PLANT_RANDOM:-0}" \
+    PLANT_SEED="${TINYCREATURE_PLANT_SEED:-0}" \
+    PLANT_FOREST="${TINYCREATURE_PLANT_FOREST:-0}" \
+    PLANT_CANOPY_UNITS="${TINYCREATURE_PLANT_CANOPY_UNITS:-640}" \
     PLANT_BIG="${TINYCREATURE_PLANT_BIG:-120}" \
     PLANT_TREE_CELLS="${TINYCREATURE_PLANT_TREE_CELLS:-23,3,17,1}" \
     PLANT_EXTRA_TILES="${TINYCREATURE_PLANT_EXTRA_TILES:-4}" \
