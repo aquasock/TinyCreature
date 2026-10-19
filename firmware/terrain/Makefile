@@ -63,6 +63,11 @@ HANDOVER    ?= 0
 
 CARDS       ?= 0
 CARDS_N     ?= 64
+# The opaque crossed-card tree experiment. TREE_ART=1 makes a two-tile sheet
+# from Meph's aligned base, background and top layers; TREES=1 plants that
+# lower/upper pair as two perpendicular planes without changing the FPGA core.
+TREES       ?= 0
+TREES_N     ?= 16
 # The camera readout, on by default: a driven run draws where the eye and its
 # focus are along the bottom of the frame. It costs a few dozen rectangles a
 # frame and moves no scripted frame, so the recorded CRCs stay where they are.
@@ -99,7 +104,8 @@ CARD_COLUMN_PX ?= 3
 # board's software path already can.
 CARD_TEX    ?= 0
 COMMON_CPPFLAGS := $(SPRITE_CPPFLAGS) -DTC_CARDS=$(CARDS) \
-                   -DTC_CARDS_N=$(CARDS_N) -DTC_READOUT=$(READOUT) \
+                   -DTC_CARDS_N=$(CARDS_N) -DTC_TREES=$(TREES) \
+                   -DTC_TREES_N=$(TREES_N) -DTC_READOUT=$(READOUT) \
                    -DTC_PIN_X=$(PIN_X) -DTC_PIN_Z=$(PIN_Z) \
                    -DTC_PIN_DIST=$(PIN_DIST) -DTC_PIN_PITCH=$(PIN_PITCH) \
                    -DTC_CARD_YAW=$(CARD_YAW) -DTC_CARD_DEPTH=$(CARD_DEPTH) \
@@ -116,6 +122,17 @@ TILES_SHEET   ?= $(abspath ../../build/tiles/Meph/data/art/Meph_32x32.png)
 TILES_LIMIT   ?= 64
 TILES_COLOURS ?= 64
 TILES_FIRST   ?= 192
+TREE_ART      ?= 0
+TREE_ART_DIR  ?= $(abspath ../../build/tiles/Meph/data/art)
+TREE_SHEET    := $(BUILD)/trees/meph-tree.png
+TREE_TOOL     := $(abspath ../../tools/make_tree_sheet.py)
+ifeq ($(TREE_ART),1)
+ifneq ($(TILES),1)
+$(error TREE_ART=1 requires TILES=1)
+endif
+TILES_SHEET   := $(TREE_SHEET)
+TILES_LIMIT   := 2
+endif
 TILES_H       := $(BUILD)/tiles/meph-$(TILES_COLOURS)c-$(TILES_LIMIT)t.h
 TILES_TOOL    := $(abspath ../../tools/convert_tiles.py)
 
@@ -123,6 +140,16 @@ ifeq ($(TILES),1)
 TILES_FLAGS := -I$(BUILD)/tiles -DTC_TILES_HEADER='"$(notdir $(TILES_H))"'
 COMMON_CPPFLAGS += $(TILES_FLAGS)
 CPPFLAGS += $(TILES_FLAGS)
+
+ifeq ($(TREE_ART),1)
+$(TREE_SHEET): $(TREE_TOOL) $(TREE_ART_DIR)/_Meph_trees.png \
+                              $(TREE_ART_DIR)/_Meph_trees-bg.png \
+                              $(TREE_ART_DIR)/_Meph_trees-top.png
+	@mkdir -p $(dir $@)
+	@python3 $(TREE_TOOL) --base "$(TREE_ART_DIR)/_Meph_trees.png" \
+		--background "$(TREE_ART_DIR)/_Meph_trees-bg.png" \
+		--top "$(TREE_ART_DIR)/_Meph_trees-top.png" --out $@
+endif
 
 $(TILES_H): $(TILES_TOOL) $(TILES_SHEET)
 	@mkdir -p $(dir $@)

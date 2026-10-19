@@ -45,7 +45,10 @@ echo "Building for $frames frames"
 make -C "$root/firmware/terrain" TINYNES="$source_dir" BUILD="$build" \
     FRAMES="$frames" CARDS="${TINYCREATURE_CARDS:-0}" \
     CARDS_N="${TINYCREATURE_CARDS_N:-64}" \
+    TREES="${TINYCREATURE_TREES:-0}" \
+    TREES_N="${TINYCREATURE_TREES_N:-16}" \
     TILES="${TINYCREATURE_TILES:-0}" \
+    TREE_ART="${TINYCREATURE_TREE_ART:-0}" \
     READOUT="${TINYCREATURE_READOUT:-1}" \
     PIN_X="${TINYCREATURE_PIN_X:-0xffff}" \
     PIN_Z="${TINYCREATURE_PIN_Z:-0xffff}" \

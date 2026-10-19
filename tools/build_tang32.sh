@@ -85,6 +85,8 @@ make -C "$source_dir/firmware/apps/video_test" BUILD="$out/app" clean all
 make -C "$root/firmware/terrain" TINYNES="$source_dir" BUILD="$out/terrain" \
     CARDS="${TINYCREATURE_CARDS:-0}" TILES="${TINYCREATURE_TILES:-0}" \
     CARDS_N="${TINYCREATURE_CARDS_N:-64}" \
+    TREES="${TINYCREATURE_TREES:-0}" TREES_N="${TINYCREATURE_TREES_N:-16}" \
+    TREE_ART="${TINYCREATURE_TREE_ART:-0}" \
     READOUT="${TINYCREATURE_READOUT:-1}" \
     CARD_TEX="${TINYCREATURE_CARD_TEX:-0}" \
     CARD_COLUMN_PX="${TINYCREATURE_CARD_COLUMN_PX:-3}" \
@@ -96,6 +98,8 @@ make -C "$root/firmware/terrain" TINYNES="$source_dir" BUILD="$out/terrain" \
 make -C "$root/firmware/terrain" TINYNES="$source_dir" FABRIC=0 \
     CARDS="${TINYCREATURE_CARDS:-0}" TILES="${TINYCREATURE_TILES:-0}" \
     CARDS_N="${TINYCREATURE_CARDS_N:-64}" \
+    TREES="${TINYCREATURE_TREES:-0}" TREES_N="${TINYCREATURE_TREES_N:-16}" \
+    TREE_ART="${TINYCREATURE_TREE_ART:-0}" \
     READOUT="${TINYCREATURE_READOUT:-1}" \
     CARD_TEX="${TINYCREATURE_CARD_TEX:-0}" \
     CARD_COLUMN_PX="${TINYCREATURE_CARD_COLUMN_PX:-3}" \

@@ -550,6 +550,12 @@ static int32_t height(uint32_t altitude)
 #ifndef TC_CARDS_N
 #define TC_CARDS_N 64
 #endif
+#ifndef TC_TREES
+#define TC_TREES 0
+#endif
+#ifndef TC_TREES_N
+#define TC_TREES_N 16
+#endif
 
 /* The art, and the cards drawn from it. A card is an axis-aligned rectangle
  * filled with one tile, its texels written as palette entries from
@@ -1794,12 +1800,13 @@ static void hand_quad(const int32_t *sx, const int32_t *sy, uint8_t colour)
 	}
 }
 
-static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
+static void card_at_yaw(int32_t wx, int32_t wy, int32_t wz, uint32_t tile,
+			uint32_t yaw)
 {
 	if (out->card == NULL && out->tex == NULL)
 		return;
 	int32_t bx[8], by[8], bz[8];
-	card_corners(wx, wy, wz, TC_CARD_YAW, bx, by, bz);
+	card_corners(wx, wy, wz, yaw, bx, by, bz);
 
 	/* The four corners of each face, and which way it looks: the front out
 	 * along the yaw, the back against it, the right and left across the face,
@@ -1843,7 +1850,7 @@ static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 		if (oz < NEAR)
 			continue;
 		int32_t ax = 0, ay = 0, az = 0;
-		int32_t sn = isin(TC_CARD_YAW), cs = icos(TC_CARD_YAW);
+		int32_t sn = isin(yaw), cs = icos(yaw);
 		if (face_axis[f] == 0) {
 			ax = face_sign[f] * (int32_t)((int64_t)cs * CELL >> 14);
 			az = face_sign[f] * (int32_t)(-(int64_t)sn * CELL >> 14);
@@ -2098,6 +2105,11 @@ static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
 	}
 }
 
+static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
+{
+	card_at_yaw(wx, wy, wz, tile, TC_CARD_YAW);
+}
+
 /* Emit the grid card whose base is this terrain cell. The terrain walk is
  * back to front, so drawing a card immediately after its own ground leaves it
  * in front of that cell while terrain nearer to the camera is drawn later and
@@ -2129,6 +2141,52 @@ static void draw_card_grid_cell(uint32_t gx, uint32_t gz)
 	int32_t wx = (int32_t)gx * CELL + CELL / 2;
 	int32_t wz = (int32_t)gz * CELL + CELL / 2;
 	card_at(wx, ground(wx, wz), wz, i % ART_TILES);
+#else
+	(void)gx;
+	(void)gz;
+#endif
+}
+
+/* A first tree made without asking the texture fill for transparency: three
+ * trunk tiles and one crown tile stand one above the other, and the same stack
+ * crosses them at a quarter turn so that the tree keeps some body when the
+ * camera sees either plane edge-on. The source sheet gives both tiles a
+ * deliberately dark leafy backing to make their opaque rectangles read as
+ * dense foliage rather than as an accidental black key colour. */
+static void draw_tree_grid_cell(uint32_t gx, uint32_t gz)
+{
+#if TC_TREES
+	if (out->card == NULL && out->tex == NULL)
+		return;
+	const int32_t spacing = 8;
+	uint32_t side = 1;
+	while (side * side < (uint32_t)TC_TREES_N)
+		side++;
+	int32_t first_gx = (int32_t)sprite_gx -
+			   (int32_t)((side - 1) * spacing / 2);
+	int32_t first_gz = (int32_t)sprite_gz -
+			   (int32_t)((side - 1) * spacing / 2);
+	int32_t dx = (int32_t)gx - first_gx;
+	int32_t dz = (int32_t)gz - first_gz;
+	int32_t last = (int32_t)(side - 1) * spacing;
+	if (dx < 0 || dz < 0 || dx > last || dz > last ||
+	    dx % spacing || dz % spacing)
+		return;
+	uint32_t ix = (uint32_t)(dx / spacing);
+	uint32_t iz = (uint32_t)(dz / spacing);
+	uint32_t i = iz * side + ix;
+	if (i >= (uint32_t)TC_TREES_N)
+		return;
+	int32_t wx = (int32_t)gx * CELL + CELL / 2;
+	int32_t wz = (int32_t)gz * CELL + CELL / 2;
+	int32_t wy = ground(wx, wz);
+	for (unsigned plane = 0; plane < 2; plane++) {
+		uint32_t yaw = TC_CARD_YAW + plane * 16384u;
+		for (unsigned level = 0; level < 3; level++)
+			card_at_yaw(wx, wy + (int32_t)level * TC_CARD_UNITS,
+				    wz, 0, yaw);
+		card_at_yaw(wx, wy + 3 * TC_CARD_UNITS, wz, 1, yaw);
+	}
 #else
 	(void)gx;
 	(void)gz;
@@ -2227,6 +2285,7 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 					draw_sprite();
 			}
 			draw_card_grid_cell(gx, gz);
+			draw_tree_grid_cell(gx, gz);
 		}
 	}
 

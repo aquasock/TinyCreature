@@ -1819,3 +1819,39 @@ The next approved firmware-only experiment is a tree made from crossed textured 
 - User Test: PASS
 
 ---
+
+## 56 COMMIT Unreleased 2026-10-18T20:33:43-07:00
+
+#### Coming From:
+
+Unreleased b5e79cf
+
+#### Purpose:
+
+Prototype good-looking trees from Meph's layered tree art without rebuilding the FPGA core.
+
+#### Outcome:
+
+`tools/make_tree_sheet.py` now takes aligned cells from `_Meph_trees.png`, `_Meph_trees-bg.png` and `_Meph_trees-top.png`, uses the background mask as a deep-green opaque backing, blends the base wood over it, restores the sparse top foliage, and deterministically emits a two-tile 32 by 32 trunk-and-crown sheet under `build/`; the source art remains external and its existing attribution remains in `THIRD_PARTY.md`. The optional `TREE_ART=1`, `TREES=1` build places sixteen trees in a four by four grove, and each accepted tree is four cards high on each of two planes crossed at ninety degrees: three repeated trunk cards followed by one crown card, eight card objects total, each `160` by `160` by `8` Q4 and each still carrying a 32 by 32 texture. Yaw became a per-card argument so the existing card mode remains unchanged, and every tree is emitted during the back-to-front terrain cell walk so entry 55's landscape occlusion also applies to it. The first board gate produced matching geometry counts but the wrong CRC because `main.c` uploaded tile RAM only under `TC_CARDS`; widening that firmware guard to `TC_CARDS || TC_TREES` made the clean 600-frame host and board agree at `TRIS=20770`, `PIXELS=33595` and CRC `7473ba32`, with zero late line fetches, a mean draw time of 33,575 us, a maximum of 39,060 us and exactly three vertical blanks per frame. AddressSanitizer and UndefinedBehaviorSanitizer were clean, the HDL raster test matched the host at frames 0, 75, 150, 300, 450 and 599, and a tree-disabled 256-card regression retained entry 55's CRC `a7a6f31b`. The interactive artifact was `build/feel/terrain.elf` with SHA-256 `0e50fe8d41f5c389a35e483ec91e09a9045128ffd4c71c653525ab16e7f97144`; it was deployed with the mouse link released, and the user reported that the four-high trees look good and pass. This was firmware-only, so the FPGA core was not rebuilt or seed-swept and remained entry 49's image with SHA-256 `f9f9e2ea15e1f4975e68596d792143438b5cfcf66790b0dec7da92e775498c67`. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The user requested four flat top tiles on each tree for the next build. The proposed interpretation is a horizontal two by two foliage cap centered above the accepted four-high crossed stack, adding four card objects and bringing each tree to twelve; the current textured-triangle command already accepts arbitrary projected quads, so firmware can rotate those four cards horizontal while retaining the opaque texture experiment, terrain painter ordering, sixteen-tree grove and unchanged FPGA core. The clean host and board gate must measure the larger projected fill before the visual build is handed over, but no core rebuild or seed sweep is expected.
+
+#### Files Modified:
+
+- firmware/terrain/Makefile
+- firmware/terrain/main.c
+- firmware/terrain/terrain.c
+- tools/build_tang32.sh
+- tools/make_tree_sheet.py
+- tools/run_tang32_feel.sh
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
