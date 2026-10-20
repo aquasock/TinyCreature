@@ -78,6 +78,10 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 - topic_id: TANG
   name: "TinyTang's core link"
   description: "The frame protocol the Tang Console's BL616 firmware speaks to a loaded core: what a core is sent, what it may send back, and how the two share the line."
+
+- topic_id: PWR
+  name: "Bench power and boot-mode control"
+  description: "How this PC switches the Tang's power and chooses the program its BL616 boots: the relay board, the OTG cable's USB port, and what decides one-wire or two-wire."
 ```
 
 ---
@@ -97,6 +101,9 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | Does Yosys map multiplies to the GW5A's DSP blocks? | TOOL | TOOL-001 |
 | Where are the board, AE350, SDRAM, HDMI and toolchain facts? | (TinyNES) | TinyNES DEV-008, DEV-011 to DEV-013, BRD-010, BRD-011, PSX-005, TOOL-018 |
 | What does a loaded core receive from the board, and how is input delivered to it? | TANG | TANG-001 |
+| How does this PC switch a relay on the bench's relay board? | PWR | PWR-001 |
+| What makes the Tang boot one-wire or two-wire, and how does this PC choose? | PWR | PWR-002 |
+| Can this PC cut the 5 V on a USB port? | PWR | PWR-003 |
 
 ---
 
@@ -116,6 +123,9 @@ AE-001: "In the Tang32 core the AE350's EXTS port carries 0xe8018000 to 0xe801ff
 AE-002: "Measured on the Tang32 core at 750 MHz: an uncached EXTS write costs about 120 A25 cycles back to back and a register read about 102, four posted writes amid other work about 23, and a cached store missing into the SDRAM about 78 a word, about 620 a 32-byte line; the terrain program's time is per-cell and per-triangle work, not its vertex records"
 TOOL-001: "Yosys 0.69+260's synth_gowin infers DSP multipliers only for -family gw1n and gw2a; for gw5a every multiply becomes LUT and carry logic"
 TANG-001: "Every message between the BL616 and a loaded core is 0xAA len_hi len_lo type, the length big-endian and counting the type byte; the only command that carries input into a core is 0x16, six bytes of the frame it belongs to, the buttons, and the mouse's dx, dy and wheel, with 0xffff meaning apply it as it arrives, and TinyTang sends one whenever its Bluetooth mouse moves, whether or not the desktop is on screen"
+PWR-001: "The bench's relay board is a dcttech USBRelay8, USB HID 16c0:05df, eight relays; a 9-byte feature report of report ID 0, 0xff or 0xfd, and the relay number switches one relay on or off, and reading the feature report returns a 5-byte serial and a bitmask of the relays' state, at bytes 1 to 5 and 8 through hidraw with the report ID kept"
+PWR-002: "On this bench a cold power-up of the Tang boots Sipeed's FT2232 debugger (one-wire) when a USB host is on the OTG port and TinyTang's CDC (two-wire) when none is; the OTG cable's VBUS does not decide it, a host hidden by disabling the PC's port reads as none, and powering a board already running one-wire does not change its mode"
+PWR-003: "Neither this PC's root USB ports nor the Genesys Logic 05e3:0610 hub can cut a port's 5 V: uhubctl finds no per-port power switching on the root hub, and the hub reports it but leaves VBUS on when told to switch a port off, while disabling a port does stop its data"
 ```
 
 ---
@@ -267,6 +277,45 @@ Upstream's arc ball does not match that when it is run. UpdateModeArcBall adds s
     - "TinyTang at 62fe6a7, the commit this record was first read from: ports/bl616/tang_fpga_link.h (FPGA_CMD_INPUT 0x16, before 0x17 existed)"
     - "This project's firmware/terrain/main.c and tools/tang_input.py"
   verification: "Read from TinyTang's sources on 2026-10-15 and confirmed on this board the same day (core-log entry 15): the board's paired Logitech mouse drove the terrain camera with no host attached. Revised 2026-10-16 (core-log entry 50): the statement's list of commands stopped at 0x16, since that was all TinyTang carried when this record was first read, and TinyTang's own entry 80 gave the link a keyboard: FPGA_CMD_KEYBOARD 0x17, the Bluetooth keyboard's HID boot report, additive like the desktop layer's commands. This program's decoder reads the frame header's length and discards any frame that is not a 6-byte 0x16, so the new type is consumed without disturbing the stream, which was checked against the source and not assumed. The board is cited at 162ff40 now; the earlier commit 62fe6a7 is kept as the commit this record was first read from."
+
+- record_id: PWR-001
+  kind: EXTERNAL
+  topic_id: PWR
+  title: "The bench's USB relay board and its HID protocol"
+  status: VERIFIED
+  verified_date: 2026-10-19
+  statement: "The board enumerates as USB HID 16c0:05df, manufacturer www.dcttech.com, product USBRelay8, a low-speed device with eight relays; this one's serial is 6QMBS. usbrelay's libusbrelay identifies such a board by its 'USBRelay' product string and drives it with a 9-byte report: the report ID 0, then CMD_ON 0xff or CMD_OFF 0xfd, then the relay number, the rest zero. It reads the board's state with a feature report of the same length, the serial being its first Serial_Length 5 bytes and the relays' state a bitmask, relay k + 1 at bit k, in byte 7 of what hidapi returns. Through Linux hidraw with HIDIOCSFEATURE and HIDIOCGFEATURE the same reports carry the report ID in byte 0, so the serial is bytes 1 to 5 and the state byte 8."
+  consequence: "tools/tang_power.py switches the Tang's power with these reports through hidraw, finding the board by its HID ID rather than a hidraw number, and checks every switch against the state it reads back. The hidraw node is root's alone by default; README.md's udev rule gives it to the plugdev group. The read-back is the board's controller confirming a command, not a contact sensed: that the contacts move was heard and seen by the user."
+  sources:
+    - "https://github.com/darrylb123/usbrelay at master: libusbrelay.c (known_relay, operate_relay, get_board_features), libusbrelay.h (CMD_ON, CMD_OFF, Serial_Length)"
+    - "The board's own USB descriptors on this PC (lsusb, the kernel's enumeration log of 2026-10-19 18:34)"
+  verification: "Confirmed on this bench on 2026-10-19 (core-log entry 73): all eight relays switched on and off in turn twice, each read back as the one set bit and then zero, and the user heard and saw all eight; relay 1 then powered the Tang through more than ten cycles."
+
+- record_id: PWR-002
+  kind: USB
+  topic_id: PWR
+  title: "What decides one-wire or two-wire at a cold power-up, on this bench"
+  status: INFERRED
+  verified_date: 2026-10-19
+  statement: "With the board's power input switched by PWR-001's relay 1 and an OTG cable whose VBUS wire is cut, so that the board has no other supply, a cold power-up with the OTG cable connected to an enabled port of this PC came up as Sipeed's USB Debugger FT2232 (0403:6010, serial 2025041420), twice; a cold power-up with the cable unplugged and plugged in afterwards came up as TinyTang's CDC (ffff:5454), twice; and a cold power-up with the cable connected but its port disabled through /sys/bus/usb/devices/usb1/1-0:1.0/usb1-port5/disable, enabled again about six seconds later, came up as TinyTang five times out of five. An earlier cold power-up on an intact OTG cable alone came up as the FT2232 too. The same cable without VBUS carries TinyTang's CDC normally once it is running. Powering the board's input while it was already running the FT2232 from an intact OTG cable re-enumerated the FT2232 and did not change the mode."
+  consequence: "The BL616's loader appears to choose its program by whether a USB host is present on the OTG port at power-up, and not by the OTG cable's VBUS or by which input powers the board. That contradicts TinyTang's BRD-006, which says a cold power-up with the power input connected runs TinyTang with or without the OTG cable; its observations were most likely power first and the OTG cable after, the user's own procedure. tools/tang_power.py cycle boots two-wire by disabling the port, cycling relay 1 and enabling the port after the loader has chosen, and one-wire by leaving the port enabled. How the loader detects the host -- bus resets, SOF or enumeration -- is not known, and nor is how long it looks."
+  sources:
+    - "This project's tools/tang_power.py and the kernel's USB enumeration log on this PC, 2026-10-19 18:50 to 19:30"
+    - "TinyTang's .ai/core-reference.md BRD-006, the record this observation contradicts"
+  verification: "Observed on this bench on 2026-10-19 (core-log entry 73), each outcome repeated as counted above, and the Celtic gate then passed on the board after a two-wire boot by tools/tang_power.py. Inferred, not verified, because no source documents the loader's choice and its mechanism was not instrumented."
+
+- record_id: PWR-003
+  kind: USB
+  topic_id: PWR
+  title: "This PC's USB ports keep their 5 V on"
+  status: VERIFIED
+  verified_date: 2026-10-19
+  statement: "uhubctl 2.6.0 lists the Genesys Logic hubs 1-7 and 1-7.1 (05e3:0610, USB 2.10) and their USB 3 peers 2-6 and 2-6.1 (05e3:0612) as having per-port power switching, ppps, and does not list this PC's Intel xHCI root hubs at all. Told to switch hub 1-7.1's port 4 off, the hub dropped the device on it from the bus, and the Tang on that port, its power input off and an intact OTG cable to that port its only supply, kept running. Writing 1 to a root port's sysfs disable file likewise drops the device and leaves VBUS on."
+  consequence: "No USB port of this PC can power-cycle a device it supplies, which is why the OTG cable's VBUS is cut and the Tang's power is a relay (PWR-001); and a port's disable file, which needs no hub support, is enough to hide the host from the Tang at boot (PWR-002)."
+  sources:
+    - "uhubctl 2.6.0-3 (Ubuntu package) run on this PC, 2026-10-19"
+    - "Linux sysfs usb_port disable attribute, /sys/bus/usb/devices/usb1/1-0:1.0/usb1-port5/disable"
+  verification: "Observed once on 2026-10-19 (core-log entry 73), the user watching the board stay lit with the hub port off; the root port's disable left a VBUS-powered board running in the same way."
 ```
 
 ---
@@ -299,7 +348,7 @@ Upstream's arc ball does not match that when it is run. UpdateModeArcBall adds s
 - A `core-syntax.md` audit is required whenever this file changes, per `.ai/core.md`.
 
 ```yaml
-last_reviewed: 2026-10-15
+last_reviewed: 2026-10-19
 ```
 
 ---

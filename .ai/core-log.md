@@ -2413,3 +2413,34 @@ The next stage of the same direction is vertex transform in the fabric, so the C
 - User Test: PASS
 
 ---
+
+## 73 COMMIT Unreleased 2026-10-19T19:22:29-07:00
+
+#### Coming From:
+
+Unreleased bc12d4f
+
+#### Purpose:
+
+Let this PC power-cycle the Tang and boot it in two-wire or one-wire mode by itself, through the USB relay board the user connected.
+
+#### Outcome:
+
+The user connected a dcttech USBRelay8 (16c0:05df, serial 6QMBS) and wired the Tang's power input and the HDMI monitor through relay 1's normally open contact; a udev rule the user installed gives its hidraw node to plugdev, every relay switched and read back correctly twice and the user heard all eight, and the protocol, CMD_ON 0xff and CMD_OFF 0xfd in a 9-byte report with the state as a bitmask, was checked against usbrelay's `libusbrelay` source (core-reference PWR-001). The first power cycle did not reboot the board, because the intact OTG cable kept it powered from the PC; uhubctl found no power switching on the PC's root ports and a Genesys Logic hub that claims it dropped the Tang from the bus but kept its 5 V on (PWR-003). The user then cut the OTG cable's VBUS wire, which made relay 1 a true power switch and showed that TinyTang's CDC runs without the PC's 5 V, and the cold starts that followed contradicted TinyTang's BRD-006, which the agent had repeated to the user: with the cable connected at power-up the board came up as Sipeed's FT2232 debugger twice, with it plugged in afterwards as TinyTang twice, and with it connected but its PC port disabled through sysfs until about six seconds after power-up as TinyTang five times, so on this bench the loader appears to boot one-wire when it sees a USB host at power-up and two-wire when it does not, the user's own suspicion (PWR-002, inferred). A second udev rule gives plugdev root port 5's `disable` file, and the new `tools/tang_power.py` does `status`, `on`, `off` and `cycle --mode two-wire|one-wire`, finding the relay board by its HID ID, checking every switch against the read-back, and failing unless the asked-for mode arrives and, for two-wire, TinyTang's console answers; its first two-wire run failed that last check because the shell is not at a prompt until the boot script has run, so the probe now retries until the timeout. Three cycles then passed in a row, two-wire with the console answering at 15.0 s, one-wire with the debugger at 5.5 s, and two-wire again, and after a tool-driven two-wire boot the Celtic gate reloaded entry 72's seed 3 core and matched the twin at frame CRC `73f24771` with `DRAW=61650us`. `.ai/core-reference.md` gains topic PWR with PWR-001 to PWR-003 and the README a section with the two udev rules; TinyTang's BRD-006 belongs to that project and was not edited, and the user has been told it needs correcting. Nothing here touched the core or the firmware. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, checked that the reference's topic catalog, routing table, fast index and records list PWR-001 to PWR-003 in the same order with no retired ids, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The port rule fires when the root hub's driver binds, which has not yet been seen through a reboot of the PC, so the first `tools/tang_power.py` run after one should confirm the `disable` file is still writable by plugdev; and the run scripts can now call `tang_power.py cycle` to recover a wedged board instead of asking the user. The renderer's next stage is waiting on the user's approval of the plan made this session from throwaway board builds: doubling the terrain's transform arithmetic moved the Celtic frame by less than the code layout's own two milliseconds of noise and doubling the plants' added 1.6 ms, so a fabric transform alone is not worth building, while drawing no terrain took the frame from 61.7 to 29.5 ms, no plants to 31.9 ms and neither to 2.8 ms, which makes a fabric terrain walker the target, preceded by a depth buffer so the CPU's plants keep their order against a land it no longer walks.
+
+#### Files Modified:
+
+- README.md
+- tools/tang_power.py
+
+#### Status:
+
+- Build: N/A
+- Deployment: PASS
+- User Test: PASS
+
+---

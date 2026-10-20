@@ -54,6 +54,38 @@ The later 64 MiB configuration will add the separate J10 SDRAM bus as a second
 32 MiB bank. The current memory map and controller remain the 32 MiB J9
 baseline so this first board gate does not depend on unverified hardware.
 
+### Power and boot mode from this PC
+
+The board can be powered off and on, and booted one-wire or two-wire, without
+a hand on it. Its power input runs through relay 1 of a dcttech USBRelay8 USB
+relay board on the normally open contact, and its OTG cable to the PC has the
+VBUS wire cut, so the PC cannot keep the board alive and the relay alone
+powers it; no USB port on this PC can switch its own 5 V
+(`.ai/core-reference.md` PWR-003). Which program the BL616 runs is chosen at a
+cold power-up, and on this bench what chooses it is whether a USB host is on
+the OTG port then (PWR-002): with one it is Sipeed's FT2232 debugger,
+one-wire, and with none it is TinyTang, two-wire. The PC hides itself by
+disabling the cable's port, which stops the data and nothing else.
+
+    python3 tools/tang_power.py status
+    python3 tools/tang_power.py cycle               # two-wire, about 15 s
+    python3 tools/tang_power.py cycle --mode one-wire
+    python3 tools/tang_power.py on | off
+
+A two-wire cycle disables the port, powers the board off for five seconds and
+on again, waits six seconds for the loader to choose, enables the port, and
+fails unless TinyTang's console answers. The relay board's hidraw node and the
+port's `disable` file both need write access, which two udev rules give the
+plugdev group:
+
+    # /etc/udev/rules.d/60-usbrelay8.rules
+    SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="05df", MODE="0660", GROUP="plugdev"
+    # /etc/udev/rules.d/61-tang-port.rules: PC root port 5 on bus 1, where the cable is
+    ACTION=="bind", SUBSYSTEM=="usb", KERNEL=="1-0:1.0", DRIVER=="hub", RUN+="/bin/sh -c 'f=/sys%p/usb1-port5/disable; chgrp plugdev $f && chmod g+w $f'"
+
+`TINYCREATURE_POWER_RELAY` and `TINYCREATURE_TANG_USB_PORT` name another relay
+or port; a cable moved to another port wants its port in the second rule too.
+
 ## Terrain on the Tang
 
 The Tang32 core also runs a first terrain renderer, `firmware/terrain/`. A
