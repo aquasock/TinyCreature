@@ -33,6 +33,9 @@
 //                in the five bits a channel the shading mixes in
 //   0x30 LUT     write: entry << 24 | colour, one of the 32768 colours those
 //                channels make: the land's nearest entry to that colour
+//   0x3c BUSY    read: bus cycles setup or the fill was working, free-running:
+//                how much of a frame the fabric itself took, not counting
+//                clocks spent waiting for the CPU's next word
 //
 // Commands:
 //   ROWS  1 word: 2 << 28 | end << 16 | first << 8 | colour, fills rows
@@ -131,7 +134,7 @@ module raster #(
     reg [1:0] r_byte = 0;
     reg r_issued = 0;
     reg [31:0] r_data = 0;
-    reg [31:0] tris = 0, pixels = 0, stalls = 0;
+    reg [31:0] tris = 0, pixels = 0, stalls = 0, busy_cycles = 0;
     // The frame checksum: a reflected CRC-32 over the target buffer in
     // address order, seeded by the CPU. The program chains a run's frames
     // through it exactly as tc_crc32(crc, frame, bytes) chains them, so the
@@ -141,7 +144,7 @@ module raster #(
     reg [15:0] nz_count = 0, nz_latch = 0;
     reg [15:0] crc_addr = 0;
     reg crc_scanning = 0, crc_buf = 0;
-    wire busy;
+    wire busy, working;
     wire accept = hready_in && hsel && htrans[1];
     wire word = hsize == 3'd2 && haddr[1:0] == 0;
     wire [3:0] reg_index = haddr[5:2];
@@ -152,7 +155,7 @@ module raster #(
                         reg_index == 11 || reg_index == 12 || reg_index == 13 ||
                         reg_index == 14
                       : (reg_index >= 1 && reg_index <= 7) || reg_index == 9 ||
-                        reg_index == 10);
+                        reg_index == 10 || reg_index == 15);
     // The CPU's read port request, served when the line fetch leaves it.
     reg cpu_rd = 0;
     wire cpu_rd_grant;
@@ -163,8 +166,9 @@ module raster #(
         if (!resetn) begin
             hready <= 1; hresp <= 0; hrdata <= 0; err2 <= 0; w_fifo <= 0;
             w_ctrl <= 0; w_crc <= 0; r_fb <= 0; show <= 0; target <= 0;
-            stalls <= 0; cpu_rd <= 0; r_issued <= 0;
+            stalls <= 0; cpu_rd <= 0; r_issued <= 0; busy_cycles <= 0;
         end else begin
+            if (working) busy_cycles <= busy_cycles + 1'b1;
             if (err2) begin
                 err2 <= 0; hready <= 1;
             end else if (w_fifo) begin
@@ -223,6 +227,7 @@ module raster #(
                         6: hrdata <= stalls;
                         7: hrdata <= crc_reg;
                         10: hrdata <= {16'd0, nz_latch};
+                        15: hrdata <= busy_cycles;
                         default: hrdata <= 0;
                     endcase
                 if (accept) begin
@@ -255,9 +260,13 @@ module raster #(
     reg [3:0] issued = 0, got = 0, len = 1;
     reg q_valid = 0;
     reg cmd_full = 0;
-    assign pop = !cmd_full && !fifo_empty && issued < len;
     reg [3:0] cmd_op = 0;
     reg [31:0] cmd_w0 = 0;      // the opcode word whole, for the store's fields
+    // The assembler's own write into the vertex store, for a shaded vertex.
+    reg asm_we = 0;
+    reg [9:0] asm_waddr = 0;
+    reg [107:0] asm_wdata = 0;
+    wire vst_busy;
     reg [7:0] cmd_colour = 0, cmd_first = 0, cmd_end = 0;
     // A triangle's three corner colours; the first is the byte a ROWS word
     // also carries, so both commands read the same field.
@@ -274,18 +283,45 @@ module raster #(
     // camera-space depth in that order.
     reg signed [31:0] cmd_p [0:8];
     wire take;
+    // A command's length in words, read off its opcode word as it arrives, so
+    // its next word is fetched the clock after rather than once the opcode has
+    // been registered.
+    function automatic [3:0] op_len(input [3:0] op);
+        case (op)
+            4'd1: op_len = 4'd4;
+            4'd3: op_len = 4'd5;
+            4'd4: op_len = 4'd13;
+            4'd5: op_len = 4'd2;
+            4'd6: op_len = 4'd3;
+            default: op_len = 4'd1;
+        endcase
+    endfunction
+    wire first_word = q_valid && got == 0;
+    wire [3:0] cur_op = first_word ? fifo_q[31:28] : cmd_op;
+    wire [3:0] cur_len = first_word ? op_len(fifo_q[31:28]) : len;
+    // The word arriving is the command's last.
+    wire completing = q_valid && got + 1'b1 == cur_len;
+    // A shaded vertex goes into the store from here, without setup, unless
+    // setup is reading slots or finishing a textured vertex: those are the
+    // commands ahead of it a write could overtake. Then it waits for setup
+    // like any other command.
+    wire vtx_direct = completing && cur_op == 4'd5 && !vst_busy;
+    // Words are fetched one a clock while a command is being gathered; the
+    // last word of one that goes to setup stops the fetch until setup has
+    // taken it, and the last word of a vertex written from here does not.
+    assign pop = !cmd_full && !fifo_empty &&
+                 (completing ? vtx_direct : issued < cur_len);
     always @(posedge clk or negedge resetn) begin
         if (!resetn) begin
             issued <= 0; got <= 0; len <= 1; q_valid <= 0; cmd_full <= 0;
-            rd_ptr <= 0;
+            rd_ptr <= 0; asm_we <= 0;
         end else begin
             q_valid <= pop;
+            asm_we <= 1'b0;
             if (take) cmd_full <= 0;
             // rd_ptr moves with each pop, so fifo_empty already counts
             // the words in flight.
-            if (pop) begin
-                rd_ptr <= rd_ptr + 1'b1; issued <= issued + 1'b1;
-            end
+            if (pop) rd_ptr <= rd_ptr + 1'b1;
             if (q_valid) begin
                 if (got == 0) begin
                     cmd_op <= fifo_q[31:28]; cmd_colour <= fifo_q[7:0];
@@ -293,42 +329,38 @@ module raster #(
                     cmd_first <= fifo_q[15:8]; cmd_end <= fifo_q[23:16];
                     if (fifo_q[31:28] == 4'd1) begin
                         cmd_c1 <= fifo_q[15:8]; cmd_c2 <= fifo_q[23:16];
-                        len <= 4; got <= 1;
-                    end else if (fifo_q[31:28] == 4'd3) begin
+                    end else if (fifo_q[31:28] == 4'd3 || fifo_q[31:28] == 4'd4)
                         cmd_tile <= fifo_q[23:16];
-                        len <= 5; got <= 1;
-                    end else if (fifo_q[31:28] == 4'd4) begin
-                        cmd_tile <= fifo_q[23:16];
-                        len <= 13; got <= 1;
-                    end else if (fifo_q[31:28] == 4'd5) begin
-                        len <= 2; got <= 1;
-                    end else if (fifo_q[31:28] == 4'd6) begin
-                        len <= 3; got <= 1;
-                    end else begin
-                        cmd_full <= 1; got <= 0; issued <= 0; len <= 1;
-                    end
                 end else begin
                     // A textured triangle's three corner words are read the
                     // way a triangle's are, and its nine plane words after
-                    // them, whole.
+                    // them, whole. A vertex's corner word lands where a
+                    // triangle's first corner does, and a textured one's u
+                    // and depth word in the second corner's fields, split in
+                    // half.
                     if (cmd_op == 4'd4 && got > 4'd3) begin
                         cmd_p[got - 4] <= fifo_q;
                     end else begin
                         cmd_x[got - 1] <= fifo_q[15:0];
                         cmd_y[got - 1] <= fifo_q[31:16];
                     end
-                    // A vertex's corner word lands where a triangle's first
-                    // corner does, and a textured one's u and depth word in
-                    // the second corner's fields, split in half.
-                    if (got == (cmd_op == 4'd3 ? 4'd4 :
-                                cmd_op == 4'd4 ? 4'd12 :
-                                cmd_op == 4'd5 ? 4'd1 :
-                                cmd_op == 4'd6 ? 4'd2 : 4'd3)) begin
-                        cmd_full <= 1; got <= 0; issued <= 0; len <= 1;
-                    end else
-                        got <= got + 1'b1;
                 end
-            end
+                if (completing) begin
+                    if (vtx_direct) begin
+                        asm_we <= 1'b1;
+                        asm_waddr <= cmd_w0[27:18];
+                        asm_wdata <= {fifo_q[15:0], fifo_q[31:16], cmd_w0[7:0],
+                                      6'd0, 24'd0, 24'd0, 14'd0};
+                    end else
+                        cmd_full <= 1;
+                    got <= 0; len <= 1;
+                    issued <= pop ? 4'd1 : 4'd0;
+                end else begin
+                    got <= got + 1'b1; len <= cur_len;
+                    issued <= issued + (pop ? 4'd1 : 4'd0);
+                end
+            end else if (pop)
+                issued <= issued + 1'b1;
         end
     end
     // Before word 0 arrives len is 1, so nothing is popped past a ROWS
@@ -389,8 +421,12 @@ module raster #(
     reg vst_we = 0;
     reg [9:0] vst_waddr = 0, vst_raddr = 0;
     reg [107:0] vst_wdata = 0, vst_q = 0;
+    // Setup and the assembler never write in the same clock: the assembler
+    // holds back while setup could (vst_busy), and setup's own vertex write
+    // is a command the assembler had to stop for.
     always @(posedge clk) begin
         if (vst_we) vstore[vst_waddr] <= vst_wdata;
+        else if (asm_we) vstore[asm_waddr] <= asm_wdata;
         vst_q <= vstore[vst_raddr];
     end
 
@@ -401,8 +437,21 @@ module raster #(
                S_TEXDIV = 13, S_TEXW = 14,
                S_VDIV = 15, S_VWR = 16, S_VRD = 17,
                S_TP0 = 18, S_TPMUL = 19, S_TPN = 20, S_TPDIV = 21,
-               S_TPSIGN = 22, S_TPG3 = 23, S_TPORG = 24, S_TPFIN = 25;
+               S_TPSIGN = 22, S_TPG3 = 23, S_TPORG = 24, S_TPFIN = 25,
+               S_HAND = 26;
     reg [4:0] state = S_IDLE;
+    // The fill's own states. Setup and fill run side by side: setup works the
+    // next command out while the fill draws the last, and hands it over in
+    // S_HAND the clock the fill is free (fill_start below), which is the one
+    // place a command crosses from one to the other.
+    localparam F_IDLE = 0, F_ROWS = 1, F_SCAN = 2, F_DRAIN = 3, F_CARD = 4,
+               F_TEXDIV = 5, F_TEXW = 6;
+    reg [2:0] fstate = F_IDLE;
+    localparam H_TRI = 0, H_ROWS = 1, H_CARD = 2;
+    reg [1:0] hand_kind = H_TRI;
+    wire fill_start = state == S_HAND && fstate == F_IDLE;
+    assign vst_busy = state == S_VRD || state == S_VDIV || state == S_VWR;
+    assign working = state != S_IDLE || fstate != F_IDLE;
 
     // ---- A textured vertex's divides ----
     // (u << 20) / z, (v << 20) / z and (1 << 20) / z, one quotient bit a
@@ -411,11 +460,15 @@ module raster #(
     reg [9:0] vt_slot = 0;
     reg [5:0] vt_tile = 0;
     reg signed [15:0] vt_x = 0, vt_y = 0;
+    // Two quotient bits a clock, radix 4, against z, 2z and 3z. z is at least
+    // 128, so a numerator's top six bits cannot reach it and go straight into
+    // the remainder, which leaves twelve steps for the 24 bits a value holds.
     reg [21:0] vd_den = 0;
-    reg [29:0] vd_num [0:2];
+    reg [23:0] vd_den3 = 0;
+    reg [23:0] vd_num [0:2];
     reg [21:0] vd_rem [0:2];
-    reg [29:0] vd_q [0:2];
-    reg [4:0] vd_bit = 0;
+    reg [23:0] vd_q [0:2];
+    reg [3:0] vd_bit = 0;
 
     // ---- A stored triangle: its slots, and what the first two held ----
     reg [9:0] vi [0:2];
@@ -456,6 +509,7 @@ module raster #(
     reg [31:0] dv_q [0:5];
     reg dv_neg [0:5];
     reg [35:0] dv_den = 0;
+    reg [37:0] dv_den3 = 0;
     reg det_zero = 0;
     reg [5:0] dv_bit = 0;
     reg tp_triple = 0;   // the multiplier's first clock makes the triples
@@ -477,6 +531,13 @@ module raster #(
     reg signed [31:0] tex_arow = 0, tex_brow = 0, tex_crow = 0;
     reg signed [31:0] tex_as = 0, tex_bs = 0, tex_cs = 0;
     reg signed [31:0] tex_aj = 0, tex_bj = 0, tex_cj = 0;
+    // The fill's copies of the planes, taken at the hand-over.
+    reg ftex_on = 0;
+    reg [5:0] ftile = 0;
+    reg signed [31:0] ftex_a = 0, ftex_b = 0, ftex_c = 0;
+    reg signed [31:0] ftex_arow = 0, ftex_brow = 0, ftex_crow = 0;
+    reg signed [31:0] ftex_as = 0, ftex_bs = 0, ftex_cs = 0;
+    reg signed [31:0] ftex_aj = 0, ftex_bj = 0, ftex_cj = 0;
     // This pixel's three planes, latched before the step moves them on.
     reg signed [31:0] tn_a = 0, tn_b = 0, tn_c = 0;
     reg signed [31:0] tex_rem = 0, tex_q = 0;
@@ -507,16 +568,32 @@ module raster #(
     // assembler has already started gathering the next command's words.
     reg [7:0] card_tile = 0;
     reg [1:0] card_phase = 0;
+    // Setup's copy of a card, which the fill takes at the hand-over.
+    reg [8:0] hc_i0 = 0, hc_i1 = 0;
+    reg [7:0] hc_j0 = 0, hc_j1 = 0;
+    reg [15:0] hc_du = 0, hc_dv = 0, hc_u0 = 0, hc_v0 = 0, hc_addr = 0;
+    reg [7:0] hc_tile = 0;
     assign take = cmd_full && state == S_IDLE;
     assign busy = !fifo_empty || pop || q_valid || cmd_full || got != 0 ||
-                  state != S_IDLE || w_fifo;
+                  state != S_IDLE || fstate != F_IDLE || w_fifo || asm_we;
 
     reg [7:0] colour = 0;
     reg signed [15:0] vx [0:2];
     reg signed [15:0] vy [0:2];
-    reg [8:0] i0 = 0, i1 = 0, i = 0;
-    reg [7:0] j0 = 0, j1 = 0, j = 0;
-    reg [15:0] addr = 0, row_addr = 0, fill_end = 0;
+    reg [8:0] i0 = 0, i1 = 0;
+    reg [7:0] j0 = 0, j1 = 0;
+    reg [15:0] addr = 0, fill_end = 0;
+    // The fill's copies of the box, the edge functions and the scan position.
+    reg [7:0] fcolour = 0;
+    reg [8:0] fi0 = 0, fi1 = 0, fi = 0;
+    reg [7:0] fj1 = 0, fj = 0;
+    reg [15:0] faddr = 0, frow_addr = 0, ffill_end = 0;
+    reg signed [35:0] fe [0:2];
+    reg signed [35:0] fe_row [0:2];
+    reg signed [35:0] fstep_x [0:2];
+    reg signed [35:0] fstep_y [0:2];
+    reg signed [35:0] fs = 0, fs2 = 0, fs3 = 0;
+    reg [15:0] fc0 = 0, fc1 = 0, fc2 = 0;
     reg signed [16:0] dx [0:2];
     reg signed [16:0] dy [0:2];
     reg signed [17:0] ox [0:2];
@@ -525,8 +602,7 @@ module raster #(
     reg signed [35:0] dy3 [0:2];
     reg signed [35:0] acc_x [0:2];   // dy * ox
     reg signed [35:0] acc_y [0:2];   // dx * oy
-    reg signed [35:0] e [0:2];       // F at (i, j)
-    reg signed [35:0] e_row [0:2];   // F at (i0, j)
+    reg signed [35:0] e [0:2];       // F at the box's first pixel
     reg signed [35:0] step_x [0:2];
     reg signed [35:0] step_y [0:2];
     reg [3:0] digit = 0;
@@ -562,20 +638,20 @@ module raster #(
     reg covered_r = 0;
     reg [15:0] addr_r = 0;
     reg last_p = 0;
-    wire [4:0] r0 = c0_c[14:10], g0 = c0_c[9:5], b0 = c0_c[4:0];
-    wire [4:0] r1 = c1_c[14:10], g1 = c1_c[9:5], b1 = c1_c[4:0];
-    wire [4:0] r2 = c2_c[14:10], g2 = c2_c[9:5], b2 = c2_c[4:0];
+    wire [4:0] r0 = fc0[14:10], g0 = fc0[9:5], b0 = fc0[4:0];
+    wire [4:0] r1 = fc1[14:10], g1 = fc1[9:5], b1 = fc1[4:0];
+    wire [4:0] r2 = fc2[14:10], g2 = fc2[9:5], b2 = fc2[4:0];
     // The weights, in quarters: a triangle of no area has S zero, so every
     // threshold would pass and its corners would be asked for a colour the
     // mix cannot give, so its first corner colours it instead. The weight of
     // the second corner is F2 / S and of the third F0 / S, each edge function
     // measuring the corner across from it.
-    wire signed [35:0] f2 = e[2] <<< 2;
-    wire signed [35:0] f0s = e[0] <<< 2;
-    wire [1:0] aw = s_reg > 0 ? ({1'b0, f2 >= s_reg} + {1'b0, f2 >= s2_reg} +
-                                 {1'b0, f2 >= s3_reg}) : 2'd0;
-    wire [1:0] bw = s_reg > 0 ? ({1'b0, f0s >= s_reg} + {1'b0, f0s >= s2_reg} +
-                                 {1'b0, f0s >= s3_reg}) : 2'd0;
+    wire signed [35:0] f2 = fe[2] <<< 2;
+    wire signed [35:0] f0s = fe[0] <<< 2;
+    wire [1:0] aw = fs > 0 ? ({1'b0, f2 >= fs} + {1'b0, f2 >= fs2} +
+                              {1'b0, f2 >= fs3}) : 2'd0;
+    wire [1:0] bw = fs > 0 ? ({1'b0, f0s >= fs} + {1'b0, f0s >= fs2} +
+                              {1'b0, f0s >= fs3}) : 2'd0;
     // The mix reads the weights the first phase registered, so nothing here
     // waits on an edge function.
     wire signed [3:0] aws = $signed({2'b0, aw_r});
@@ -611,12 +687,16 @@ module raster #(
     reg signed [12:0] ci0 = 0, ci1 = 0, cj0 = 0, cj1 = 0;
     wire box_empty = ci0 > ci1 || cj0 > cj1;
 
+    // The edge products start at the highest digit their multipliers need,
+    // top, which carries the sign; the bits above it are the sign repeated,
+    // so the digits skipped would have added nothing.
     function automatic signed [35:0] radix4(input signed [17:0] b,
-        input [3:0] k, input signed [35:0] a, input signed [35:0] a3);
+        input [3:0] k, input signed [35:0] a, input signed [35:0] a3,
+        input [3:0] top);
         reg [1:0] d;
         begin
             d = b[2 * k +: 2];
-            if (k == 8)   // the top digit carries the sign: b17 weighs -2
+            if (k == top)   // the top digit carries the sign: its high bit weighs -2
                 case (d)
                     2'd0: radix4 = 0;
                     2'd1: radix4 = a;
@@ -692,14 +772,29 @@ module raster #(
     endgenerate
     wire signed [35:0] s_abs = s_reg < 0 ? -s_reg : s_reg;
 
-    wire covered = !e[0][35] && !e[1][35] && !e[2][35];
+    // The least digit index whose signed pair still holds v: v fits in 2t + 2
+    // signed bits.
+    function automatic [3:0] top_digit(input signed [17:0] v);
+        integer t;
+        begin
+            top_digit = 8;
+            for (t = 8; t >= 0; t = t - 1)
+                if ((v >>> (2 * t + 1)) == 0 || (v >>> (2 * t + 1)) == -1)
+                    top_digit = t;
+        end
+    endfunction
+    function automatic [3:0] max4(input [3:0] a, input [3:0] b);
+        max4 = a > b ? a : b;
+    endfunction
+    reg [3:0] mul_top = 8;
+
+    wire covered = !fe[0][35] && !fe[1][35] && !fe[2][35];
     integer k;
+    // ---- Setup: commands in, a triangle, rows or card ready for the fill ----
     always @(posedge clk or negedge resetn) begin
         if (!resetn) begin
-            state <= S_IDLE; we <= 0; tris <= 0; pixels <= 0; we1_r <= 0;
-            phase <= 0; last_p <= 0; vst_we <= 0; tex_setup <= 0;
+            state <= S_IDLE; tris <= 0; vst_we <= 0; tex_setup <= 0;
         end else begin
-            we <= 0;
             vst_we <= 0;
             case (state)
             S_IDLE:
@@ -726,39 +821,31 @@ module raster #(
                             tex_a <= cmd_p[0]; tex_as <= cmd_p[1]; tex_aj <= cmd_p[2];
                             tex_b <= cmd_p[3]; tex_bs <= cmd_p[4]; tex_bj <= cmd_p[5];
                             tex_c <= cmd_p[6]; tex_cs <= cmd_p[7]; tex_cj <= cmd_p[8];
-                            // The row accumulators start where the first
-                            // pixel's value does: leaving them from the last
-                            // triangle sends the planes somewhere else at the
-                            // first row's end.
-                            tex_arow <= cmd_p[0];
-                            tex_brow <= cmd_p[3];
-                            tex_crow <= cmd_p[6];
                         end
+                        hand_kind <= H_TRI;
                         state <= S_BOX;
                     end else if (cmd_op == 4'd2 && cmd_first < cmd_end &&
                                  cmd_end <= H) begin
                         addr <= {cmd_first, 8'd0} + {2'd0, cmd_first, 6'd0};
                         fill_end <= {cmd_end, 8'd0} + {2'd0, cmd_end, 6'd0};
-                        state <= S_ROWS;
+                        hand_kind <= H_ROWS;
+                        state <= S_HAND;
                     end else if (cmd_op == 4'd3 && cmd_x[1] > cmd_x[0] &&
                                  cmd_y[1] > cmd_y[0]) begin
-                        card_i0 <= cmd_x[0][8:0];
-                        card_i1 <= cmd_x[1][8:0];
-                        card_j0 <= cmd_y[0][7:0];
-                        card_j1 <= cmd_y[1][7:0];
-                        card_i <= cmd_x[0][8:0];
-                        card_j <= cmd_y[0][7:0];
-                        card_du <= cmd_x[2];
-                        card_dv <= cmd_y[2];
-                        card_u0 <= cmd_x[3];
-                        card_u <= cmd_x[3];
-                        card_v <= cmd_y[3];
-                        card_tile <= cmd_tile;
-                        card_addr <= {cmd_y[0][7:0], 8'd0} +
-                                     {2'd0, cmd_y[0][7:0], 6'd0} +
-                                     {7'd0, cmd_x[0][8:0]};
-                        card_phase <= 0;
-                        state <= S_CARD;
+                        hc_i0 <= cmd_x[0][8:0];
+                        hc_i1 <= cmd_x[1][8:0];
+                        hc_j0 <= cmd_y[0][7:0];
+                        hc_j1 <= cmd_y[1][7:0];
+                        hc_du <= cmd_x[2];
+                        hc_dv <= cmd_y[2];
+                        hc_u0 <= cmd_x[3];
+                        hc_v0 <= cmd_y[3];
+                        hc_tile <= cmd_tile;
+                        hc_addr <= {cmd_y[0][7:0], 8'd0} +
+                                   {2'd0, cmd_y[0][7:0], 6'd0} +
+                                   {7'd0, cmd_x[0][8:0]};
+                        hand_kind <= H_CARD;
+                        state <= S_HAND;
                     end else if (cmd_op == 4'd5) begin
                         // A shaded vertex: its corner and palette entry, and
                         // nothing a textured triangle reads.
@@ -774,13 +861,20 @@ module raster #(
                         vt_x <= cmd_x[0];
                         vt_y <= cmd_y[0];
                         vd_den <= {cmd_y[1][5:0], cmd_x[1]};
-                        vd_num[0] <= {cmd_y[1][15:6], 20'd0};
-                        vd_num[1] <= {cmd_w0[11:2], 20'd0};
-                        vd_num[2] <= 30'd1 << 20;
-                        for (k = 0; k < 3; k = k + 1) begin
-                            vd_rem[k] <= 0; vd_q[k] <= 0;
-                        end
-                        vd_bit <= 5'd29;
+                        vd_den3 <= {2'd0, cmd_y[1][5:0], cmd_x[1]} +
+                                   {1'd0, cmd_y[1][5:0], cmd_x[1], 1'b0};
+                        // The numerators, u << 20, v << 20 and 1 << 20, as
+                        // their top six bits, already in the remainder, and
+                        // the 24 below them.
+                        vd_rem[0] <= {16'd0, cmd_y[1][15:10]};
+                        vd_num[0] <= {cmd_y[1][9:6], 20'd0};
+                        vd_rem[1] <= {16'd0, cmd_w0[11:6]};
+                        vd_num[1] <= {cmd_w0[5:2], 20'd0};
+                        vd_rem[2] <= 0;
+                        vd_num[2] <= 24'd1 << 20;
+                        for (k = 0; k < 3; k = k + 1)
+                            vd_q[k] <= 0;
+                        vd_bit <= 4'd11;
                         state <= S_VDIV;
                     end else if (cmd_op[3]) begin
                         // TRIV or TEXV: read the three slots it names.
@@ -794,14 +888,20 @@ module raster #(
                 end
             S_VDIV: begin
                 for (k = 0; k < 3; k = k + 1) begin
-                    if ({vd_rem[k], vd_num[k][29]} >= {1'b0, vd_den}) begin
-                        vd_rem[k] <= {vd_rem[k], vd_num[k][29]} - {1'b0, vd_den};
-                        vd_q[k] <= {vd_q[k][28:0], 1'b1};
+                    if ({vd_rem[k], vd_num[k][23:22]} >= {2'd0, vd_den3}) begin
+                        vd_rem[k] <= {vd_rem[k], vd_num[k][23:22]} - {2'd0, vd_den3};
+                        vd_q[k] <= {vd_q[k][21:0], 2'd3};
+                    end else if ({vd_rem[k], vd_num[k][23:22]} >= {1'd0, vd_den, 1'b0}) begin
+                        vd_rem[k] <= {vd_rem[k], vd_num[k][23:22]} - {1'd0, vd_den, 1'b0};
+                        vd_q[k] <= {vd_q[k][21:0], 2'd2};
+                    end else if ({vd_rem[k], vd_num[k][23:22]} >= {2'd0, vd_den}) begin
+                        vd_rem[k] <= {vd_rem[k], vd_num[k][23:22]} - {2'd0, vd_den};
+                        vd_q[k] <= {vd_q[k][21:0], 2'd1};
                     end else begin
-                        vd_rem[k] <= {vd_rem[k][20:0], vd_num[k][29]};
-                        vd_q[k] <= {vd_q[k][28:0], 1'b0};
+                        vd_rem[k] <= {vd_rem[k][19:0], vd_num[k][23:22]};
+                        vd_q[k] <= {vd_q[k][21:0], 2'd0};
                     end
-                    vd_num[k] <= vd_num[k] << 1;
+                    vd_num[k] <= vd_num[k] << 2;
                 end
                 if (vd_bit == 0)
                     state <= S_VWR;
@@ -845,6 +945,7 @@ module raster #(
                     tex_tile <= cap_tile;
                     tex_on <= tex_setup;
                     tris <= tris + 1'b1;
+                    hand_kind <= H_TRI;
                     state <= S_BOX;
                 end
                 vr_step <= vr_step + 1'b1;
@@ -858,6 +959,7 @@ module raster #(
                 ta2[2] <= $signed({34'd0, pr[2]}) - $signed({34'd0, pr[0]});
                 for (k = 0; k < 12; k = k + 1)
                     macc[k] <= 0;
+                dv_den <= s_abs;
                 state <= S_TPMUL;
                 digit <= 8;
                 tp_triple <= 1'b1;
@@ -869,6 +971,7 @@ module raster #(
                         ta1x3[k] <= ta1[k] + (ta1[k] <<< 1);
                         ta2x3[k] <= ta2[k] + (ta2[k] <<< 1);
                     end
+                    dv_den3 <= {2'd0, dv_den} + {1'd0, dv_den, 1'b0};
                     tp_triple <= 1'b0;
                 end else begin
                     for (k = 0; k < 3; k = k + 1) begin
@@ -897,21 +1000,28 @@ module raster #(
                 for (k = 0; k < 6; k = k + 1) begin
                     dv_rem[k] <= 0; dv_q[k] <= 0;
                 end
-                dv_den <= s_abs;
                 det_zero <= s_reg == 0;
-                dv_bit <= 6'd41;
+                dv_bit <= 6'd20;
                 state <= S_TPDIV;
             end
             S_TPDIV: begin
+                // Two quotient bits a clock against det, 2 det and 3 det, the
+                // 42 numerator bits in 21 steps; the quotient keeps its low 32.
                 for (k = 0; k < 6; k = k + 1) begin
-                    if ({dv_rem[k], dv_num[k][41]} >= dv_den) begin
-                        dv_rem[k] <= {dv_rem[k], dv_num[k][41]} - dv_den;
-                        dv_q[k] <= {dv_q[k][30:0], 1'b1};
+                    if ({dv_rem[k], dv_num[k][41:40]} >= {1'b0, dv_den3}) begin
+                        dv_rem[k] <= {dv_rem[k], dv_num[k][41:40]} - {1'b0, dv_den3};
+                        dv_q[k] <= {dv_q[k][29:0], 2'd3};
+                    end else if ({dv_rem[k], dv_num[k][41:40]} >= {1'b0, dv_den, 1'b0}) begin
+                        dv_rem[k] <= {dv_rem[k], dv_num[k][41:40]} - {1'b0, dv_den, 1'b0};
+                        dv_q[k] <= {dv_q[k][29:0], 2'd2};
+                    end else if ({dv_rem[k], dv_num[k][41:40]} >= {2'd0, dv_den}) begin
+                        dv_rem[k] <= {dv_rem[k], dv_num[k][41:40]} - {2'd0, dv_den};
+                        dv_q[k] <= {dv_q[k][29:0], 2'd1};
                     end else begin
-                        dv_rem[k] <= {dv_rem[k][33:0], dv_num[k][41]};
-                        dv_q[k] <= {dv_q[k][30:0], 1'b0};
+                        dv_rem[k] <= {dv_rem[k][32:0], dv_num[k][41:40]};
+                        dv_q[k] <= {dv_q[k][29:0], 2'd0};
                     end
-                    dv_num[k] <= dv_num[k] << 1;
+                    dv_num[k] <= dv_num[k] << 2;
                 end
                 if (dv_bit == 0)
                     state <= S_TPSIGN;
@@ -945,17 +1055,155 @@ module raster #(
             end
             S_TPFIN: begin
                 tex_a <= {8'd0, pu[0]} + oacc[0] + oacc[1];
-                tex_arow <= {8'd0, pu[0]} + oacc[0] + oacc[1];
                 tex_as <= tg[0] << 4; tex_aj <= tg[1] << 4;
                 tex_b <= {8'd0, pv[0]} + oacc[2] + oacc[3];
-                tex_brow <= {8'd0, pv[0]} + oacc[2] + oacc[3];
                 tex_bs <= tg[2] << 4; tex_bj <= tg[3] << 4;
                 tex_c <= {18'd0, pr[0]} + oacc[4] + oacc[5];
-                tex_crow <= {18'd0, pr[0]} + oacc[4] + oacc[5];
                 tex_cs <= tg[4] << 4; tex_cj <= tg[5] << 4;
-                state <= S_SCAN;
+                state <= S_HAND;
             end
-            S_CARD: begin
+            S_BOX: begin
+                // The palette walk rides along from here to S_TRIPLE: its five
+                // steps need nothing the geometry works out.
+                pal_addr <= c0_e;
+                pal_step <= 3'd1;
+                xmin <= min01x < vx[2] ? min01x : vx[2];
+                xmax <= max01x > vx[2] ? max01x : vx[2];
+                ymin <= min01y < vy[2] ? min01y : vy[2];
+                ymax <= max01y > vy[2] ? max01y : vy[2];
+                state <= S_CLAMP;
+            end
+            S_CLAMP: begin
+                pal_addr <= c1_e;
+                ci0 <= bi0 < 0 ? 13'sd0 : bi0;
+                ci1 <= bi1 > 13'sd319 ? 13'sd319 : bi1;
+                cj0 <= bj0 < 0 ? 13'sd0 : bj0;
+                cj1 <= bj1 > 13'sd179 ? 13'sd179 : bj1;
+                state <= S_LOAD;
+            end
+            S_LOAD: begin
+                pal_addr <= c2_e;
+                c0_c <= pal_q[15:0];
+                if (box_empty)
+                    state <= S_IDLE;
+                else begin
+                    i0 <= ci0[8:0]; i1 <= ci1[8:0]; j0 <= cj0[7:0];
+                    j1 <= cj1[7:0];
+                    addr <= {cj0[7:0], 8'd0} + {2'd0, cj0[7:0], 6'd0} +
+                            {7'd0, ci0[8:0]};
+                    state <= S_EDGE;
+                end
+            end
+            S_EDGE: begin
+                c1_c <= pal_q[15:0];
+                for (k = 0; k < 3; k = k + 1) begin
+                    dx[k] <= vx[(k + 1) % 3] - vx[k];
+                    dy[k] <= vy[(k + 1) % 3] - vy[k];
+                    ox[k] <= $signed({5'd0, i0, 4'd8}) - vx[k];
+                    oy[k] <= $signed({6'd0, j0, 4'd8}) - vy[k];
+                end
+                state <= S_TRIPLE;
+            end
+            S_TRIPLE: begin
+                c2_c <= pal_q[15:0];
+                for (k = 0; k < 3; k = k + 1) begin
+                    dy3[k] <= dy[k] * 3;
+                    dx3[k] <= dx[k] * 3;
+                    acc_x[k] <= 0; acc_y[k] <= 0;
+                    step_x[k] <= dy[k] <<< 4;
+                    step_y[k] <= -(dx[k] <<< 4);
+                end
+                // Start at the highest digit any of the six offsets needs.
+                digit <= max4(max4(max4(top_digit(ox[0]), top_digit(ox[1])),
+                                   max4(top_digit(ox[2]), top_digit(oy[0]))),
+                              max4(top_digit(oy[1]), top_digit(oy[2])));
+                mul_top <= max4(max4(max4(top_digit(ox[0]), top_digit(ox[1])),
+                                     max4(top_digit(ox[2]), top_digit(oy[0]))),
+                                max4(top_digit(oy[1]), top_digit(oy[2])));
+                state <= S_MUL;
+            end
+            S_MUL: begin
+                for (k = 0; k < 3; k = k + 1) begin
+                    acc_x[k] <= (acc_x[k] <<< 2) +
+                                radix4(ox[k], digit, dy[k], dy3[k], mul_top);
+                    acc_y[k] <= (acc_y[k] <<< 2) +
+                                radix4(oy[k], digit, dx[k], dx3[k], mul_top);
+                end
+                if (digit == 0) state <= S_FIN;
+                digit <= digit - 1'b1;
+            end
+            S_FIN: begin
+                for (k = 0; k < 3; k = k + 1)
+                    e[k] <= acc_x[k] - acc_y[k];
+                // S and its multiples, the thresholds the weights are
+                // counted against, from the first pixel's edge functions.
+                s_reg <= acc_x[0] - acc_y[0] + acc_x[1] - acc_y[1] +
+                         acc_x[2] - acc_y[2];
+                s2_reg <= (acc_x[0] - acc_y[0] + acc_x[1] - acc_y[1] +
+                           acc_x[2] - acc_y[2]) <<< 1;
+                s3_reg <= ((acc_x[0] - acc_y[0] + acc_x[1] - acc_y[1] +
+                            acc_x[2] - acc_y[2]) <<< 1) +
+                          (acc_x[0] - acc_y[0] + acc_x[1] - acc_y[1] +
+                           acc_x[2] - acc_y[2]);
+                // A TEXV triangle works its planes out next; everything else
+                // is ready for the fill.
+                state <= tex_on && tex_setup ? S_TP0 : S_HAND;
+            end
+            S_HAND:
+                // Held until the fill is free; fill_start is the same
+                // condition, so the fill takes this command's fields on the
+                // clock setup lets go of them.
+                if (fstate == F_IDLE)
+                    state <= S_IDLE;
+            default: state <= S_IDLE;
+            endcase
+        end
+    end
+
+    // ---- Fill: one triangle, run of rows or card at a time, into the target ----
+    always @(posedge clk or negedge resetn) begin
+        if (!resetn) begin
+            fstate <= F_IDLE; we <= 0; pixels <= 0; we1_r <= 0;
+            phase <= 0; last_p <= 0;
+        end else begin
+            we <= 0;
+            case (fstate)
+            F_IDLE:
+                if (fill_start) begin
+                    // The hand-over: everything the fill reads, copied from
+                    // setup in the one clock both agree it happens.
+                    phase <= 0; last_p <= 0; we1_r <= 0;
+                    if (hand_kind == H_ROWS) begin
+                        faddr <= addr; ffill_end <= fill_end; fcolour <= colour;
+                        fstate <= F_ROWS;
+                    end else if (hand_kind == H_CARD) begin
+                        card_i0 <= hc_i0; card_i1 <= hc_i1;
+                        card_j0 <= hc_j0; card_j1 <= hc_j1;
+                        card_i <= hc_i0; card_j <= hc_j0;
+                        card_du <= hc_du; card_dv <= hc_dv;
+                        card_u0 <= hc_u0; card_u <= hc_u0; card_v <= hc_v0;
+                        card_tile <= hc_tile; card_addr <= hc_addr;
+                        card_phase <= 0;
+                        fstate <= F_CARD;
+                    end else begin
+                        fi0 <= i0; fi1 <= i1; fi <= i0; fj1 <= j1; fj <= j0;
+                        faddr <= addr; frow_addr <= addr;
+                        for (k = 0; k < 3; k = k + 1) begin
+                            fe[k] <= e[k]; fe_row[k] <= e[k];
+                            fstep_x[k] <= step_x[k]; fstep_y[k] <= step_y[k];
+                        end
+                        fs <= s_reg; fs2 <= s2_reg; fs3 <= s3_reg;
+                        fc0 <= c0_c; fc1 <= c1_c; fc2 <= c2_c;
+                        ftex_on <= tex_on; ftile <= tex_tile;
+                        ftex_a <= tex_a; ftex_arow <= tex_a;
+                        ftex_b <= tex_b; ftex_brow <= tex_b;
+                        ftex_c <= tex_c; ftex_crow <= tex_c;
+                        ftex_as <= tex_as; ftex_bs <= tex_bs; ftex_cs <= tex_cs;
+                        ftex_aj <= tex_aj; ftex_bj <= tex_bj; ftex_cj <= tex_cj;
+                        fstate <= F_SCAN;
+                    end
+                end
+            F_CARD: begin
                 // Three clocks a pixel. The store is a block RAM, so its data
                 // arrives the clock after its address, and the address is a
                 // register that changes on the same edge the data is taken:
@@ -990,169 +1238,66 @@ module raster #(
                                      {2'd0, card_j + 1'b1, 6'd0} +
                                      {7'd0, card_i0};
                     end else
-                        state <= S_IDLE;
+                        fstate <= F_IDLE;
                 end
             end
-            S_ROWS: begin
-                we <= 1; waddr <= addr; wdata <= colour;
-                addr <= addr + 1'b1;
-                if (addr + 1'b1 == fill_end) state <= S_IDLE;
+            F_ROWS: begin
+                we <= 1; waddr <= faddr; wdata <= fcolour;
+                faddr <= faddr + 1'b1;
+                if (faddr + 1'b1 == ffill_end) fstate <= F_IDLE;
             end
-            S_BOX: begin
-                xmin <= min01x < vx[2] ? min01x : vx[2];
-                xmax <= max01x > vx[2] ? max01x : vx[2];
-                ymin <= min01y < vy[2] ? min01y : vy[2];
-                ymax <= max01y > vy[2] ? max01y : vy[2];
-                state <= S_CLAMP;
-            end
-            S_CLAMP: begin
-                ci0 <= bi0 < 0 ? 13'sd0 : bi0;
-                ci1 <= bi1 > 13'sd319 ? 13'sd319 : bi1;
-                cj0 <= bj0 < 0 ? 13'sd0 : bj0;
-                cj1 <= bj1 > 13'sd179 ? 13'sd179 : bj1;
-                state <= S_LOAD;
-            end
-            S_LOAD:
-                if (box_empty)
-                    state <= S_IDLE;
-                else begin
-                    i0 <= ci0[8:0]; i1 <= ci1[8:0]; j0 <= cj0[7:0];
-                    j1 <= cj1[7:0]; i <= ci0[8:0]; j <= cj0[7:0];
-                    row_addr <= {cj0[7:0], 8'd0} + {2'd0, cj0[7:0], 6'd0} +
-                                {7'd0, ci0[8:0]};
-                    addr <= {cj0[7:0], 8'd0} + {2'd0, cj0[7:0], 6'd0} +
-                            {7'd0, ci0[8:0]};
-                    state <= S_EDGE;
-                end
-            S_EDGE: begin
-                for (k = 0; k < 3; k = k + 1) begin
-                    dx[k] <= vx[(k + 1) % 3] - vx[k];
-                    dy[k] <= vy[(k + 1) % 3] - vy[k];
-                    ox[k] <= $signed({5'd0, i0, 4'd8}) - vx[k];
-                    oy[k] <= $signed({6'd0, j0, 4'd8}) - vy[k];
-                end
-                state <= S_TRIPLE;
-            end
-            S_TRIPLE: begin
-                for (k = 0; k < 3; k = k + 1) begin
-                    dy3[k] <= dy[k] * 3;
-                    dx3[k] <= dx[k] * 3;
-                    acc_x[k] <= 0; acc_y[k] <= 0;
-                    step_x[k] <= dy[k] <<< 4;
-                    step_y[k] <= -(dx[k] <<< 4);
-                end
-                digit <= 8;
-                state <= S_MUL;
-            end
-            S_MUL: begin
-                for (k = 0; k < 3; k = k + 1) begin
-                    acc_x[k] <= (acc_x[k] <<< 2) +
-                                radix4(ox[k], digit, dy[k], dy3[k]);
-                    acc_y[k] <= (acc_y[k] <<< 2) +
-                                radix4(oy[k], digit, dx[k], dx3[k]);
-                end
-                if (digit == 0) state <= S_FIN;
-                digit <= digit - 1'b1;
-            end
-            S_FIN: begin
-                for (k = 0; k < 3; k = k + 1) begin
-                    e[k] <= acc_x[k] - acc_y[k];
-                    e_row[k] <= acc_x[k] - acc_y[k];
-                end
-                // S and its multiples, the thresholds the weights are
-                // counted against, from the first pixel's edge functions.
-                s_reg <= acc_x[0] - acc_y[0] + acc_x[1] - acc_y[1] +
-                         acc_x[2] - acc_y[2];
-                s2_reg <= (acc_x[0] - acc_y[0] + acc_x[1] - acc_y[1] +
-                           acc_x[2] - acc_y[2]) <<< 1;
-                s3_reg <= ((acc_x[0] - acc_y[0] + acc_x[1] - acc_y[1] +
-                            acc_x[2] - acc_y[2]) <<< 1) +
-                          (acc_x[0] - acc_y[0] + acc_x[1] - acc_y[1] +
-                           acc_x[2] - acc_y[2]);
-                pal_step <= 0;
-                // The leftovers of the triangle before: a textured triangle
-                // skips the palette walk and would otherwise start with the
-                // last pixel's flag and write-enable still standing, which
-                // ends it after one pixel and lets it write a stale one.
-                last_p <= 0;
-                we1_r <= 0;
-                // A textured triangle has no palette walk to do: its texel is
-                // written as an entry of the art's own palette, so it goes
-                // straight to the scan with the planes the caller left at the
-                // bounding box's first pixel.
-                state <= tex_on ? (tex_setup ? S_TP0 : S_SCAN) : S_PAL;
-            end
-            S_PAL: begin
-                // The three corners' palette entries, in the five bits a
-                // channel. A read answers the cycle after it is asked for, so
-                // the address of the one after is given as each arrives.
-                case (pal_step)
-                    3'd0: pal_addr <= c0_e;
-                    3'd1: pal_addr <= c1_e;
-                    3'd2: begin pal_addr <= c2_e; c0_c <= pal_q[15:0]; end
-                    3'd3: c1_c <= pal_q[15:0];
-                    default: begin
-                        c2_c <= pal_q[15:0];
-                        we1_r <= 0;
-                        phase <= 0;
-                        last_p <= 0;
-                        state <= S_SCAN;
-                    end
-                endcase
-                pal_step <= pal_step + 1'b1;
-            end
-            S_SCAN: begin
+            F_SCAN: begin
                 // Two clocks a pixel. The first takes this pixel's weights
                 // and its coverage and address, and steps the edge functions
-                // on; the second mixes its colour, from the weights just
-                // registered, and gives that colour to the table. A pixel's
+                // on; the second mixes its fcolour, from the weights just
+                // registered, and gives that fcolour to the table. A pixel's
                 // entry comes back a clock later, so the pixel written here
-                // is the one before: its colour was addressed in the last
+                // is the one before: its fcolour was addressed in the last
                 // cycle, and it is written once, in the first phase.
-                if (phase && we1_r && !tex_on) begin
+                if (phase && we1_r && !ftex_on) begin
                     we <= 1; waddr <= a1_r; wdata <= lut_q[7:0];
                 end
                 if (!phase) begin
                     aw_r <= aw;
                     bw_r <= bw;
                     covered_r <= covered;
-                    addr_r <= addr;
+                    addr_r <= faddr;
                     // This pixel's planes, before the step moves them on: a
                     // textured triangle divides the ones belonging to the
                     // pixel it is writing, not the next one's.
-                    tn_a <= tex_a;
-                    tn_b <= tex_b;
-                    tn_c <= tex_c;
-                    if (covered && !tex_on)
+                    tn_a <= ftex_a;
+                    tn_b <= ftex_b;
+                    tn_c <= ftex_c;
+                    if (covered && !ftex_on)
                         pixels <= pixels + 1'b1;
-                    if (i == i1) begin
-                        if (j == j1)
+                    if (fi == fi1) begin
+                        if (fj == fj1)
                             last_p <= 1;
                         else begin
-                            j <= j + 1'b1; i <= i0;
-                            row_addr <= row_addr + 16'd320;
-                            addr <= row_addr + 16'd320;
+                            fj <= fj + 1'b1; fi <= fi0;
+                            frow_addr <= frow_addr + 16'd320;
+                            faddr <= frow_addr + 16'd320;
                             for (k = 0; k < 3; k = k + 1) begin
-                                e_row[k] <= e_row[k] + step_y[k];
-                                e[k] <= e_row[k] + step_y[k];
+                                fe_row[k] <= fe_row[k] + fstep_y[k];
+                                fe[k] <= fe_row[k] + fstep_y[k];
                             end
-                            tex_arow <= tex_arow + tex_aj;
-                            tex_brow <= tex_brow + tex_bj;
-                            tex_crow <= tex_crow + tex_cj;
-                            tex_a <= tex_arow + tex_aj;
-                            tex_b <= tex_brow + tex_bj;
-                            tex_c <= tex_crow + tex_cj;
+                            ftex_arow <= ftex_arow + ftex_aj;
+                            ftex_brow <= ftex_brow + ftex_bj;
+                            ftex_crow <= ftex_crow + ftex_cj;
+                            ftex_a <= ftex_arow + ftex_aj;
+                            ftex_b <= ftex_brow + ftex_bj;
+                            ftex_c <= ftex_crow + ftex_cj;
                         end
                     end else begin
-                        i <= i + 1'b1; addr <= addr + 1'b1;
+                        fi <= fi + 1'b1; faddr <= faddr + 1'b1;
                         for (k = 0; k < 3; k = k + 1)
-                            e[k] <= e[k] + step_x[k];
-                        tex_a <= tex_a + tex_as;
-                        tex_b <= tex_b + tex_bs;
-                        tex_c <= tex_c + tex_cs;
+                            fe[k] <= fe[k] + fstep_x[k];
+                        ftex_a <= ftex_a + ftex_as;
+                        ftex_b <= ftex_b + ftex_bs;
+                        ftex_c <= ftex_c + ftex_cs;
                     end
                 end else begin
-                    if (tex_on) begin
+                    if (ftex_on) begin
                         // The texel this pixel names: the two numerators
                         // divided by the interpolated reciprocal of depth,
                         // ten quotient bits each.
@@ -1161,23 +1306,23 @@ module raster #(
                             tex_q <= 0;
                             tex_bit <= 4'd9;
                             tex_second <= 1'b0;
-                            state <= S_TEXDIV;
+                            fstate <= F_TEXDIV;
                         end else if (last_p)
-                            state <= S_IDLE;
+                            fstate <= F_IDLE;
                     end else begin
                         lut_addr <= mixed;
                         we1_r <= covered_r;
                         a1_r <= addr_r;
                         if (last_p) begin
-                            state <= S_DRAIN;
+                            fstate <= F_DRAIN;
                             drain <= 2'd2;
                         end
                     end
                 end
                 phase <= ~phase;
             end
-            S_DRAIN: begin
-                // The last pixel's entry arrives a clock after its colour
+            F_DRAIN: begin
+                // The last pixel's entry arrives a clock after its fcolour
                 // went to the table: the first of these two clocks lets it
                 // arrive, the second writes it.
                 if (drain <= 1 && we1_r) begin
@@ -1185,11 +1330,11 @@ module raster #(
                 end
                 if (drain <= 1) begin
                     we1_r <= 0;
-                    state <= S_IDLE;
+                    fstate <= F_IDLE;
                 end else
                     drain <= drain - 1'b1;
             end
-            S_TEXDIV: begin
+            F_TEXDIV: begin
                 // The quotient u = A/C, then v = B/C, ten bits each: the
                 // denominator shifted up against the remainder, which is the
                 // truncation towards zero the twin's own division gives. The
@@ -1209,14 +1354,14 @@ module raster #(
                                                           : tex_q_next[11:0];
                         tex_second <= 1'b0;
                         tex_w <= 2'd0;
-                        state <= S_TEXW;
+                        fstate <= F_TEXW;
                     end
                 end else begin
                     tex_rem <= tex_rem_next;
                     tex_bit <= tex_bit - 1'b1;
                 end
             end
-            S_TEXW: begin
+            F_TEXW: begin
                 // Three clocks, the shape the card fill taught: one to give the
                 // store the address, one for its byte to land -- the address
                 // register is itself a register, so the memory sees the address
@@ -1225,7 +1370,7 @@ module raster #(
                 // invisible wherever two pixels share a texel and a mottled
                 // texture everywhere else.
                 if (tex_w == 2'd0) begin
-                    tile_raddr <= {tex_tile, 10'd0} + {5'd0, tex_tv, 5'd0} +
+                    tile_raddr <= {ftile, 10'd0} + {5'd0, tex_tv, 5'd0} +
                                   {10'd0, tex_tu};
                     tex_w <= 2'd1;
                 end else if (tex_w == 2'd1) begin
@@ -1239,12 +1384,12 @@ module raster #(
                     tex_w <= 2'd0;
                     phase <= 1'b0;
                     if (last_p)
-                        state <= S_IDLE;
+                        fstate <= F_IDLE;
                     else
-                        state <= S_SCAN;
+                        fstate <= F_SCAN;
                 end
             end
-            default: state <= S_IDLE;
+            default: fstate <= F_IDLE;
             endcase
         end
     end

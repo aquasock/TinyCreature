@@ -11,7 +11,7 @@
 //   TinyCreature TERRAIN OK MODE=<FABRIC|SOFT> LAND=<crc> FRAMES=<n>
 //     TRIS=<mean> PIXELS=<mean> DRAW=<us> MAX=<us> FINISH=<us> STALLS=<n>
 //     VBL=<n> VBLMIN=<n> VBLMAX=<n> PERIOD=<us> INPUT=<n> LATE=<n> CRC=<crc>
-//     CELLS=<mean> PHROWS=<us> PHCULL=<us> PHWALK=<us>
+//     CELLS=<mean> PHROWS=<us> PHCULL=<us> PHWALK=<us> FABRIC=<us>
 //     CAMFOCUS=<x>,<z> CAMEYE=<x>,<z> CAMTURN=<degrees> PIN=<x>,<z>|none
 // LAND is the file's CRC-32; TRIS and PIXELS the mean triangles sent and
 // pixels they filled per frame; DRAW and MAX the mean and longest CPU time
@@ -24,7 +24,9 @@
 // and PHROWS, PHCULL and PHWALK the mean time the frame spent in the sky and
 // sea rows, in the block cull and in the cell walk, which is this program's
 // own profile of a frame, taken with the core's cycle counter and left out of
-// the host's line because the host has no such counter. CAMFOCUS and CAMEYE
+// the host's line because the host has no such counter; FABRIC is the mean
+// time a frame kept the rasterizer itself busy, from its own BUSY counter,
+// which is how close the fabric is to setting the pace instead of the CPU. CAMFOCUS and CAMEYE
 // are the cells the camera ended the run looking at and standing in, and
 // CAMTURN its bearing in degrees: what the readout draws when a mouse is
 // driving the camera, and the last frame of the orbit when nothing is. With
@@ -76,6 +78,8 @@
 #define RASTER_LUT     TN_REG(0x18030)
 #define RASTER_TILES_A TN_REG(0x18034)
 #define RASTER_TILES_D TN_REG(0x18038)
+#define RASTER_BUSYCYC TN_REG(0x1803c)
+#define RASTER_BUS_MHZ 75u   /* the bus clock the BUSY counter counts */
 #define RASTER_ID_VALUE 0x54435231u /* "TCR1" */
 
 /* Vertical blanks each frame is held for. The display shows a frame only on a
@@ -473,7 +477,7 @@ int main(void)
 	// later rather than waited for.
 	uint32_t chain = 0xffffffffu;
 	int scanning = 0;
-	uint64_t tris = 0, pixels = 0, draw = 0, longest = 0, finish = 0;
+	uint64_t tris = 0, pixels = 0, draw = 0, longest = 0, finish = 0, fabric = 0;
 	uint32_t vbl_min = ~0u, vbl_max = 0;
 	uint64_t start = tn_cycles64();
 	/* The link goes back to the desk layer here, before the first frame, which
@@ -493,11 +497,12 @@ int main(void)
 		uint32_t blanks = TN_VIDEO_FRAMES;
 		in_applied += input_frame(frame);
 		uint32_t back = (TN_VIDEO_STATUS & TN_VIDEO_BUFFER) ? 0u : 1u;
-		uint32_t tris0 = 0, pixels0 = 0;
+		uint32_t tris0 = 0, pixels0 = 0, busy0 = 0;
 		if (FABRIC) {
 			RASTER_CTRL = RASTER_SHOW | (back ? RASTER_TARGET : 0u);
 			tris0 = RASTER_TRIS;
 			pixels0 = RASTER_PIXELS;
+			busy0 = RASTER_BUSYCYC;
 		} else {
 			soft.fb = TN_VIDEO_FB(back);
 			soft.triangles = soft.pixels = 0;
@@ -514,6 +519,8 @@ int main(void)
 				if (tn_cycles64() - t1 > TN_CORE_HZ / 10u)
 					fail("RASTER BUSY");
 		uint64_t t2 = tn_cycles64();
+		if (FABRIC)
+			fabric += RASTER_BUSYCYC - busy0;
 		draw += t1 - t0;
 		longest = t1 - t0 > longest ? t1 - t0 : longest;
 		finish += t2 - t1;
@@ -591,7 +598,7 @@ int main(void)
 	       "PIXELS=%lu DRAW=%luus MAX=%luus FINISH=%luus STALLS=%lu "
 	       "VBL=%lu VBLMIN=%lu VBLMAX=%lu PERIOD=%luus INPUT=%lu LATE=%lu "
 	       "CRC=%08lx CELLS=%lu PHROWS=%luus PHCULL=%luus PHWALK=%luus "
-	       "CAMFOCUS=%ld,%ld CAMEYE=%ld,%ld CAMTURN=%ld",
+	       "FABRIC=%luus CAMFOCUS=%ld,%ld CAMEYE=%ld,%ld CAMTURN=%ld",
 	       FABRIC ? "FABRIC" : "SOFT", (unsigned long)land_crc, (unsigned)FRAMES,
 	       (unsigned long)(tris / FRAMES), (unsigned long)(pixels / FRAMES),
 	       (unsigned long)(draw / FRAMES / us), (unsigned long)(longest / us),
@@ -603,6 +610,7 @@ int main(void)
 	       (unsigned long)(phase_sum[TC_PHASE_ROWS] / FRAMES / us),
 	       (unsigned long)(phase_sum[TC_PHASE_CULL] / FRAMES / us),
 	       (unsigned long)(phase_sum[TC_PHASE_WALK] / FRAMES / us),
+	       (unsigned long)(fabric / FRAMES / RASTER_BUS_MHZ),
 	       (long)cam_focus_x, (long)cam_focus_z, (long)cam_eye_x,
 	       (long)cam_eye_z, (long)cam_turn);
 	/* The cell this build stands its card on, if it has one: the one thing in the

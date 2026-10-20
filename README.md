@@ -74,17 +74,21 @@ disabling the cable's port, which stops the data and nothing else.
 
 A two-wire cycle disables the port, powers the board off for five seconds and
 on again, waits six seconds for the loader to choose, enables the port, and
-fails unless TinyTang's console answers. The relay board's hidraw node and the
-port's `disable` file both need write access, which two udev rules give the
-plugdev group:
+fails unless TinyTang's console answers. The port is whichever one the Tang is
+plugged into, on the PC or on a hub: the tool reads it from where the board
+shows up on the bus in either mode and remembers it in `build/` for when the
+board is off, so moving the cable needs nothing changed. The relay board's
+hidraw node and every port's `disable` file need write access, which two udev
+rules give the plugdev group:
 
     # /etc/udev/rules.d/60-usbrelay8.rules
     SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="05df", MODE="0660", GROUP="plugdev"
-    # /etc/udev/rules.d/61-tang-port.rules: PC root port 5 on bus 1, where the cable is
-    ACTION=="bind", SUBSYSTEM=="usb", KERNEL=="1-0:1.0", DRIVER=="hub", RUN+="/bin/sh -c 'f=/sys%p/usb1-port5/disable; chgrp plugdev $f && chmod g+w $f'"
+    # /etc/udev/rules.d/61-tang-port.rules: every port of every hub, the PC's own included
+    ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="hub", RUN+="/bin/sh -c 'for f in /sys%p/*-port*/disable; do chgrp plugdev $f && chmod g+w $f; done'"
 
-`TINYCREATURE_POWER_RELAY` and `TINYCREATURE_TANG_USB_PORT` name another relay
-or port; a cable moved to another port wants its port in the second rule too.
+`TINYCREATURE_POWER_RELAY` names another relay, and
+`TINYCREATURE_TANG_USB_PORT` a port's sysfs directory; a cycle refuses if the
+board is on the bus somewhere else.
 
 ## Terrain on the Tang
 
@@ -687,6 +691,27 @@ rock-steady 15. If a frame ever misses the hold the run prints
 `BAD TINYCREATURE CADENCE` rather than jittering on unannounced. The cost is
 that the mouse is read once a frame, so a report waits up to the hold to be
 acted on: a mean 38 ms before, a flat 50 now.
+
+### Setup beside the fill
+
+The unit is two engines now. Setup takes commands -- the vertex store's
+writes and reads, a triangle's box, edge functions and palette walk, a TEXV
+triangle's planes -- and hands each finished triangle, run of rows or card to
+the fill, which draws it while setup works out the next; the hand-over is one
+clock, when setup holds a command and the fill is free. Before, one engine did
+both in turn, and the island's triangles are a few pixels each, so the fill
+sat idle through every setup. The command assembler reads a command's length
+off its first word as it arrives and so takes one word a clock, and writes a
+shaded vertex into the store itself unless setup is reading slots or finishing
+a textured vertex; the textured vertex's three divides and TEXV's six take two
+quotient bits a clock; the palette walk runs during the box and edge states;
+and the edge products start at the highest radix-4 digit their offsets need.
+None of it moves a pixel. In simulation, with the commands fed at the bus's
+pace, two Celtic frames fell from 1.62 and 1.80 million bus cycles to 0.89 and
+0.97 million, and on the board the BUSY register, at `0x3c`, puts the fabric's
+own work at 14.3 ms of a 60.9 ms frame, which the run line reports as
+`FABRIC=`: the CPU sets the pace with room to spare, which is what a fabric
+terrain walker needs before it can take the CPU's 32 ms of terrain.
 
 ### The vertex store
 

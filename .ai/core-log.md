@@ -2444,3 +2444,36 @@ The port rule fires when the root hub's driver binds, which has not yet been see
 - User Test: PASS
 
 ---
+
+## 74 COMMIT Unreleased 2026-10-19T20:09:35-07:00
+
+#### Coming From:
+
+Unreleased bb67153
+
+#### Purpose:
+
+Cut the fabric's own time per frame by running triangle setup beside the fill, and measure it on the board, as the step the user approved ahead of the depth buffer and the terrain walker.
+
+#### Outcome:
+
+The walker plan's first step was approved as a depth buffer, and before any of it was built a simulation of two Celtic frames fed at the bus's pace measured the fabric itself at 1.62 and 1.80 million bus cycles, 21.6 and 23.9 ms, setup-bound because one engine set up and filled each triangle in turn while the island's triangles are a few pixels each; since both the depth buffer and the walker add fabric work, the user approved doing throughput first and kept the depth buffer for the ordering. `fpga/raster.sv` is now two state machines, setup and fill, that hand a triangle, run of rows or card over in one clock when setup holds one and the fill is free, the fill keeping its own copies of everything it reads; on top of that the command assembler reads a command's length off its arriving first word and takes a word a clock, and writes a shaded vertex into the store itself unless setup is reading slots or finishing a textured vertex, the only commands such a write could overtake; the `VTXT` divides take two quotient bits a clock with the top six numerator bits preloaded, since z is at least 128, and `TEXV`'s six take two a clock; the palette walk runs in the box and edge states; and the edge products start at the highest radix-4 digit the six offsets need, that digit signed, which is exact because the bits above it are the sign. A profile in simulation drove each step, frame 0 going from 1.62 to 1.10 million cycles with the split, 0.89 million with the assembler and the dividers, and 0.885 million with the pipelined assembler, frame 75 from 1.80 to 0.97 million, every run reading back the same bytes as `terrain_host`. A new `BUSY` register at `0x3c` counts the cycles setup or the fill is working, and `firmware/terrain/main.c` reports its mean as `FABRIC=` in the run line. The test script passed on Celtic frames 0, 75, 150, 300, 450 and 599, on Land 1's frames 0 and 75, and on the older `CARD` and `TEX` paths through column cards and `TC_NO_STORE=1`. The eight-seed sweep was stopped at the user's word once seed 3 came out clean at 79.49 MHz bus and 88.85 MHz pixel, seeds 1, 6 and 8 having missed the bus at 71.49 to 73.64 MHz and seed 2 passing it at 75.15 MHz but using the refused `SPINE27` bridge pip; the core uses 27,873 LUT4, 6,638 ALU, 14,825 DFF and 163 of 340 BSRAM, and is `ae350_soc.bin` SHA-256 `a20389b9a5260eecf002a04e274379a0b8a624be7eda0ff9869cf6357cce85a4` and `ae350_soc.fs` SHA-256 `53839f7f4edfd05247d9ca94bb28c229b046dfb7ea744218f39bc0be46d0209b`, entry 72's kept under `build/core-backup/seed3-entry72/`. On the board the Celtic gate matched the twin at frame CRC `73f24771` with `DRAW=60881us`, `PERIOD=66812us`, `LATE=0` and `FABRIC=14335us`, so the CPU still sets the pace and the fabric has room under it. Bringing the board up for the gate exposed that `tools/tang_power.py` cycled a fixed root port while the cable had been moved to a hub, which it rightly reported as a one-wire boot; it now finds the board's port from where it shows up on the bus in either mode and remembers it in `build/`, refusing if an override disagrees, and the user replaced the port udev rule with one that gives plugdev every port's `disable`, after which a two-wire cycle through hub 1-7's port 2 answered at 14.9 s, which PWR-002 now records. The feel build `build/feel/terrain.elf` SHA-256 `bc9313fe5e1eac1b61e3042fe9b5820f00f500230b28770d89da35ebf8a62c6c` was deployed with the link released to the mouse, and the user reported that it looks and feels the same and passed it. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, checked that PWR-002's revision follows the reference's revision rule and that the fast index and records still list the same ids in order, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The depth buffer is next, as approved: one 320 by 180 buffer of 18-bit depth in about 57 block RAMs, tested and written by every fill, with a depth plane for each triangle from setup, which the profile says setup can now afford; the frames will change once, the plants' sunk bases going behind the terrain, so the twin must model it bit for bit and the user must accept the look again. The setup engine's remaining time is its five-cycle vertex read, its six box and edge states, and the fill's own waits, which a duplicated vertex store or merged states would cut if the walker needs more headroom than the 14.3 ms leaves. The terrain walker with the land in block RAM follows the depth buffer.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/main.c
+- fpga/raster.sv
+- tools/tang_power.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

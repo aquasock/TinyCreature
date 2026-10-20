@@ -19,10 +19,12 @@ and the port enabled again.
 
 `cycle` waits for the mode it asked for and fails unless it arrives: two-wire
 must answer on TinyTang's console, one-wire must enumerate as the debugger.
-TINYCREATURE_POWER_RELAY names the relay, 1 by default, and
-TINYCREATURE_TANG_USB_PORT the port's sysfs directory, PC root port 5 by
-default. Both need write access for this user, which README.md's udev rules
-give the plugdev group.
+The port is the one the Tang is plugged into, read from where the board shows
+up on the bus in either mode and remembered in build/ for when it is off;
+TINYCREATURE_TANG_USB_PORT names one instead, and a cycle refuses if the board
+is on another. TINYCREATURE_POWER_RELAY names the relay, 1 by default. The
+relay board and the port both need write access for this user, which
+README.md's udev rules give the plugdev group.
 """
 import argparse
 import fcntl
@@ -34,7 +36,9 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RELAY_ID = "0003:000016C0:000005DF"
-DEFAULT_PORT = "/sys/bus/usb/devices/usb1/1-0:1.0/usb1-port5"
+USB = "/sys/bus/usb/devices"
+TANG_IDS = ("ffff:5454", "0403:6010")   # TinyTang's CDC, Sipeed's debugger
+PORT_MEMO = os.path.join(ROOT, "build", "tang_power.port")
 TINYTANG_CDC = "/dev/serial/by-id/usb-TinyTang_TinyTang_CDC_*"
 DEBUGGER = "/dev/serial/by-id/usb-SIPEED_USB_Debugger_*"
 
@@ -77,6 +81,57 @@ class Relays:
         fcntl.ioctl(self.fd, ioc(0x06, 9), report)
         if bool(self.state() >> (relay - 1) & 1) != on:
             sys.exit(f"tang_power: relay {relay} did not switch {'on' if on else 'off'}")
+
+
+def tang_port():
+    """The sysfs directory of the port the Tang is plugged into, if it is on the
+    bus in either mode: a device named 1-7.2 hangs off port 2 of hub 1-7, and
+    one named 1-5 off port 5 of bus 1's root hub."""
+    for dev in sorted(glob.glob(os.path.join(USB, "*"))):
+        try:
+            with open(os.path.join(dev, "idVendor")) as f:
+                vid = f.read().strip()
+            with open(os.path.join(dev, "idProduct")) as f:
+                pid = f.read().strip()
+        except OSError:
+            continue
+        if f"{vid}:{pid}" not in TANG_IDS:
+            continue
+        name = os.path.basename(dev)
+        bus, path = name.split("-", 1)
+        hops = path.split(".")
+        if len(hops) == 1:
+            hub, interface, port = f"usb{bus}", f"{bus}-0:1.0", f"usb{bus}-port{hops[0]}"
+        else:
+            hub = f"{bus}-" + ".".join(hops[:-1])
+            interface, port = f"{hub}:1.0", f"{hub}-port{hops[-1]}"
+        return os.path.join(USB, hub, interface, port)
+    return None
+
+
+def choose_port():
+    """The port to switch: the one the Tang is on now, or the one it was last
+    seen on, which a board that is off or hidden behind a disabled port needs;
+    an override that disagrees with where the board is refuses outright."""
+    here = tang_port()
+    named = os.environ.get("TINYCREATURE_TANG_USB_PORT")
+    if named:
+        if here and os.path.realpath(here) != os.path.realpath(named):
+            sys.exit(f"tang_power: TINYCREATURE_TANG_USB_PORT is {named} but the "
+                     f"Tang is on {here}")
+        return named
+    if here:
+        os.makedirs(os.path.dirname(PORT_MEMO), exist_ok=True)
+        with open(PORT_MEMO, "w") as f:
+            f.write(here + "\n")
+        return here
+    try:
+        with open(PORT_MEMO) as f:
+            return f.read().strip()
+    except OSError:
+        sys.exit("tang_power: the Tang is not on the bus and no port is "
+                 "remembered; power it on with its OTG cable plugged in once, "
+                 "or set TINYCREATURE_TANG_USB_PORT")
 
 
 def port_disable(port, disable):
@@ -150,8 +205,8 @@ def main():
                     help="how long a cycle waits for the mode it asked for")
     args = ap.parse_args()
     relay = int(os.environ.get("TINYCREATURE_POWER_RELAY", "1"))
-    port = os.environ.get("TINYCREATURE_TANG_USB_PORT", DEFAULT_PORT)
     relays = Relays()
+    port = choose_port()
 
     if args.action == "status":
         powered = bool(relays.state() >> (relay - 1) & 1)
