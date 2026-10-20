@@ -117,9 +117,15 @@ module raster #(
 );
     localparam W = 320, H = 180, PIXELS = W * H;
 
-    // ---- Command FIFO, 512 x 32 in one block RAM ----
+    // ---- Command FIFO, 512 x 36 in one block RAM ----
+    // Bit 35 of each word says whether it is the last word of its command.
+    // The writer knows a command's length from the opcode word it pushes and
+    // counts the words out as it goes, so the assembler reads the answer
+    // beside the word instead of decoding a length and comparing it on the
+    // block RAM's output, which was this design's longest bus path.
     reg [35:0] fifo [0:511];
     reg [9:0] wr_ptr = 0, rd_ptr = 0;
+    reg [3:0] wr_rem = 0;
     wire [9:0] level = wr_ptr - rd_ptr;
     wire fifo_full = level[9];
     wire fifo_empty = level == 0;
@@ -130,13 +136,31 @@ module raster #(
     // rd_ptr on; the word is in fifo_q, q_valid set, the cycle after.
     wire pop;
     reg [35:0] fifo_q = 0;
+    // A command's length in words, read off its opcode word.
+    function automatic [3:0] op_len(input [3:0] op);
+        case (op)
+            4'd1: op_len = 4'd4;
+            4'd3: op_len = 4'd5;
+            4'd4: op_len = 4'd13;
+            4'd5: op_len = 4'd3;
+            4'd6: op_len = 4'd3;
+            default: op_len = 4'd1;
+        endcase
+    endfunction
+    // Words left in the command being written, this one included. A zero
+    // count means this push starts one and reads its length from the opcode.
+    wire [3:0] wr_left = wr_rem == 0 ? op_len(hwdata[31:28]) : wr_rem;
+    wire wr_last = wr_left == 1;
     always @(posedge clk) begin
-        if (push) fifo[wr_ptr[8:0]] <= {4'd0, hwdata};
+        if (push) fifo[wr_ptr[8:0]] <= {wr_last, 3'd0, hwdata};
         if (pop) fifo_q <= fifo[rd_ptr[8:0]];
     end
     always @(posedge clk or negedge resetn)
-        if (!resetn) wr_ptr <= 0;
-        else if (push) wr_ptr <= wr_ptr + 1'b1;
+        if (!resetn) begin wr_ptr <= 0; wr_rem <= 0; end
+        else if (push) begin
+            wr_ptr <= wr_ptr + 1'b1;
+            wr_rem <= wr_left - 1'b1;
+        end
 
     // ---- Bus slave ----
     reg target = 0, err2 = 0, w_ctrl = 0, w_rb = 0, w_crc = 0, r_fb = 0;
@@ -266,7 +290,7 @@ module raster #(
 
     // ---- Command assembler: the next command is gathered while the
     // engine draws the last ----
-    reg [3:0] issued = 0, got = 0, len = 1;
+    reg [3:0] got = 0;
     reg q_valid = 0;
     reg cmd_full = 0;
     reg [3:0] cmd_op = 0;
@@ -292,37 +316,23 @@ module raster #(
     // camera-space depth in that order.
     reg signed [31:0] cmd_p [0:8];
     wire take;
-    // A command's length in words, read off its opcode word as it arrives, so
-    // its next word is fetched the clock after rather than once the opcode has
-    // been registered.
-    function automatic [3:0] op_len(input [3:0] op);
-        case (op)
-            4'd1: op_len = 4'd4;
-            4'd3: op_len = 4'd5;
-            4'd4: op_len = 4'd13;
-            4'd5: op_len = 4'd3;
-            4'd6: op_len = 4'd3;
-            default: op_len = 4'd1;
-        endcase
-    endfunction
-    wire first_word = q_valid && got == 0;
-    wire [3:0] cur_op = first_word ? fifo_q[31:28] : cmd_op;
-    wire [3:0] cur_len = first_word ? op_len(fifo_q[31:28]) : len;
-    // The word arriving is the command's last.
-    wire completing = q_valid && got + 1'b1 == cur_len;
+    // The writer marked each command's last word, so the word arriving says
+    // whether it is the last.
+    wire completing = q_valid && fifo_q[35];
     // A shaded vertex goes into the store from here, without setup, unless
     // setup is reading slots or finishing a textured vertex: those are the
     // commands ahead of it a write could overtake. Then it waits for setup
-    // like any other command.
-    wire vtx_direct = completing && cur_op == 4'd5 && !vst_busy;
+    // like any other command. A vertex is three words, so its last word is
+    // never the first and cmd_op holds its opcode.
+    wire vtx_direct = completing && got != 0 && cmd_op == 4'd5 && !vst_busy;
     // Words are fetched one a clock while a command is being gathered; the
     // last word of one that goes to setup stops the fetch until setup has
     // taken it, and the last word of a vertex written from here does not.
     assign pop = !cmd_full && !fifo_empty &&
-                 (completing ? vtx_direct : issued < cur_len);
+                 (completing ? vtx_direct : 1'b1);
     always @(posedge clk or negedge resetn) begin
         if (!resetn) begin
-            issued <= 0; got <= 0; len <= 1; q_valid <= 0; cmd_full <= 0;
+            got <= 0; q_valid <= 0; cmd_full <= 0;
             rd_ptr <= 0; asm_we <= 0;
         end else begin
             q_valid <= pop;
@@ -362,18 +372,14 @@ module raster #(
                                       24'd0, 24'd0, 14'd0, fifo_q[23:0], 12'd0};
                     end else
                         cmd_full <= 1;
-                    got <= 0; len <= 1;
-                    issued <= pop ? 4'd1 : 4'd0;
-                end else begin
-                    got <= got + 1'b1; len <= cur_len;
-                    issued <= issued + (pop ? 4'd1 : 4'd0);
-                end
-            end else if (pop)
-                issued <= issued + 1'b1;
+                    got <= 0;
+                end else
+                    got <= got + 1'b1;
+            end
         end
     end
-    // Before word 0 arrives len is 1, so nothing is popped past a ROWS
-    // word; a TRI's three corner words follow once its opcode is seen.
+    // A word is fetched every clock until the flag says the command is whole;
+    // a vertex written from here does not stop the fetch.
 
     // ---- Palette and the nearest-colour table, one block RAM each ----
     // The program loads both before its first frame: the 256 palette entries

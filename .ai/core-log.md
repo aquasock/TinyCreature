@@ -2605,3 +2605,34 @@ Shorten the command assembler's FIFO-to-control path around `first_word`, `cur_l
 - User Test: NOT RUN
 
 ---
+
+## 79 COMMIT Unreleased 2026-10-19T22:42:42-07:00
+
+#### Coming From:
+
+Unreleased 4b2c269
+
+#### Purpose:
+
+Move the command assembler's last-word decision off the block RAM output path, place the depth core, deploy the clean seed, and have the user judge the plant bases.
+
+#### Outcome:
+
+`fpga/raster.sv` now stores each command word's last-word flag in bit 35 of its 36-bit FIFO word as the CPU pushes it: `wr_rem` counts the words of the command whose length it read from the opcode on the first push, so the assembler's `completing` is `q_valid && fifo_q[35]` and the `op_len` decode, the `cur_len` mux and the `got + 1` comparison are gone from the block RAM output path; `first_word`, `issued` and `len` were removed, and the direct `VTX` write keys on `got != 0 && cmd_op == 4'd5` because a vertex's last word is never its first. One word per clock is unchanged. The pixel-exact regression passed on the stored path at Land 1 frames 0 and 75 with CRCs `293e6ccf` and `5c2808f5`, and on the whole-triangle path with `TC_NO_STORE=1` at `11af32c7` and `929b08b1`, covering the 4-word TRI and 13-word TEX groupings as well as VTX, VTXT, ROWS, TRIV and TEXV. Synthesis kept `DFFRE` at 12,081, plain `DFF` at 1,946 and `DFFCE` at 1,531. One eight-seed sweep with unlimited legalization then placed every seed and routed seven of them; seed 7 was the only clean one, at 75.27 MHz bus and 92.00 MHz pixel using the measured SPINE19 and SPINE26 bridge pips. Seed 2 met both clocks at 76.30 and 94.30 MHz but used the refused SPINE27; seeds 3, 4, 5, 6 and 8 missed the 75 MHz bus at 74.63, 74.17, 72.72, 72.17 and 73.21 MHz; seed 1 was still routing when the user asked to stop the rest and was terminated. The build kept seed 7's `ae350_soc.bin` SHA-256 `96af99100554022831f24b0f711f7cb5105afb97dcc7be33b0d4c2fc86d2555a` and `ae350_soc.fs` SHA-256 `0b853f2dd4958e8c02f5df06a98498babd8eb21a3e8779805b6208fa03c25931`. The board was already up as TinyTang on `/dev/ttyACM0`, so no power cycle was needed; `tools/run_tang32_feel.sh` built and loaded the accepted Celtic scene -- the Tribal `2Celticgodland.lnd`, all 1,405 plants, Meph plant art, random rotations seed 1, 80 Q4 cards -- uploaded 135,252 bytes at 185.8 KB/s and 162,942 bytes of land, and handed the link back to the mouse. The user flew it and passed the plant-base depth change. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The depth buffer is on the board, so the next approved renderer stage is the terrain walker with the land in block RAM; seed 7 leaves 0.27 MHz of bus margin, so the walker's first step should be a timing measurement, and the assembler's remaining path or the enabled datapath banks should be revisited if it does not close. Entry 51's `BAD TINYCREATURE PIXELS` at 2,000 and 3,000 villager-sized cards should be re-run now that the depth core and vertex store are on the board. The art queue stands: authored-tall plant sprites, grass as ground cover, and the 13 sprites the green selection dropped if the tile store is widened from 64 to 128, which is another core rebuild and sweep.
+
+#### Files Modified:
+
+- README.md
+- fpga/raster.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
