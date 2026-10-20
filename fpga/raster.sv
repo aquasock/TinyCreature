@@ -197,14 +197,22 @@ module raster #(
     wire signed [15:0] xf_sx, xf_sy;
     wire [31:0] xf_depth;
     wire [1:0] xf_state;
-    wire xf_done;
+    wire xf_done, xf_in_ready;
+    wire [15:0] xf_out_gx, xf_out_gz;
+    wire [7:0] xf_out_alt;
+    // The unit takes a vertex when it says it is ready, so the start write
+    // is held until then; the pipeline is four rounds deep and takes one a
+    // round, so a start waits at most one round.
+    wire xf_go = xf_start && xf_in_ready;
     transform xf(.clk(clk), .resetn(resetn),
         .cam_x(cam_reg[0]), .cam_y(cam_reg[1]), .cam_z(cam_reg[2]),
         .sin_yaw(cam_reg[3]), .cos_yaw(cam_reg[4]),
         .sin_pitch(cam_reg[5]), .cos_pitch(cam_reg[6]),
-        .gx(xf_gx), .gz(xf_gz), .alt(xf_alt), .go(xf_start),
-        .sx(xf_sx), .sy(xf_sy), .depth(xf_depth), .state(xf_state),
-        .done(xf_done));
+        .in_valid(xf_start), .in_ready(xf_in_ready),
+        .in_gx(xf_gx), .in_gz(xf_gz), .in_alt(xf_alt),
+        .out_valid(xf_done), .out_gx(xf_out_gx), .out_gz(xf_out_gz),
+        .out_alt(xf_out_alt),
+        .sx(xf_sx), .sy(xf_sy), .depth(xf_depth), .state(xf_state));
     always @(posedge clk or negedge resetn)
         if (!resetn) begin
             xf_ready <= 0; xf_sx_r <= 0; xf_sy_r <= 0;
@@ -358,7 +366,7 @@ module raster #(
                     3'd4: xf_alt <= hwdata[7:0];
                     3'd5: xf_start <= hwdata[0];
                 endcase
-            end else if (xf_start) begin
+            end else if (xf_go) begin
                 xf_start <= 0;
             end else if (w_crc) begin
                 // One cycle of w_crc is the scan's start pulse.
@@ -1940,184 +1948,186 @@ module raster #(
                    : (crc_scanning ? crc_addr : cpu_raddr);
 endmodule
 
-// ---- A sequential signed multiplier: radix-4, one digit a clock ----
-// The transform's products are 32-bit, too wide for combinational LUT
-// multiplies at 75 MHz. This takes two's-complement magnitudes and applies
-// the sign at the end; the low 32 bits are the C's int32 product and the full
-// 64 are the screen product.
-module mulseq(
+// ---- One radix-4 product digit a clock, with no barrel shifter ----
+// Sixteen digits take sixteen clocks: the first in the load clock, from the
+// raw operands, and fifteen more after it. The shifted magnitude walks left
+// two bits a clock and the multiplier's remaining bits walk right two, so a
+// digit is a mux of the shifted magnitude, its double and their sum. One
+// clock after the last the multiplier's bits have all shifted out, so `p` is
+// the finished product and stays so until the next load.
+module mullane(
     input wire clk, input wire resetn,
-    input wire start,
+    input wire load,
     input wire signed [31:0] a, b,
-    output reg done,
-    output reg signed [63:0] p
+    output wire signed [63:0] p
 );
-    reg [4:0] step = 0;
-    reg busy = 0;
-    reg sign = 0;
-    reg [31:0] ua = 0, ub = 0;
+    reg [63:0] sh = 0;
+    reg [31:0] ub = 0;
     reg [63:0] acc = 0;
-    wire [1:0] digit = ub[2 * step +: 2];
-    wire [63:0] term = ({32'd0, ua} << (2 * step)) * digit;
-    wire [63:0] sum = acc + term;
+    reg sgn = 0;
+    wire [31:0] ua = a[31] ? -a : a;
+    wire [31:0] ubm = b[31] ? -b : b;
+    wire [63:0] sh0 = {32'd0, ua} << 30;
+    wire [1:0] da = ubm[31:30], db = ub[31:30];
+    wire [63:0] ta = da[1] ? (da[0] ? sh0 + (sh0 << 1) : sh0 << 1)
+                           : (da[0] ? sh0 : 64'd0);
+    wire [63:0] tb = db[1] ? (db[0] ? sh + (sh << 1) : sh << 1)
+                           : (db[0] ? sh : 64'd0);
+    // Two's-complement magnitudes and the sign at the end: the low 32 bits
+    // are the C's int32 product and the full 64 the screen product.
+    assign p = sgn ? -(acc + tb) : (acc + tb);
     always @(posedge clk or negedge resetn) begin
         if (!resetn) begin
-            busy <= 0; done <= 0; p <= 0;
-        end else if (start) begin
-            busy <= 1; done <= 0; step <= 5'd15; acc <= 0;
-            sign <= a[31] ^ b[31];
-            ua <= a[31] ? -a : a;
-            ub <= b[31] ? -b : b;
-        end else if (busy) begin
-            acc <= sum;
-            if (step == 0) begin
-                p <= sign ? -sum : sum;
-                done <= 1; busy <= 0;
-            end else
-                step <= step - 1'b1;
+            sh <= 0; ub <= 0; acc <= 0; sgn <= 0;
+        end else if (load) begin
+            sh <= sh0 >> 2; ub <= ubm << 2; acc <= ta;
+            sgn <= a[31] ^ b[31];
+        end else begin
+            sh <= sh >> 2; ub <= ub << 2; acc <= acc + tb;
         end
     end
 endmodule
 
 // ---- The transform unit: terrain.c's to_camera() and project_xy() ----
-// The camera products and the screen products run one at a time through the
-// sequential multiplier; the reciprocal is the radix-4 long division. The
-// arithmetic is the model's, checked vertex for vertex.
+// Four rounds of an eighteen-clock pipeline, one vertex a round: the four
+// yaw products, the four pitch products, the reciprocal, then the two screen
+// products. Phases nought to fifteen are the sixteen digits, phase sixteen
+// takes each round's result and the next vertex, and phase seventeen lets
+// the results settle before the next round loads them. A vertex is taken at
+// phase sixteen and its screen position is valid at the take four rounds
+// later; the arithmetic is the model's, checked vertex for vertex.
 module transform(
     input wire clk, input wire resetn,
     input wire signed [31:0] cam_x, cam_y, cam_z,
     input wire signed [31:0] sin_yaw, cos_yaw, sin_pitch, cos_pitch,
-    input wire [15:0] gx, gz,
-    input wire [7:0] alt,
-    input wire go,
+    input wire in_valid, output wire in_ready,
+    input wire [15:0] in_gx, in_gz, input wire [7:0] in_alt,
+    output reg out_valid,
+    output reg [15:0] out_gx, out_gz, output reg [7:0] out_alt,
     output reg signed [15:0] sx, sy,
-    output reg [31:0] depth,
-    output reg [1:0] state,
-    output reg done
+    output reg [31:0] depth, output reg [1:0] state
 );
-    localparam T_IDLE = 0, T_LOAD = 1, T_START = 2, T_WAIT = 3, T_DIV = 4;
-    reg [2:0] tstate = T_IDLE;
-    reg [3:0] prod = 0;
-    reg signed [63:0] prodv [0:9];
-    reg signed [31:0] tdx = 0, tdy = 0, tdz = 0;
-    reg signed [31:0] trz = 0, tx = 0, ty = 0, tz = 0;
-    reg tfront = 0;
-    reg mul_start = 0;
-    reg signed [31:0] mul_a = 0, mul_b = 0;
-    wire mul_done;
-    wire signed [63:0] mul_p;
-    mulseq mu(.clk(clk), .resetn(resetn), .start(mul_start),
-              .a(mul_a), .b(mul_b), .done(mul_done), .p(mul_p));
+    localparam PH_ACC = 5'd16, PH_END = 5'd17;
+    reg [4:0] ph = 0;
+    wire load = ph == 5'd0;
+    wire take = ph == PH_ACC;      // a round's results, and an acceptance
+    assign in_ready = take;
+    always @(posedge clk or negedge resetn)
+        if (!resetn) ph <= 0;
+        else ph <= ph == PH_END ? 5'd0 : ph + 5'd1;
 
-    reg [31:0] tq = 0, trem = 0;
-    reg [4:0] tstep = 0;
-    reg signed [31:0] tinv = 0;
-    wire [31:0] shift = (trem << 2) | ((32'd1 << 30) >> (2 * tstep)) & 3;
-    wire [31:0] den2 = tz << 1;
-    wire [31:0] den3 = tz + den2;
-    wire [1:0] digit = shift >= den3 ? 2'd3 :
-                       shift >= den2 ? 2'd2 : shift >= tz ? 2'd1 : 2'd0;
-    wire [31:0] rem_next = shift - (digit == 2'd3 ? den3 :
-                                    digit == 2'd2 ? den2 :
-                                    digit == 2'd1 ? tz : 32'd0);
-    wire [31:0] q_next = tq | ((32'd0 + digit) << (2 * tstep));
+    // ---- Round 1: the yaw products, which give rz and x ----
+    reg signed [31:0] i_dx = 0, i_dy = 0, i_dz = 0, i_sy = 0, i_cy = 0;
+    reg signed [31:0] i_sp = 0, i_cp = 0;
+    reg [15:0] i_gx = 0, i_gz = 0; reg [7:0] i_alt = 0; reg i_v = 0;
+    wire signed [63:0] q0, q1, q2, q3;
+    mullane y0(.clk(clk), .resetn(resetn), .load(load), .a(i_dx), .b(i_sy), .p(q0));
+    mullane y1(.clk(clk), .resetn(resetn), .load(load), .a(i_dz), .b(i_cy), .p(q1));
+    mullane y2(.clk(clk), .resetn(resetn), .load(load), .a(i_dx), .b(i_cy), .p(q2));
+    mullane y3(.clk(clk), .resetn(resetn), .load(load), .a(i_dz), .b(i_sy), .p(q3));
+    reg signed [31:0] a_rz = 0, a_x = 0, a_dy = 0, a_sp = 0, a_cp = 0;
+    reg [15:0] a_gx = 0, a_gz = 0; reg [7:0] a_alt = 0; reg a_v = 0;
 
-    reg signed [15:0] sxc = 0, syc = 0;
-    reg [1:0] stnext = 0;
-    // At the ninth product's completion prodv[9] is still the old value;
-    // the final screen takes that product from the multiplier itself.
-    wire signed [63:0] yprod = prod == 4'd9 ? mul_p : prodv[9];
-    wire signed [31:0] xoff = prodv[8] >>> 18;
-    wire signed [31:0] yoff = yprod >>> 18;
+    // ---- Round 2: the pitch products, which give y, z and the near test ----
+    wire signed [63:0] q4, q5, q6, q7;
+    mullane p0(.clk(clk), .resetn(resetn), .load(load), .a(a_dy), .b(a_cp), .p(q4));
+    mullane p1(.clk(clk), .resetn(resetn), .load(load), .a(a_rz), .b(a_sp), .p(q5));
+    mullane p2(.clk(clk), .resetn(resetn), .load(load), .a(a_rz), .b(a_cp), .p(q6));
+    mullane p3(.clk(clk), .resetn(resetn), .load(load), .a(a_dy), .b(a_sp), .p(q7));
+    wire signed [31:0] yv = ($signed(q4[31:0]) + $signed(q5[31:0])) >>> 14;
+    wire signed [31:0] zv = ($signed(q6[31:0]) - $signed(q7[31:0])) >>> 14;
+    reg signed [31:0] b_x = 0, b_y = 0, b_z = 0;
+    reg b_front = 0;
+    reg [15:0] b_gx = 0, b_gz = 0; reg [7:0] b_alt = 0; reg b_v = 0;
+
+    // ---- Round 3: (1 << 30) / z, the C's int division ----
+    // Two quotient bits a clock, radix 4, against z, 2z and 3z. The phase is
+    // the digit, fifteen down to nought over phases nought to fifteen, so the
+    // quotient is ready in the phase-sixteen take.
+    reg [31:0] dv_q = 0, dv_rem = 0, dv_inv = 0;
+    wire [4:0] dvs = 5'd15 - ph[3:0];
+    wire [31:0] dv_cur_rem = ph == 5'd0 ? 32'd0 : dv_rem;
+    wire [31:0] dv_cur_q = ph == 5'd0 ? 32'd0 : dv_q;
+    wire [31:0] dv_shift = (dv_cur_rem << 2) |
+                           (((32'd1 << 30) >> (2 * dvs)) & 3);
+    wire [31:0] dv_den2 = b_z << 1;
+    wire [31:0] dv_den3 = b_z + dv_den2;
+    wire [1:0] dv_digit = dv_shift >= dv_den3 ? 2'd3 :
+                          dv_shift >= dv_den2 ? 2'd2 :
+                          dv_shift >= b_z     ? 2'd1 : 2'd0;
+    wire [31:0] dv_rem_n = dv_shift - (dv_digit == 2'd3 ? dv_den3 :
+                                       dv_digit == 2'd2 ? dv_den2 :
+                                       dv_digit == 2'd1 ? b_z : 32'd0);
+    wire [31:0] dv_q_n = dv_cur_q | ({30'd0, dv_digit} << (2 * dvs));
+    reg signed [31:0] c_x = 0, c_y = 0, c_inv = 0;
+    reg c_front = 0;
+    reg [15:0] c_gx = 0, c_gz = 0; reg [7:0] c_alt = 0; reg c_v = 0;
+    always @(posedge clk or negedge resetn) begin
+        if (!resetn) begin
+            dv_q <= 0; dv_rem <= 0; dv_inv <= 0;
+        end else if (ph <= 5'd15) begin
+            dv_q <= dv_q_n; dv_rem <= dv_rem_n;
+            if (ph == 5'd15) dv_inv <= dv_q_n;
+        end
+    end
+
+    // ---- Round 4: x and y through the reciprocal ----
+    wire signed [63:0] q8, q9;
+    mullane s0(.clk(clk), .resetn(resetn), .load(load), .a(c_x), .b(c_inv), .p(q8));
+    mullane s1(.clk(clk), .resetn(resetn), .load(load), .a(c_y), .b(c_inv), .p(q9));
+    wire signed [31:0] xoff = q8 >>> 18;
+    wire signed [31:0] yoff = q9 >>> 18;
     wire signed [31:0] sxr = 32'sd2560 + xoff;
     wire signed [31:0] syr = 32'sd1440 - yoff;
     wire wide = sxr > 32'sd32767 || sxr < -32'sd32768 ||
                 syr > 32'sd32767 || syr < -32'sd32768;
-
-    wire signed [31:0] wx = $signed({16'd0, gx}) * 32'sd160;
-    wire signed [31:0] wy = ($signed({24'd0, alt}) * 32'sd2744) >>> 8;
-    wire signed [31:0] wz = $signed({16'd0, gz}) * 32'sd160;
-
-    always @(*) begin
-        case (prod)
-            4'd0: begin mul_a = tdx; mul_b = sin_yaw; end
-            4'd1: begin mul_a = tdz; mul_b = cos_yaw; end
-            4'd2: begin mul_a = tdx; mul_b = cos_yaw; end
-            4'd3: begin mul_a = tdz; mul_b = sin_yaw; end
-            4'd4: begin mul_a = tdy; mul_b = cos_pitch; end
-            4'd5: begin mul_a = trz; mul_b = sin_pitch; end
-            4'd6: begin mul_a = trz; mul_b = cos_pitch; end
-            4'd7: begin mul_a = tdy; mul_b = sin_pitch; end
-            4'd8: begin mul_a = tx; mul_b = tinv; end
-            default: begin mul_a = ty; mul_b = tinv; end
-        endcase
-    end
+    wire signed [15:0] sxc = sxr > 32'sd32767 ? 16'sd32767 :
+                             sxr < -32'sd32768 ? -16'sd32768 : sxr[15:0];
+    wire signed [15:0] syc = syr > 32'sd32767 ? 16'sd32767 :
+                             syr < -32'sd32768 ? -16'sd32768 : syr[15:0];
+    wire signed [31:0] wx = $signed({16'd0, in_gx}) * 32'sd160;
+    wire signed [31:0] wy = ($signed({24'd0, in_alt}) * 32'sd2744) >>> 8;
+    wire signed [31:0] wz = $signed({16'd0, in_gz}) * 32'sd160;
 
     always @(posedge clk or negedge resetn) begin
         if (!resetn) begin
-            tstate <= T_IDLE; done <= 0; sx <= 0; sy <= 0;
-            depth <= 0; state <= 0;
-        end else case (tstate)
-            T_IDLE:
-                if (go) begin
-                    done <= 0;
-                    tdx <= wx - cam_x; tdy <= wy - cam_y; tdz <= wz - cam_z;
-                    // The near test uses camera-space z, which needs the
-                    // rotation; the products run first and the test is made
-                    // after the seventh.
-                    prod <= 0; tstate <= T_LOAD;
-                end
-            T_LOAD: begin
-                mul_start <= 1; tstate <= T_START;
+            a_rz <= 0; a_x <= 0; a_dy <= 0; a_sp <= 0; a_cp <= 0;
+            a_gx <= 0; a_gz <= 0; a_alt <= 0; a_v <= 0;
+            b_x <= 0; b_y <= 0; b_z <= 0; b_front <= 0;
+            b_gx <= 0; b_gz <= 0; b_alt <= 0; b_v <= 0;
+            c_x <= 0; c_y <= 0; c_inv <= 0; c_front <= 0;
+            c_gx <= 0; c_gz <= 0; c_alt <= 0; c_v <= 0;
+            i_dx <= 0; i_dy <= 0; i_dz <= 0; i_sy <= 0; i_cy <= 0;
+            i_sp <= 0; i_cp <= 0; i_gx <= 0; i_gz <= 0; i_alt <= 0; i_v <= 0;
+            out_valid <= 0; out_gx <= 0; out_gz <= 0; out_alt <= 0;
+            sx <= 0; sy <= 0; depth <= 0; state <= 0;
+        end else if (take) begin
+            // Each round's result is taken from the registers as they stood
+            // before this clock, which is the vertex that round worked on.
+            a_rz <= ($signed(q0[31:0]) + $signed(q1[31:0])) >>> 14;
+            a_x  <= ($signed(q2[31:0]) - $signed(q3[31:0])) >>> 14;
+            a_dy <= i_dy; a_sp <= i_sp; a_cp <= i_cp;
+            a_gx <= i_gx; a_gz <= i_gz; a_alt <= i_alt; a_v <= i_v;
+            b_x <= a_x; b_y <= yv; b_z <= zv;
+            b_front <= zv >= 32'sd128;
+            b_gx <= a_gx; b_gz <= a_gz; b_alt <= a_alt; b_v <= a_v;
+            c_x <= b_x; c_y <= b_y; c_inv <= dv_inv;
+            c_front <= b_front;
+            c_gx <= b_gx; c_gz <= b_gz; c_alt <= b_alt; c_v <= b_v;
+            if (c_front) begin
+                sx <= sxc; sy <= syc; depth <= c_inv;
+                state <= wide ? 2'd2 : 2'd0;
+            end else begin
+                sx <= 0; sy <= 0; depth <= 0; state <= 2'd1;
             end
-            T_START: begin
-                // The multiplier's done is cleared by this start; checking it
-                // in this cycle would take the old product.
-                mul_start <= 0; tstate <= T_WAIT;
-            end
-            T_WAIT: begin
-                if (mul_done) begin
-                    prodv[prod] <= mul_p;
-                    case (prod)
-                        4'd1: trz <= ($signed(prodv[0][31:0]) + $signed(mul_p[31:0])) >>> 14;
-                        4'd3: tx <= ($signed(prodv[2][31:0]) - $signed(mul_p[31:0])) >>> 14;
-                        4'd5: ty <= ($signed(prodv[4][31:0]) + $signed(mul_p[31:0])) >>> 14;
-                        4'd7: tz <= ($signed(prodv[6][31:0]) - $signed(mul_p[31:0])) >>> 14;
-                        default: ;
-                    endcase
-                    if (prod == 4'd7) begin
-                        if ((($signed(prodv[6][31:0]) - $signed(mul_p[31:0])) >>> 14) < 32'sd128) begin
-                            sx <= 0; sy <= 0; depth <= 0; state <= 2'd1;
-                            done <= 1; tstate <= T_IDLE;
-                        end else begin
-                            tq <= 0; trem <= 0; tstep <= 5'd15;
-                            tstate <= T_DIV;
-                        end
-                    end else if (prod == 4'd9) begin
-                        sx <= sxc; sy <= syc; depth <= tinv;
-                        state <= stnext; done <= 1; tstate <= T_IDLE;
-                    end else begin
-                        prod <= prod + 1'b1; tstate <= T_LOAD;
-                    end
-                end
-            end
-            T_DIV: begin
-                trem <= rem_next; tq <= q_next;
-                if (tstep == 0) begin
-                    tinv <= q_next; prod <= 4'd8; tstate <= T_LOAD;
-                end else
-                    tstep <= tstep - 1'b1;
-            end
-            default: tstate <= T_IDLE;
-        endcase
-    end
-
-    // The final screen values, from the last two products.
-    always @(*) begin
-        sxc = sxr > 32'sd32767 ? 16'sd32767 :
-              sxr < -32'sd32768 ? -16'sd32768 : sxr[15:0];
-        syc = syr > 32'sd32767 ? 16'sd32767 :
-              syr < -32'sd32768 ? -16'sd32768 : syr[15:0];
-        stnext = wide ? 2'd2 : 2'd0;
+            out_valid <= c_v;
+            out_gx <= c_gx; out_gz <= c_gz; out_alt <= c_alt;
+            i_dx <= wx - cam_x; i_dy <= wy - cam_y; i_dz <= wz - cam_z;
+            i_sy <= sin_yaw; i_cy <= cos_yaw;
+            i_sp <= sin_pitch; i_cp <= cos_pitch;
+            i_gx <= in_gx; i_gz <= in_gz; i_alt <= in_alt;
+            i_v <= in_valid;
+        end else
+            out_valid <= 0;
     end
 endmodule

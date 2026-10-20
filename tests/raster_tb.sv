@@ -41,21 +41,25 @@ module raster_tb;
         .gx(vm_gx), .gz(vm_gz), .alt(vm_alt),
         .sx(vm_sx), .sy(vm_sy), .depth(vm_depth), .state(vm_state));
 
-    // The synthesised-shaped unit, checked against the same trace.
+    // The pipelined unit, checked against the same trace.
     reg [15:0] eng_gx = 0, eng_gz = 0;
     reg [7:0] eng_alt = 0;
-    reg eng_go = 0;
+    reg eng_valid = 0;
+    wire eng_ready, eng_out_valid;
+    wire [15:0] eng_out_gx, eng_out_gz;
+    wire [7:0] eng_out_alt;
     wire signed [15:0] eng_sx, eng_sy;
     wire [31:0] eng_depth;
     wire [1:0] eng_state;
-    wire eng_done;
     transform eng(.clk(clk), .resetn(resetn),
         .cam_x(vm_cam_x), .cam_y(vm_cam_y), .cam_z(vm_cam_z),
         .sin_yaw(vm_sin_yaw), .cos_yaw(vm_cos_yaw),
         .sin_pitch(vm_sin_pitch), .cos_pitch(vm_cos_pitch),
-        .gx(eng_gx), .gz(eng_gz), .alt(eng_alt), .go(eng_go),
-        .sx(eng_sx), .sy(eng_sy), .depth(eng_depth), .state(eng_state),
-        .done(eng_done));
+        .in_valid(eng_valid), .in_ready(eng_ready),
+        .in_gx(eng_gx), .in_gz(eng_gz), .in_alt(eng_alt),
+        .out_valid(eng_out_valid), .out_gx(eng_out_gx), .out_gz(eng_out_gz),
+        .out_alt(eng_out_alt),
+        .sx(eng_sx), .sy(eng_sy), .depth(eng_depth), .state(eng_state));
 
     integer errors = 0;
 
@@ -285,124 +289,198 @@ module raster_tb;
 
     // The transform model against the CPU's vertex trace: the K line is the
     // frame's camera, and each V line is a corner's grid position, altitude
-    // and the CPU's screen position, depth and state.
+    // and the CPU's screen position, depth and state. The trace is read into
+    // arrays first, because the last two passes replay it.
     task automatic check_vert(input [8*256-1:0] path);
-        integer f, gx, gz, alt, esx, esy, edepth, estate, n, bad, guard;
-        integer bsx, bsy, bd, bst;
+        integer f, n, i, bad, guard, gap, bsx, bsy, bd, bst;
+        integer gxa [0:255], gza [0:255], alta [0:255];
+        integer esx [0:255], esy [0:255], ed [0:255], est [0:255];
+        integer iss, seen, cyc, firstc, lastc;
+        reg [31:0] q;
         begin
             f = $fopen(path, "r");
             if (f == 0) begin
                 $display("FAIL: cannot open %0s", path);
                 errors = errors + 1;
             end else begin
+                n = 0;
                 if ($fscanf(f, "K %d %d %d %d %d %d %d\n",
-                            vm_cam_x, vm_cam_y, vm_cam_z,
-                            vm_sin_yaw, vm_cos_yaw,
-                            vm_sin_pitch, vm_cos_pitch) != 7) begin
+                            vm_cam_x, vm_cam_y, vm_cam_z, vm_sin_yaw,
+                            vm_cos_yaw, vm_sin_pitch, vm_cos_pitch) != 7) begin
                     $display("FAIL: vertex trace camera");
                     errors = errors + 1;
                 end else begin
-                    n = 0; bad = 0;
                     while ($fscanf(f, "V %d %d %d %d %d %d %d\n",
-                                   gx, gz, alt, esx, esy, edepth, estate) == 7) begin
-                        vm_gx = gx; vm_gz = gz; vm_alt = alt;
-                        eng_gx = gx; eng_gz = gz; eng_alt = alt;
+                                   gxa[n], gza[n], alta[n], esx[n], esy[n],
+                                   ed[n], est[n]) == 7 && n < 256)
+                        n = n + 1;
+                    $fclose(f);
+                    bad = 0;
+
+                    // The model against the CPU's own numbers.
+                    for (i = 0; i < n; i = i + 1) begin
+                        vm_gx = gxa[i]; vm_gz = gza[i]; vm_alt = alta[i];
                         #1;
-                        if ($signed(vm_sx) !== $signed(esx[15:0]) ||
-                            $signed(vm_sy) !== $signed(esy[15:0]) ||
-                            vm_depth !== edepth || vm_state !== estate) begin
+                        if ($signed(vm_sx) !== $signed(esx[i][15:0]) ||
+                            $signed(vm_sy) !== $signed(esy[i][15:0]) ||
+                            vm_depth !== ed[i] || vm_state !== est[i][1:0]) begin
                             if (bad < 4)
                                 $display("FAIL: vert model %0d: %0d,%0d alt %0d grid %0d %0d %0d %0d, model %0d %0d %0d %0d",
-                                         n, gx, gz, alt, esx, esy, edepth, estate,
-                                         $signed(vm_sx), $signed(vm_sy), vm_depth, vm_state);
+                                         i, gxa[i], gza[i], alta[i], esx[i], esy[i],
+                                         ed[i], est[i], $signed(vm_sx),
+                                         $signed(vm_sy), vm_depth, vm_state);
                             bad = bad + 1;
                         end
-                        eng_go = 1;
-                        @(posedge clk);
-                        #1 eng_go = 0;
+                    end
+
+                    // The unit one vertex at a time, through its handshake.
+                    for (i = 0; i < n; i = i + 1) begin
+                        eng_gx = gxa[i]; eng_gz = gza[i]; eng_alt = alta[i];
+                        eng_valid = 1;
+                        @(negedge clk);
                         guard = 0;
-                        while (!eng_done && guard < 800) begin
-                            @(posedge clk);
+                        while (!eng_ready && guard < 64) begin
+                            @(negedge clk);
                             guard = guard + 1;
                         end
-                        if (!eng_done) begin
-                            if (bad < 4)
-                                $display("FAIL: transform timeout at %0d", n);
-                            bad = bad + 1;
+                        @(posedge clk); #1;
+                        eng_valid = 0;
+                        guard = 0;
+                        while (!eng_out_valid && guard < 256) begin
+                            @(posedge clk); #1;
+                            guard = guard + 1;
                         end
-                        if ($signed(eng_sx) !== $signed(esx[15:0]) ||
-                            $signed(eng_sy) !== $signed(esy[15:0]) ||
-                            eng_depth !== edepth || eng_state !== estate) begin
+                        if (!eng_out_valid) begin
+                            if (bad < 4)
+                                $display("FAIL: transform timeout at %0d", i);
+                            bad = bad + 1;
+                        end else if ($signed(eng_sx) !== $signed(esx[i][15:0]) ||
+                                     $signed(eng_sy) !== $signed(esy[i][15:0]) ||
+                                     eng_depth !== ed[i] ||
+                                     eng_state !== est[i][1:0] ||
+                                     eng_out_gx !== gxa[i][15:0] ||
+                                     eng_out_gz !== gza[i][15:0] ||
+                                     eng_out_alt !== alta[i][7:0]) begin
                             if (bad < 4)
                                 $display("FAIL: transform %0d: %0d,%0d alt %0d grid %0d %0d %0d %0d, unit %0d %0d %0d %0d",
-                                         n, gx, gz, alt, esx, esy, edepth, estate,
-                                         $signed(eng_sx), $signed(eng_sy), eng_depth, eng_state);
+                                         i, gxa[i], gza[i], alta[i], esx[i], esy[i],
+                                         ed[i], est[i], $signed(eng_sx),
+                                         $signed(eng_sy), eng_depth, eng_state);
                             bad = bad + 1;
                         end
-                        n = n + 1;
                     end
-                    $fclose(f);
-                    // The same trace through the raster's camera file and
-                    // transform registers, not the testbench instance.
-                    f = $fopen(path, "r");
-                    if (f == 0) begin
-                        $display("FAIL: cannot reopen %0s", path);
-                        errors = errors + 1;
-                    end else begin
-                        if ($fscanf(f, "K %d %d %d %d %d %d %d\n",
-                                    vm_cam_x, vm_cam_y, vm_cam_z,
-                                    vm_sin_yaw, vm_cos_yaw,
-                                    vm_sin_pitch, vm_cos_pitch) != 7) begin
-                            $display("FAIL: bus transform camera");
-                            errors = errors + 1;
+                    if (bad == 0)
+                        $display("vertices: %0d match the CPU trace", n);
+
+                    // The same vertices issued back to back, as the walker
+                    // will: one every round, results in issue order, each
+                    // carrying the grid point it came from. The clocks a
+                    // vertex costs here are the walker's budget.
+                    iss = 0; seen = 0; cyc = 0; firstc = -1; lastc = -1;
+                    if (n > 0) begin
+                        eng_gx = gxa[0]; eng_gz = gza[0]; eng_alt = alta[0];
+                        eng_valid = 1;
+                    end
+                    while (seen < n) begin
+                        @(negedge clk);
+                        if (eng_ready && eng_valid) begin
+                            @(posedge clk); #1;
+                            cyc = cyc + 1;
+                            iss = iss + 1;
+                            if (iss < n) begin
+                                eng_gx = gxa[iss]; eng_gz = gza[iss];
+                                eng_alt = alta[iss];
+                            end else
+                                eng_valid = 0;
                         end else begin
-                            write(15'h006c, 0); write(15'h0070, vm_cam_x);
-                            write(15'h006c, 1); write(15'h0070, vm_cam_y);
-                            write(15'h006c, 2); write(15'h0070, vm_cam_z);
-                            write(15'h006c, 3); write(15'h0070, vm_sin_yaw);
-                            write(15'h006c, 4); write(15'h0070, vm_cos_yaw);
-                            write(15'h006c, 5); write(15'h0070, vm_sin_pitch);
-                            write(15'h006c, 6); write(15'h0070, vm_cos_pitch);
-                            while ($fscanf(f, "V %d %d %d %d %d %d %d\n",
-                                           gx, gz, alt, esx, esy, edepth, estate) == 7) begin
-                                write(15'h0074, gx);
-                                write(15'h0078, gz);
-                                write(15'h007c, alt);
-                                write(15'h0080, 32'h1);
-                                read(15'h0084, q);
-                                guard = 0;
-                                while (!q[0] && guard < 800) begin
-                                    read(15'h0084, q);
-                                    guard = guard + 1;
-                                end
-                                if (!q[0]) begin
-                                    if (bad < 4)
-                                        $display("FAIL: bus transform timeout at %0d", n);
+                            @(posedge clk); #1;
+                            cyc = cyc + 1;
+                        end
+                        if (eng_out_valid) begin
+                            if (firstc < 0) firstc = cyc;
+                            lastc = cyc;
+                            if (seen >= n) begin
+                                $display("FAIL: stream: more results than vertices");
+                                errors = errors + 1;
+                                seen = seen + 1;
+                            end else begin
+                                if ($signed(eng_sx) !== $signed(esx[seen][15:0]) ||
+                                    $signed(eng_sy) !== $signed(esy[seen][15:0]) ||
+                                    eng_depth !== ed[seen] ||
+                                    eng_state !== est[seen][1:0] ||
+                                    eng_out_gx !== gxa[seen][15:0] ||
+                                    eng_out_gz !== gza[seen][15:0] ||
+                                    eng_out_alt !== alta[seen][7:0]) begin
+                                    if (bad < 8)
+                                        $display("FAIL: stream %0d: grid %0d %0d alt %0d, cpu %0d %0d %0d %0d, unit %0d %0d %0d %0d key %0d %0d %0d",
+                                                 seen, gxa[seen], gza[seen], alta[seen],
+                                                 esx[seen], esy[seen], ed[seen],
+                                                 est[seen], $signed(eng_sx),
+                                                 $signed(eng_sy), eng_depth,
+                                                 eng_state, eng_out_gx, eng_out_gz,
+                                                 eng_out_alt);
                                     bad = bad + 1;
-                                end else begin
-                                    read(15'h0088, q); bsx = $signed(q[15:0]);
-                                    read(15'h008c, q); bsy = $signed(q[15:0]);
-                                    read(15'h0090, q); bd = q;
-                                    read(15'h0094, q); bst = q[1:0];
-                                    if (bsx !== $signed(esx[15:0]) ||
-                                        bsy !== $signed(esy[15:0]) ||
-                                        bd !== edepth || bst !== estate) begin
-                                        if (bad < 4)
-                                            $display("FAIL: bus transform %0d: grid %0d %0d %0d %0d, unit %0d %0d %0d %0d",
-                                                     n, esx, esy, edepth, estate,
-                                                     bsx, bsy, bd, bst);
-                                        bad = bad + 1;
-                                    end
                                 end
+                                seen = seen + 1;
                             end
                         end
-                        $fclose(f);
+                    end
+                    gap = 0;
+                    if (n > 1) begin
+                        gap = (lastc - firstc) / (n - 1);
+                        $display("stream: %0d vertices back to back, %0d clocks a vertex",
+                                 n, gap);
+                        if (gap > 20) begin
+                            $display("FAIL: stream costs %0d clocks a vertex", gap);
+                            bad = bad + 1;
+                        end
+                    end
+
+                    // The same trace through the raster's camera file and
+                    // transform registers, not the testbench instance.
+                    write(15'h006c, 0); write(15'h0070, vm_cam_x);
+                    write(15'h006c, 1); write(15'h0070, vm_cam_y);
+                    write(15'h006c, 2); write(15'h0070, vm_cam_z);
+                    write(15'h006c, 3); write(15'h0070, vm_sin_yaw);
+                    write(15'h006c, 4); write(15'h0070, vm_cos_yaw);
+                    write(15'h006c, 5); write(15'h0070, vm_sin_pitch);
+                    write(15'h006c, 6); write(15'h0070, vm_cos_pitch);
+                    for (i = 0; i < n; i = i + 1) begin
+                        write(15'h0074, gxa[i]);
+                        write(15'h0078, gza[i]);
+                        write(15'h007c, alta[i]);
+                        write(15'h0080, 32'h1);
+                        read(15'h0084, q);
+                        guard = 0;
+                        while (!q[0] && guard < 800) begin
+                            read(15'h0084, q);
+                            guard = guard + 1;
+                        end
+                        if (!q[0]) begin
+                            if (bad < 4)
+                                $display("FAIL: bus transform timeout at %0d", i);
+                            bad = bad + 1;
+                        end else begin
+                            read(15'h0088, q); bsx = $signed(q[15:0]);
+                            read(15'h008c, q); bsy = $signed(q[15:0]);
+                            read(15'h0090, q); bd = q;
+                            read(15'h0094, q); bst = q[1:0];
+                            if (bsx !== $signed(esx[i][15:0]) ||
+                                bsy !== $signed(esy[i][15:0]) ||
+                                bd !== ed[i] || bst !== est[i][1:0]) begin
+                                if (bad < 4)
+                                    $display("FAIL: bus transform %0d: grid %0d %0d %0d %0d, unit %0d %0d %0d %0d",
+                                             i, esx[i], esy[i], ed[i], est[i],
+                                             bsx, bsy, bd, bst);
+                                bad = bad + 1;
+                            end
+                        end
                     end
                     if (bad) begin
                         $display("FAIL: transform: %0d of %0d vertices wrong", bad, n);
                         errors = errors + 1;
                     end else
-                        $display("vertices: %0d match the CPU trace", n);
+                        $display("transform: model, unit, stream and bus match the CPU");
                 end
             end
         end

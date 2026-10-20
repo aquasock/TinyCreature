@@ -27,3 +27,33 @@ None.
 - User Test: N/A
 
 ---
+## 2 COMMIT Unreleased 2026-10-20T08:06:46-07:00
+
+#### Coming From:
+
+Unreleased 886a986
+
+#### Purpose:
+
+Replace the transform's one-product-at-a-time arithmetic with a four-round pipeline of multiplier lanes, so that a vertex costs a round rather than about two hundred clocks without moving a bit of any result.
+
+#### Outcome:
+
+The transform is four rounds of an eighteen-clock pipeline now, one vertex a round: the four yaw products, the four pitch products, the reciprocal on a lane of its own, then the two screen products, with `go` and `done` replaced by a ready/valid handshake that returns each vertex's grid key beside its screen position. Ten lanes of the new `mullane` do the multiplying, and the barrel shifter the old `mulseq` needed for its variable digit position is gone: the shifted magnitude walks right two bits a clock while the multiplier's remaining bits walk left, so a radix-4 digit is a mux of the magnitude, its double and their sum. The first build of the lane was wrong twice -- it walked the magnitude left, and it took the first digit from the multiplier's low bits instead of its top two -- and `tests/vert_model.sv` caught both at the first vertex. `tests/raster_tb.sv` now reads the trace into arrays once and checks four paths against it: the model, the unit worked one vertex at a time, all 256 vertices issued back to back, and the raster's camera file and registers, with each result's returned key checked against the key that was issued. The stream measures 18 clocks a vertex, where the sequential unit took about 208, so Land 1's 54,225 unique grid vertices would cost 13.0 ms of a frame at 75 MHz rather than 150. Both lands still pass, 21,223 and 26,542 cells against the model and 256 vertices through all four paths, and the frames are unchanged at `293e6ccf` and `5c2808f5` and at `4bb0a03f` and `9013c700` because nothing draws through the transform yet. The ten lanes add 12 `LUT4` and 1,136 `ALU` to the core rather than the two thousand `LUT4` a copy of the old lane would have cost, the synthesis being 20,645 `LUT4` against 20,633, 10,257 `ALU` against 9,121, 17,472 `DFFRE` and 3,171 `DFFCE` with 2,000 `DFF` against 18,056 and 1,767, and 293 of 340 block RAMs unchanged; it has not been placed and routed, which stays with the walker's cycle. Celtic had to be run from `Data/Landscape/Tribal/2Celticgodland.lnd`, the top-level copy of the same size being refused by `tools/convert_land.py` as non-standard. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md`, `.ai/core-reference.md` and `.ai/core-syntax.md` are unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+Connect the walker's cell FIFO to the unit's handshake: fetch each drawn cell's corners from the packed land store, de-duplicate them by the CPU's slot keys, transform them a round apart and write the slots the triangle assembly reads; then the near-plane and guard clip and the triangle assembly into the existing setup, still against the traces; then a build, an eight-seed sweep and the user's flight test.
+
+#### Files Modified:
+
+- fpga/raster.sv
+- tests/raster_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---
