@@ -125,6 +125,13 @@ module raster_tb;
                     // A card: four words after its opcode. The fabric counts
                     // it as a fill, not a triangle, so it is skipped here.
                     rest = 4;
+                end else if (rest == 0 && w[31:28] == 4'd5) begin
+                    rest = 1;          // a shaded vertex: its corner word
+                end else if (rest == 0 && w[31:28] == 4'd6) begin
+                    rest = 2;          // a textured vertex: corner, u and z
+                end else if (rest == 0 && w[31]) begin
+                    // TRIV or TEXV: one word, one triangle.
+                    tris_sent[slot] = tris_sent[slot] + 1;
                 end else if (rest != 0)
                     rest = rest - 1;
                 write(15'h00, w);

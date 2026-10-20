@@ -954,12 +954,12 @@ static int clip_guard(int32_t *x, int32_t *y, int32_t *wa, int32_t *wb, int n)
 // send it if it faces the camera and reaches the screen. Front faces wind
 // clockwise on the screen (y down), which is the order that makes the
 // rasterizer's edge functions >= 0 inside.
-static void emit(const int32_t *x, const int32_t *y, uint32_t colours)
+static int culled(const int32_t *x, const int32_t *y)
 {
 	int64_t cross = (int64_t)(x[1] - x[0]) * (y[2] - y[0]) -
 			(int64_t)(y[1] - y[0]) * (x[2] - x[0]);
 	if (cross >= 0)
-		return;
+		return 1;
 	int32_t x_lo = x[0], x_hi = x[0], y_lo = y[0], y_hi = y[0];
 	for (int i = 1; i < 3; i++) {
 		x_lo = x[i] < x_lo ? x[i] : x_lo;
@@ -969,9 +969,14 @@ static void emit(const int32_t *x, const int32_t *y, uint32_t colours)
 	}
 	// No pixel centre on the screen in its box: the rasterizer would fill
 	// nothing, so it is not sent.
-	if (((x_lo + 7) >> 4) > ((x_hi - 8) >> 4) || x_hi < 8 ||
-	    x_lo + 7 >= TC_WIDTH * 16 || ((y_lo + 7) >> 4) > ((y_hi - 8) >> 4) ||
-	    y_hi < 8 || y_lo + 7 >= TC_HEIGHT * 16)
+	return ((x_lo + 7) >> 4) > ((x_hi - 8) >> 4) || x_hi < 8 ||
+	       x_lo + 7 >= TC_WIDTH * 16 || ((y_lo + 7) >> 4) > ((y_hi - 8) >> 4) ||
+	       y_hi < 8 || y_lo + 7 >= TC_HEIGHT * 16;
+}
+
+static void emit(const int32_t *x, const int32_t *y, uint32_t colours)
+{
+	if (culled(x, y))
 		return;
 #if TC_PHASE_DETAIL
 	uint64_t t0 = profile_cell ? out->now() : 0;
@@ -980,6 +985,51 @@ static void emit(const int32_t *x, const int32_t *y, uint32_t colours)
 		out->phase[TC_PHASE_EMIT] += out->now() - t0;
 #else
 	out->triangle(out->ctx, x, y, colours);
+#endif
+	counts->triangles++;
+}
+
+/* The land's slots in the fabric's vertex store, and which vertex each holds
+ * this frame, as its index in the grid plus one so that zero is empty. A
+ * vertex's slot is fixed by where it is in the walk: the z front its row was
+ * reached from, the row's parity and its column modulo 256. The three corners
+ * of a cell's triangle differ in column or in parity, so no triangle names one
+ * slot twice; a cell shares its two corners on one side with the cell the walk
+ * drew before it on the same front of the same row, and its two in the row
+ * nearer the far side with the row before on that front, and those are the
+ * corners not sent again. A land wider than 256 cells costs a second send
+ * of a vertex the walk's two x fronts reach 256 columns apart, and nothing
+ * else. A row narrower than 256 cells leaves its last slots unused, and the
+ * cards borrow four of them, clearing what they held. */
+#define CARD_SLOT  (TC_SLOTS - 4)
+static uint32_t slot_owner[TC_SLOTS];
+static uint32_t walk_front;
+
+/* One triangle of the land, through the vertex store: culled exactly as
+ * emit() culls, then each corner the store does not already hold for this
+ * frame is sent, and the triangle names the three. The fill draws it as it
+ * would the same triangle sent whole, colour for colour. */
+static void emit_stored(const int32_t *x, const int32_t *y, uint32_t colours,
+			const struct vertex *const *v, const uint32_t *slot)
+{
+	if (culled(x, y))
+		return;
+#if TC_PHASE_DETAIL
+	uint64_t t0 = profile_cell ? out->now() : 0;
+#endif
+	for (unsigned k = 0; k < 3; k++) {
+		uint32_t id = (uint32_t)(v[k] - vertices) + 1u;
+		if (slot_owner[slot[k]] == id)
+			continue;
+		slot_owner[slot[k]] = id;
+		struct tc_vertex s = {.slot = slot[k], .x = x[k], .y = y[k],
+				      .colour = colours >> (8 * k) & 0xffu};
+		out->vertex(out->ctx, &s);
+	}
+	out->tri(out->ctx, slot[0], slot[1], slot[2], 0);
+#if TC_PHASE_DETAIL
+	if (t0)
+		out->phase[TC_PHASE_EMIT] += out->now() - t0;
 #endif
 	counts->triangles++;
 }
@@ -1078,7 +1128,7 @@ static void submit_slow(const struct vertex *a, const struct vertex *b,
 // straight from the record, with none of the clip machinery's stack; a
 // corner beyond the guard band falls through to submit_slow().
 static void submit(const struct vertex *a, const struct vertex *b,
-		   const struct vertex *c, uint32_t colours)
+		   const struct vertex *c, uint32_t colours, const uint32_t *slot)
 {
 #if TC_PHASE_DETAIL
 	uint64_t t0 = profile_cell ? out->now() : 0;
@@ -1091,7 +1141,11 @@ static void submit(const struct vertex *a, const struct vertex *b,
 			if (x[i] < -GUARD || x[i] > GUARD || y[i] < -GUARD || y[i] > GUARD)
 				break;
 		if (i == 3) {
-			emit(x, y, colours);
+			if (out->tri != NULL) {
+				const struct vertex *v[3] = {a, b, c};
+				emit_stored(x, y, colours, v, slot);
+			} else
+				emit(x, y, colours);
 #if TC_PHASE_DETAIL
 			if (t0)
 				out->phase[TC_PHASE_SUBMIT] += out->now() - t0;
@@ -1159,27 +1213,36 @@ static void draw_cell(uint32_t gx, uint32_t gz)
 	uint32_t cbl = land->colour[(gz + 1) * verts_x + gx];
 	uint32_t cbr = land->colour[(gz + 1) * verts_x + gx + 1];
 	int32_t px = cam_x - (int32_t)gx * CELL, pz = cam_z - (int32_t)gz * CELL;
+	// The corners' slots in the vertex store, which emit_stored() explains.
+	uint32_t row0 = walk_front << 9 | (gz & 1u) << 8;
+	uint32_t row1 = walk_front << 9 | ((gz + 1u) & 1u) << 8;
+	uint32_t stl = row0 | (gx & 255u), str = row0 | ((gx + 1u) & 255u);
+	uint32_t sbl = row1 | (gx & 255u), sbr = row1 | ((gx + 1u) & 255u);
 	const struct vertex *t[2][3];
-	uint32_t c[2][3];
+	uint32_t c[2][3], s[2][3];
 	int far;
 	if (flags & 1) {
 		t[0][0] = bl, t[0][1] = tl, t[0][2] = tr;
 		t[1][0] = bl, t[1][1] = tr, t[1][2] = br;
 		c[0][0] = cbl, c[0][1] = ctl, c[0][2] = ctr;
 		c[1][0] = cbl, c[1][1] = ctr, c[1][2] = cbr;
+		s[0][0] = sbl, s[0][1] = stl, s[0][2] = str;
+		s[1][0] = sbl, s[1][1] = str, s[1][2] = sbr;
 		far = px + pz > CELL ? 0 : 1;
 	} else {
 		t[0][0] = tl, t[0][1] = tr, t[0][2] = br;
 		t[1][0] = tl, t[1][1] = br, t[1][2] = bl;
 		c[0][0] = ctl, c[0][1] = ctr, c[0][2] = cbr;
 		c[1][0] = ctl, c[1][1] = cbr, c[1][2] = cbl;
+		s[0][0] = stl, s[0][1] = str, s[0][2] = sbr;
+		s[1][0] = stl, s[1][1] = sbr, s[1][2] = sbl;
 		far = px < pz ? 0 : 1;
 	}
 	for (int k = 0; k < 2; k++) {
 		int i = k ? 1 - far : far;
 		if (flags & (2 << i))
 			submit(t[i][0], t[i][1], t[i][2],
-			       c[i][0] | c[i][1] << 8 | c[i][2] << 16);
+			       c[i][0] | c[i][1] << 8 | c[i][2] << 16, s[i]);
 	}
 }
 
@@ -1900,6 +1963,67 @@ static void tex_plane(const int32_t *x, const int32_t *y, const int64_t *v,
 			((int64_t)(j0 * 16 + 8 - y[0]) * gy));
 }
 
+/* A textured triangle's planes from its three corners, whose screen positions
+ * and tile t already holds: each corner's u, v and 1/z, scaled by
+ * TC_TEX_SCALE, and the plane through each. It is the one place this arithmetic
+ * is written, because fpga/raster.sv's vertex store and TEXV setup do the same
+ * divides and the same truncation and the two have to agree to the bit. */
+static void tex_corners(struct tc_tex *t, const int32_t *z, const int32_t *tu,
+			const int32_t *tv)
+{
+	int64_t U[3], V[3], R[3];
+	for (unsigned n = 0; n < 3; n++) {
+		U[n] = ((int64_t)tu[n] << TC_TEX_SCALE) / z[n];
+		V[n] = ((int64_t)tv[n] << TC_TEX_SCALE) / z[n];
+		R[n] = ((int64_t)1 << TC_TEX_SCALE) / z[n];
+	}
+	int32_t i0, j0;
+	tex_origin(t->x, t->y, &i0, &j0);
+	tex_plane(t->x, t->y, U, i0, j0, &t->u0, &t->ux, &t->uy);
+	tex_plane(t->x, t->y, V, i0, j0, &t->v0, &t->vx, &t->vy);
+	tex_plane(t->x, t->y, R, i0, j0, &t->r0, &t->rx, &t->ry);
+}
+
+/* The fabric's vertex store, modelled: what each slot was last written with. A
+ * triangle names three slots and is drawn from what they hold when it is
+ * reached, which is what the fabric's in-order engine does too. */
+static struct tc_vertex soft_slot[TC_SLOTS];
+
+void tc_soft_vertex(void *soft, const struct tc_vertex *v)
+{
+	(void)soft;
+	soft_slot[v->slot % TC_SLOTS] = *v;
+}
+
+void tc_soft_tri(void *soft, uint32_t a, uint32_t b, uint32_t c, int textured)
+{
+	const struct tc_vertex *p[3] = {&soft_slot[a % TC_SLOTS],
+					&soft_slot[b % TC_SLOTS],
+					&soft_slot[c % TC_SLOTS]};
+	int32_t x[3], y[3];
+	for (unsigned k = 0; k < 3; k++) {
+		x[k] = p[k]->x;
+		y[k] = p[k]->y;
+	}
+	if (!textured) {
+		tc_soft_triangle(soft, x, y, p[0]->colour | p[1]->colour << 8 |
+					     p[2]->colour << 16);
+		return;
+	}
+	struct tc_tex t;
+	int32_t z[3], tu[3], tv[3];
+	t.tile = p[0]->tile;
+	for (unsigned k = 0; k < 3; k++) {
+		t.x[k] = x[k];
+		t.y[k] = y[k];
+		z[k] = p[k]->z;
+		tu[k] = (int32_t)p[k]->u;
+		tv[k] = (int32_t)p[k]->v;
+	}
+	tex_corners(&t, z, tu, tv);
+	tc_soft_tex(soft, &t);
+}
+
 /* A quad as the two triangles the fill draws it with, from four Q4 screen
  * corners in the perimeter order and the winding the edge functions want: down
  * the left side, along the bottom, and back along the diagonal, the same pair
@@ -2119,6 +2243,33 @@ static void card_at_pose(int32_t wx, int32_t wy, int32_t wz, uint32_t tile,
 				hand_quad(qx, qy, TC_CURSOR_EDGE);
 				continue;
 			}
+			/* The depth each perimeter corner is divided by, held to
+			 * what the vertex store's depth field carries. */
+			int32_t qz[4];
+			for (unsigned k = 0; k < 4; k++) {
+				int32_t z = p->cz[ord[k]];
+				qz[k] = z > TC_VERTEX_Z_MAX ? TC_VERTEX_Z_MAX : z;
+			}
+			if (out->tri != NULL) {
+				/* The face's four corners into the store, once each, and
+				 * its two triangles naming them: the fabric works the
+				 * planes out from the corners as tex_corners() does. */
+				for (unsigned k = 0; k < 4; k++) {
+					struct tc_vertex s = {
+						.slot = CARD_SLOT + k, .x = qx[k], .y = qy[k],
+						.textured = 1, .tile = p->tile,
+						.u = (uint32_t)p->tu[ord[k]],
+						.v = (uint32_t)p->tv[ord[k]], .z = qz[k]};
+					out->vertex(out->ctx, &s);
+					slot_owner[CARD_SLOT + k] = 0;
+				}
+				out->tri(out->ctx, CARD_SLOT, CARD_SLOT + 1,
+					 CARD_SLOT + 2, 1);
+				out->tri(out->ctx, CARD_SLOT, CARD_SLOT + 2,
+					 CARD_SLOT + 3, 1);
+				counts->triangles += 2;
+				continue;
+			}
 			for (unsigned tri = 0; tri < 2; tri++) {
 				int c[3];
 				/* The perimeter's positions, not the box corners they
@@ -2127,21 +2278,16 @@ static void card_at_pose(int32_t wx, int32_t wy, int32_t wz, uint32_t tile,
 				c[1] = tri == 0 ? 1 : 2;
 				c[2] = tri == 0 ? 2 : 3;
 				struct tc_tex t;
-				int64_t U[3], V[3], R[3];
+				int32_t z[3], tu[3], tv[3];
 				t.tile = p->tile;
 				for (unsigned n = 0; n < 3; n++) {
-					int32_t z = p->cz[ord[c[n]]];
 					t.x[n] = qx[c[n]];
 					t.y[n] = qy[c[n]];
-					U[n] = ((int64_t)p->tu[ord[c[n]]] << TC_TEX_SCALE) / z;
-					V[n] = ((int64_t)p->tv[ord[c[n]]] << TC_TEX_SCALE) / z;
-					R[n] = ((int64_t)1 << TC_TEX_SCALE) / z;
+					z[n] = qz[c[n]];
+					tu[n] = p->tu[ord[c[n]]];
+					tv[n] = p->tv[ord[c[n]]];
 				}
-				int32_t i0, j0;
-				tex_origin(t.x, t.y, &i0, &j0);
-				tex_plane(t.x, t.y, U, i0, j0, &t.u0, &t.ux, &t.uy);
-				tex_plane(t.x, t.y, V, i0, j0, &t.v0, &t.vx, &t.vy);
-				tex_plane(t.x, t.y, R, i0, j0, &t.r0, &t.rx, &t.ry);
+				tex_corners(&t, z, tu, tv);
 				out->tex(out->ctx, &t);
 				counts->triangles++;
 			}
@@ -2494,8 +2640,11 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 	}
 	int32_t cx = floor_div(cam_x, CELL), cz = floor_div(cam_z, CELL);
 	int32_t z_lo = 0, z_hi = land->cells_z - 1;
+	/* The store's screen corners are this frame's, so it holds nothing yet. */
+	memset(slot_owner, 0, sizeof slot_owner);
 	while (z_lo <= z_hi) {
 		uint32_t gz = farther(&z_lo, &z_hi, cz);
+		walk_front = (int32_t)gz < cz ? 0u : 1u;
 		int32_t x_lo = 0, x_hi = land->cells_x - 1;
 		while (x_lo <= x_hi) {
 			uint32_t gx = farther(&x_lo, &x_hi, cx);

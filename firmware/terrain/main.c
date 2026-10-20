@@ -337,6 +337,33 @@ static void fabric_tex(void *ctx, const struct tc_tex *t)
 		RASTER_FIFO = (uint32_t)n[k];
 }
 
+// A vertex into the fabric's store, which fpga/raster.sv reads as VTX, two
+// words, or VTXT, three: the opcode and the ten-bit slot with the palette
+// entry, or with the tile and v; the Q4 screen corner; and for a textured one u
+// and the depth, from which the store works the corner's plane values out
+// itself.
+static void fabric_vertex(void *ctx, const struct tc_vertex *v)
+{
+	(void)ctx;
+	if (!v->textured) {
+		RASTER_FIFO = 5u << 28 | v->slot << 18 | v->colour;
+		RASTER_FIFO = (uint32_t)(uint16_t)v->y << 16 | (uint16_t)v->x;
+		return;
+	}
+	RASTER_FIFO = 6u << 28 | v->slot << 18 | v->tile << 12 | v->v << 2;
+	RASTER_FIFO = (uint32_t)(uint16_t)v->y << 16 | (uint16_t)v->x;
+	RASTER_FIFO = v->u << 22 | (uint32_t)v->z;
+}
+
+// A triangle of three stored vertices, one word: the top two bits 11 for TRIV,
+// shaded, and 10 for TEXV, textured, then three ten-bit slots.
+static void fabric_tri(void *ctx, uint32_t a, uint32_t b, uint32_t c,
+		       int textured)
+{
+	(void)ctx;
+	RASTER_FIFO = (textured ? 2u : 3u) << 30 | a << 20 | b << 10 | c;
+}
+
 // Give the fabric the shading tables: the palette in five bits a channel and
 // the table from a colour they make back to a land entry. This happens once,
 // before the first frame, and about a millisecond of a run. It is the same
@@ -431,9 +458,11 @@ int main(void)
 	uint64_t cells = 0;
 	const struct tc_target target = FABRIC ?
 		(struct tc_target){fabric_rows, fabric_triangle, fabric_card,
-				   fabric_tex, 0, phase_now, phase} :
+				   fabric_tex, 0, phase_now, phase,
+				   fabric_vertex, fabric_tri} :
 		(struct tc_target){tc_soft_rows, tc_soft_triangle, tc_soft_card,
-				   tc_soft_tex, &soft, phase_now, phase};
+				   tc_soft_tex, &soft, phase_now, phase,
+				   tc_soft_vertex, tc_soft_tri};
 	uint32_t late0 = TN_VIDEO_LATE, vbl0 = TN_VIDEO_FRAMES;
 	uint32_t stalls0 = FABRIC ? RASTER_STALLS : 0;
 	uint32_t crc = 0, lit = 0;

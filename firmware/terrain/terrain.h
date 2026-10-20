@@ -90,6 +90,28 @@ struct tc_tex {
 	int32_t r0, rx, ry;        /* 1/z the same way */
 };
 
+/* A vertex for the fabric's vertex store: TC_SLOTS slots, written by vertex and
+ * named three at a time by tri, so a vertex that several triangles share is
+ * sent once. A shaded vertex is its Q4 screen corner and its palette entry. A
+ * textured one adds the camera-space depth z, Q4 and from NEAR to
+ * TC_VERTEX_Z_MAX, the tile, and the tile's u and v at that corner in Q4
+ * texels, below 1024; the store works out the three plane values a corner of
+ * a textured triangle carries -- (u << TC_TEX_SCALE) / z, (v << TC_TEX_SCALE)
+ * / z and (1 << TC_TEX_SCALE) / z -- and a textured tri the planes themselves,
+ * with the arithmetic tex_plane in terrain.c does, so the caller sends
+ * corners and no coefficients. */
+#define TC_SLOTS 1024
+#define TC_VERTEX_Z_MAX 0x3fffff
+struct tc_vertex {
+	uint32_t slot;
+	int32_t x, y;              /* Q4 screen corner */
+	uint32_t colour;           /* palette entry, shaded */
+	int textured;
+	uint32_t tile;             /* textured: the tile, its u and v, and z */
+	uint32_t u, v;
+	int32_t z;
+};
+
 /* Where a frame goes. rows fills rows first to end - 1 with one colour;
  * triangle fills a triangle given as three Q4 screen corners, each
  * coordinate within -32768 to 32767, in the order fpga/raster.sv requires,
@@ -113,6 +135,12 @@ struct tc_target {
 	 * must not move because one exists. */
 	uint64_t (*now)(void);
 	uint64_t *phase;
+	/* The vertex store and the triangles that name it, which a target may
+	 * leave out: the program then sends every triangle whole, with its
+	 * corners in it, as it did before the store existed. A textured tri takes
+	 * its tile from its first vertex. */
+	void (*vertex)(void *ctx, const struct tc_vertex *v);
+	void (*tri)(void *ctx, uint32_t a, uint32_t b, uint32_t c, int textured);
 };
 
 /* The shading the fill does. A triangle's three corners carry three palette
@@ -170,6 +198,12 @@ void tc_soft_card(void *soft, const struct tc_card *c);
  * rule for the TEX command, stepping the three planes the caller handed over
  * and dividing, with the same truncation and the same clamp on the texel. */
 void tc_soft_tex(void *soft, const struct tc_tex *t);
+/* The vertex store and its triangles, as fpga/raster.sv's VTX, VTXT, TRIV and
+ * TEXV commands draw them: a stored triangle is filled exactly as the same
+ * triangle sent whole would be, and a textured one with the planes tex_plane
+ * gives, so the store moves no pixel. */
+void tc_soft_vertex(void *soft, const struct tc_vertex *v);
+void tc_soft_tri(void *soft, uint32_t a, uint32_t b, uint32_t c, int textured);
 
 /* What one frame sent: triangles, after culling, and the cells the walk drew. */
 struct tc_stats {

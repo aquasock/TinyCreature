@@ -107,6 +107,11 @@ CARD_TEX    ?= 0
 # sides show at an angle; off, it is a two-faced billboard and cutout art has
 # no black frame. The transparent texel is skipped either way.
 CARD_EDGE   ?= 0
+# Two knobs documented further down, defaulted here: COMMON_CPPFLAGS is
+# expanded where it is written, so a default given after it reached the
+# compiler as an empty -D and a build that did not name both failed.
+PLANTS      ?= 0
+TREE_WHOLE  ?= 0
 COMMON_CPPFLAGS := $(SPRITE_CPPFLAGS) -DTC_CARDS=$(CARDS) \
                    -DTC_CARDS_N=$(CARDS_N) -DTC_TREES=$(TREES) \
                    -DTC_TREES_N=$(TREES_N) -DTC_READOUT=$(READOUT) \

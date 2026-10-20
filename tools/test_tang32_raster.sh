@@ -16,7 +16,9 @@ frame1="${TINYCREATURE_RASTER_FRAME1:-75}"
 printf -v dump0 'f%04d' "$frame0"
 printf -v dump1 'f%04d' "$frame1"
 
-python3 -I "$root/tools/convert_land.py" "$lnd" "$land"
+map_args=()
+[[ -n "${TINYCREATURE_GROUND_MAP:-}" ]] && map_args=(--materials-map "$TINYCREATURE_GROUND_MAP")
+python3 -I "$root/tools/convert_land.py" "$lnd" "$land" "${map_args[@]}"
 make -s -C "$root/firmware/terrain" BUILD="$out" \
     CARDS="${TINYCREATURE_CARDS:-0}" \
     CARDS_N="${TINYCREATURE_CARDS_N:-64}" \

@@ -83,6 +83,34 @@ static void tex(void *ctx, const struct tc_tex *t)
 	tc_soft_tex(ctx, t);
 }
 
+// The vertex store's commands, word for word as main.c sends them, then the
+// twin's own store and fill, so the testbench replays what the board would.
+static void vertex(void *ctx, const struct tc_vertex *v)
+{
+	if (commands) {
+		if (!v->textured) {
+			fprintf(commands, "%08x\n", 5u << 28 | v->slot << 18 | v->colour);
+			fprintf(commands, "%08x\n",
+				(uint32_t)(uint16_t)v->y << 16 | (uint16_t)v->x);
+		} else {
+			fprintf(commands, "%08x\n",
+				6u << 28 | v->slot << 18 | v->tile << 12 | v->v << 2);
+			fprintf(commands, "%08x\n",
+				(uint32_t)(uint16_t)v->y << 16 | (uint16_t)v->x);
+			fprintf(commands, "%08x\n", v->u << 22 | (uint32_t)v->z);
+		}
+	}
+	tc_soft_vertex(ctx, v);
+}
+
+static void tri(void *ctx, uint32_t a, uint32_t b, uint32_t c, int textured)
+{
+	if (commands)
+		fprintf(commands, "%08x\n",
+			(textured ? 2u : 3u) << 30 | a << 20 | b << 10 | c);
+	tc_soft_tri(ctx, a, b, c, textured);
+}
+
 // What the fabric needs before its first triangle: the palette in the five
 // bits a channel the shading works in, and the table from a colour those
 // channels make back to a land entry. $readmemh reads both in this form.
@@ -248,8 +276,14 @@ int main(int argc, char **argv)
 	uint64_t tris = 0, pixels = 0;
 	struct tc_soft soft = {.fb = &frame[0][0], .stride = TC_WIDTH,
 			       .pal5 = shade.pal5, .lut = shade.lut};
+	/* TC_NO_STORE leaves the vertex store out, which sends every triangle
+	 * whole as before it existed: the same frames, by a different stream. */
+	const char *no_store = getenv("TC_NO_STORE");
+	const int store = !(no_store && *no_store && *no_store != '0');
 	const struct tc_target target = {.rows = rows, .triangle = triangle,
-					.ctx = &soft, .card = card, .tex = tex};
+					.ctx = &soft, .card = card, .tex = tex,
+					.vertex = store ? vertex : NULL,
+					.tri = store ? tri : NULL};
 	for (uint32_t i = 0; i < frames; i++) {
 		int chosen = 0;
 		char path[4096];

@@ -2375,3 +2375,41 @@ Plant level of detail is the next cycle: draw a distant tree as one card instead
 - User Test: N/A
 
 ---
+
+## 72 COMMIT Unreleased 2026-10-19T18:22:23-07:00
+
+#### Coming From:
+
+Unreleased c12956c
+
+#### Purpose:
+
+Accelerate the renderer in the fabric with a general triangle path rather than a card-only one, as the user directed after declining plant level of detail.
+
+#### Outcome:
+
+Four throwaway builds that threw parts of the Celtic baseline's work away on the board refuted entry 71's account of the command path: the plain frame drew in 77.1 ms, 65.1 ms without the terrain's command words, 67.0 ms without the plants', 55.0 ms without any, and 66.1 ms keeping the words but skipping the plants' plane divides, so the words are 22 ms of the frame where entry 71's sampled `EMIT=1672us` said 1.7 ms, because a posted write's cost lands on the next bus access, often a cache refill, and the plants' 64-bit setup divides are another 11 ms. The user first rejected a card-specific quad command for locking the fast path to squares, and the approved design is a general vertex store: `fpga/raster.sv` keeps 1024 vertices of 108 bits in block RAM, `VTX` writes a shaded one in two words, `VTXT` a textured one in three and divides out its `(u << 20) / z`, `(v << 20) / z` and `(1 << 20) / z`, and `TRIV` and `TEXV` draw the triangle of three ten-bit slots in one word, `TEXV` working out the planes with twelve radix-4 lanes, six 42-iteration long dividers by the determinant, which is minus the edge sum S the setup already has, and six low-32-bit origin products, which reproduces `tex_plane` in `firmware/terrain/terrain.c` to the bit. `terrain.c` factors that arithmetic into `tex_corners`, models the store in `tc_soft_vertex` and `tc_soft_tri`, keys the land's vertices to slots by walk z front, row parity and column modulo 256 so a triangle never names one slot twice and neighbouring cells reuse corners, and sends a card face as four textured vertices in four borrowed slots and two `TEXV`s; a target without the two new functions is sent whole triangles as before, which `TC_NO_STORE=1` asks of `terrain_host`. A first slot key of column modulo 64 sent 1.09 vertices a triangle on Celtic's 240-cell rows and was replaced; the final key sends 0.62 to 0.74, and a frame's words fell to 0.56 to 0.60 of before. The simulation first failed with the cutout pixels wrong because the quotient's sign compared the numerator against S greater than zero instead of less than zero, and a vertex divider subtract dropped the remainder's top bit; both fixed, `tests/raster_tb.sv` passed word for word on Celtic frames 0, 75, 150, 300, 450 and 599 and on Land 1's frames 0 and 75, HEAD and the new tree drew identical host CRCs on four configurations including both recorded mouse sessions, and AddressSanitizer and UndefinedBehaviorSanitizer were clean. Only seed 3 of the eight-seed sweep was clean, at 76.65 MHz bus and 101.81 MHz pixel, the other seven missing the bus at 69.13 to 74.63 MHz; the core uses 26,239 LUT4, 5,892 ALU and 163 of 340 BSRAM, and is `ae350_soc.bin` SHA-256 `67a9be229191f58dcc9cd0a30a2034f99eb0ed6dfdd6b26b0e71ef6f8daffff4` and `ae350_soc.fs` SHA-256 `d5c8b085de201b1e9ac9c2129b1f9c03e18bc295aac25ce1d56977f7647ecbe6`, with entry 71's seed 13 core kept under `build/core-backup/seed13-entry71/`. On the board the Celtic baseline gate matched the twin at land CRC `a59c0a9a` and frame CRC `73f24771`, unchanged, with `DRAW=61652us`, `MAX=67279us`, `PERIOD=67480us`, `STALLS=0` and `LATE=0`, against 77,068, 84,773 and 82,747 us before, about 14.8 frames a second where it was 12.1; Land 1 matched the twin at `6bedefa0` on both the fabric and the software path, and the phase build put the plants at 29.7 ms against 45.9 and `submit()` at 18.2 ms against 21.0. A pre-existing Makefile fault was also fixed: `COMMON_CPPFLAGS` is expanded where it is written, before the `PLANTS` and `TREE_WHOLE` defaults, so any build not naming both failed with an empty `-D`. The interactive artifact was `build/feel/terrain.elf` SHA-256 `6b215d8266130da6392936ac36f147f8cacfd370d4b231d61eb6d9dceae464ab`, deployed with the link released to the mouse, and the user flew it and reported that it works. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The next stage of the same direction is vertex transform in the fabric, so the CPU sends world-space vertices against camera registers and the store projects them, which takes `to_camera` and the projection out of the 10.2 ms of `VERT` and much of the 18.2 ms of `submit()` for all geometry, with near-plane crossings left on the CPU's whole-triangle path at first; it needs timing work before it lands, because this core closed the bus on one seed in eight with 2 per cent to spare, so the `TEXV` setup's long-division and 48-bit multiply lanes are the first candidates for pipelining or a narrower radix. A depth buffer or a fabric terrain walker remains the stage after that and needs the user's decision on the block RAM budget, now 163 of 340. Entry 51's `BAD TINYCREATURE PIXELS` at 2,000 and 3,000 villager-sized cards is still open, and the vertex store changes how those cards are sent, so it should be re-run before that configuration is used.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/Makefile
+- firmware/terrain/host.c
+- firmware/terrain/main.c
+- firmware/terrain/terrain.c
+- firmware/terrain/terrain.h
+- fpga/raster.sv
+- tests/raster_tb.sv
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

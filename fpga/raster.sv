@@ -53,6 +53,27 @@
 //         art cannot take colour off the land the way a shaded triangle's
 //         nearest-entry search can. A card is two clocks a pixel: the store
 //         is asked at one address and its byte is written the next.
+//   TEX   13 words: 4 << 28 | tile << 16, the three corners as a TRI's, then
+//         the value at the first pixel of the clamped bounding box and the
+//         step a pixel across and a row down of three planes: the tile's u,
+//         its v and the reciprocal of depth, which the fill steps and divides.
+//   VTX   2 words: 5 << 28 | slot << 18 | colour, then y << 16 | x: a shaded
+//         vertex into slot 0 to 1023 of the vertex store.
+//   VTXT  3 words: 6 << 28 | slot << 18 | tile << 12 | v << 2, then
+//         y << 16 | x, then u << 22 | z: a textured vertex, u and v in Q4
+//         texels below 1024 and z the Q4 camera-space depth, 128 or more and
+//         below 2^22. The store keeps the corner's three plane values,
+//         (u << 20) / z, (v << 20) / z and (1 << 20) / z, divided here.
+//   TRIV  1 word: 3 << 30 | a << 20 | b << 10 | c: the shaded triangle of
+//         three stored vertices, drawn as the TRI of their corners and
+//         colours would be.
+//   TEXV  1 word: 2 << 30 | a << 20 | b << 10 | c: the textured triangle of
+//         three stored vertices, in the tile of the first. The planes a TEX
+//         would carry are worked out here by the arithmetic tex_plane in
+//         firmware/terrain/terrain.c does, divide for divide and to the same
+//         truncation, so it draws the TEX the program would have sent.
+//         Commands run in order, so a slot may be written again as soon as
+//         the triangles that name it have been sent.
 // A triangle fills pixel (i, j) when, at its centre (16i + 8, 16j + 8), all
 // three edge functions F = (by - ay)(px - ax) - (bx - ax)(py - ay) over its
 // edges a to b are >= 0; pixels outside the screen are never visited. The
@@ -236,6 +257,7 @@ module raster #(
     reg cmd_full = 0;
     assign pop = !cmd_full && !fifo_empty && issued < len;
     reg [3:0] cmd_op = 0;
+    reg [31:0] cmd_w0 = 0;      // the opcode word whole, for the store's fields
     reg [7:0] cmd_colour = 0, cmd_first = 0, cmd_end = 0;
     // A triangle's three corner colours; the first is the byte a ROWS word
     // also carries, so both commands read the same field.
@@ -267,6 +289,7 @@ module raster #(
             if (q_valid) begin
                 if (got == 0) begin
                     cmd_op <= fifo_q[31:28]; cmd_colour <= fifo_q[7:0];
+                    cmd_w0 <= fifo_q[31:0];
                     cmd_first <= fifo_q[15:8]; cmd_end <= fifo_q[23:16];
                     if (fifo_q[31:28] == 4'd1) begin
                         cmd_c1 <= fifo_q[15:8]; cmd_c2 <= fifo_q[23:16];
@@ -277,6 +300,10 @@ module raster #(
                     end else if (fifo_q[31:28] == 4'd4) begin
                         cmd_tile <= fifo_q[23:16];
                         len <= 13; got <= 1;
+                    end else if (fifo_q[31:28] == 4'd5) begin
+                        len <= 2; got <= 1;
+                    end else if (fifo_q[31:28] == 4'd6) begin
+                        len <= 3; got <= 1;
                     end else begin
                         cmd_full <= 1; got <= 0; issued <= 0; len <= 1;
                     end
@@ -290,8 +317,13 @@ module raster #(
                         cmd_x[got - 1] <= fifo_q[15:0];
                         cmd_y[got - 1] <= fifo_q[31:16];
                     end
+                    // A vertex's corner word lands where a triangle's first
+                    // corner does, and a textured one's u and depth word in
+                    // the second corner's fields, split in half.
                     if (got == (cmd_op == 4'd3 ? 4'd4 :
-                                cmd_op == 4'd4 ? 4'd12 : 4'd3)) begin
+                                cmd_op == 4'd4 ? 4'd12 :
+                                cmd_op == 4'd5 ? 4'd1 :
+                                cmd_op == 4'd6 ? 4'd2 : 4'd3)) begin
                         cmd_full <= 1; got <= 0; issued <= 0; len <= 1;
                     end else
                         got <= got + 1'b1;
@@ -344,12 +376,92 @@ module raster #(
         tile_q <= tiles[tile_raddr];
     end
 
+    // ---- The vertex store: 1024 slots of 108 bits, three 36-bit block RAMs
+    // wide ----
+    // A slot holds the corner's Q4 screen position, its palette entry, the
+    // tile, and the three plane values a textured corner carries:
+    //   [107:92] x  [91:76] y  [75:68] colour  [67:62] tile
+    //   [61:38] (u << 20) / z  [37:14] (v << 20) / z  [13:0] (1 << 20) / z
+    // The engine writes a slot as it takes the vertex command and reads the
+    // three a triangle names one after another, each a clock after its
+    // address, which is the same shape the tile store has.
+    (* ram_style = "block" *) reg [107:0] vstore [0:1023];
+    reg vst_we = 0;
+    reg [9:0] vst_waddr = 0, vst_raddr = 0;
+    reg [107:0] vst_wdata = 0, vst_q = 0;
+    always @(posedge clk) begin
+        if (vst_we) vstore[vst_waddr] <= vst_wdata;
+        vst_q <= vstore[vst_raddr];
+    end
+
     // ---- Engine ----
     localparam S_IDLE = 0, S_ROWS = 1, S_BOX = 2, S_CLAMP = 3, S_LOAD = 4,
                S_EDGE = 5, S_TRIPLE = 6, S_MUL = 7, S_FIN = 8, S_PAL = 9,
                S_SCAN = 10, S_DRAIN = 11, S_CARD = 12,
-               S_TEXDIV = 13, S_TEXW = 14;
-    reg [3:0] state = S_IDLE;
+               S_TEXDIV = 13, S_TEXW = 14,
+               S_VDIV = 15, S_VWR = 16, S_VRD = 17,
+               S_TP0 = 18, S_TPMUL = 19, S_TPN = 20, S_TPDIV = 21,
+               S_TPSIGN = 22, S_TPG3 = 23, S_TPORG = 24, S_TPFIN = 25;
+    reg [4:0] state = S_IDLE;
+
+    // ---- A textured vertex's divides ----
+    // (u << 20) / z, (v << 20) / z and (1 << 20) / z, one quotient bit a
+    // clock each, by long division: the numerator's bits are brought down one
+    // at a time against a remainder that stays below z.
+    reg [9:0] vt_slot = 0;
+    reg [5:0] vt_tile = 0;
+    reg signed [15:0] vt_x = 0, vt_y = 0;
+    reg [21:0] vd_den = 0;
+    reg [29:0] vd_num [0:2];
+    reg [21:0] vd_rem [0:2];
+    reg [29:0] vd_q [0:2];
+    reg [4:0] vd_bit = 0;
+
+    // ---- A stored triangle: its slots, and what the first two held ----
+    reg [9:0] vi [0:2];
+    reg [2:0] vr_step = 0;
+    reg signed [15:0] cap_x [0:1];
+    reg signed [15:0] cap_y [0:1];
+    reg [7:0] cap_c [0:1];
+    reg [5:0] cap_tile = 0;
+    reg [23:0] cap_u [0:1];
+    reg [23:0] cap_v [0:1];
+    reg [13:0] cap_r [0:1];
+    // A TEXV triangle has its planes worked out after its edges are set up;
+    // a TEX one brought them in its command.
+    reg tex_setup = 0;
+    // The three corners' plane values, u, v and 1/z.
+    reg [23:0] pu [0:2];
+    reg [23:0] pv [0:2];
+    reg [13:0] pr [0:2];
+
+    // ---- A TEXV triangle's planes: tex_plane in hardware ----
+    // For each of u, v and 1/z, with a1 and a2 the second and third corners'
+    // values less the first's: gx = (a1 d2y - a2 d1y) / det and gy =
+    // (a2 d1x - a1 d2x) / det, truncated towards zero; the steps are 16 gx
+    // and 16 gy and the value at the first pixel is the first corner's value
+    // plus ox gx plus oy gy, all of it kept to its low 32 bits as the C keeps
+    // it. d1 is the first edge, dx[0] and dy[0]; d2 runs from the first
+    // corner to the third, the third edge reversed; and det is -S, which the
+    // edge setup has already summed. Twelve products in one pass of the
+    // multiplier's nine digits, six long divisions side by side, then six
+    // products of the origin offsets, low 32 bits only.
+    reg signed [47:0] ta1 [0:2];
+    reg signed [47:0] ta2 [0:2];
+    reg signed [47:0] ta1x3 [0:2];
+    reg signed [47:0] ta2x3 [0:2];
+    reg signed [47:0] macc [0:11];
+    reg [41:0] dv_num [0:5];
+    reg [34:0] dv_rem [0:5];
+    reg [31:0] dv_q [0:5];
+    reg dv_neg [0:5];
+    reg [35:0] dv_den = 0;
+    reg det_zero = 0;
+    reg [5:0] dv_bit = 0;
+    reg tp_triple = 0;   // the multiplier's first clock makes the triples
+    reg [31:0] tg [0:5];
+    reg [31:0] tg3 [0:5];
+    reg [31:0] oacc [0:5];
 
     // ---- A textured triangle's own state ----
     // The three planes the fill steps -- the tile's u, its v and the
@@ -521,20 +633,81 @@ module raster #(
         end
     endfunction
 
+    // The same digit, on wider and on 32-bit multiplicands: the plane
+    // numerators need 48 bits, and the origin products only their low 32.
+    function automatic signed [47:0] radix4w(input signed [17:0] b,
+        input [3:0] k, input signed [47:0] a, input signed [47:0] a3);
+        reg [1:0] d;
+        begin
+            d = b[2 * k +: 2];
+            if (k == 8)
+                case (d)
+                    2'd0: radix4w = 0;
+                    2'd1: radix4w = a;
+                    2'd2: radix4w = -(a <<< 1);
+                    default: radix4w = -a;
+                endcase
+            else
+                case (d)
+                    2'd0: radix4w = 0;
+                    2'd1: radix4w = a;
+                    2'd2: radix4w = a <<< 1;
+                    default: radix4w = a3;
+                endcase
+        end
+    endfunction
+
+    function automatic [31:0] radix4n(input signed [17:0] b, input [3:0] k,
+        input [31:0] a, input [31:0] a3);
+        reg [1:0] d;
+        begin
+            d = b[2 * k +: 2];
+            if (k == 8)
+                case (d)
+                    2'd0: radix4n = 0;
+                    2'd1: radix4n = a;
+                    2'd2: radix4n = -(a << 1);
+                    default: radix4n = -a;
+                endcase
+            else
+                case (d)
+                    2'd0: radix4n = 0;
+                    2'd1: radix4n = a;
+                    2'd2: radix4n = a << 1;
+                    default: radix4n = a3;
+                endcase
+        end
+    endfunction
+
+    // The plane numerators of each of u, v and 1/z, from the four products:
+    // nx = -(a1 dy[2] + a2 dy[0]) and ny = a2 dx[0] + a1 dx[2].
+    wire signed [47:0] tp_nx [0:2];
+    wire signed [47:0] tp_ny [0:2];
+    genvar gm;
+    generate
+        for (gm = 0; gm < 3; gm = gm + 1) begin : tp_num
+            assign tp_nx[gm] = -(macc[4 * gm] + macc[4 * gm + 1]);
+            assign tp_ny[gm] = macc[4 * gm + 2] + macc[4 * gm + 3];
+        end
+    endgenerate
+    wire signed [35:0] s_abs = s_reg < 0 ? -s_reg : s_reg;
+
     wire covered = !e[0][35] && !e[1][35] && !e[2][35];
     integer k;
     always @(posedge clk or negedge resetn) begin
         if (!resetn) begin
             state <= S_IDLE; we <= 0; tris <= 0; pixels <= 0; we1_r <= 0;
-            phase <= 0; last_p <= 0;
+            phase <= 0; last_p <= 0; vst_we <= 0; tex_setup <= 0;
         end else begin
             we <= 0;
+            vst_we <= 0;
             case (state)
             S_IDLE:
                 if (take) begin
                     colour <= cmd_colour;
                     tex_on <= 1'b0;
                     if (cmd_op == 4'd1 || cmd_op == 4'd4) begin
+                        tex_setup <= 1'b0;
                         for (k = 0; k < 3; k = k + 1) begin
                             vx[k] <= cmd_x[k]; vy[k] <= cmd_y[k];
                         end
@@ -586,8 +759,202 @@ module raster #(
                                      {7'd0, cmd_x[0][8:0]};
                         card_phase <= 0;
                         state <= S_CARD;
+                    end else if (cmd_op == 4'd5) begin
+                        // A shaded vertex: its corner and palette entry, and
+                        // nothing a textured triangle reads.
+                        vst_we <= 1'b1;
+                        vst_waddr <= cmd_w0[27:18];
+                        vst_wdata <= {cmd_x[0], cmd_y[0], cmd_w0[7:0], 6'd0,
+                                      24'd0, 24'd0, 14'd0};
+                    end else if (cmd_op == 4'd6) begin
+                        // A textured vertex: the corner and the tile wait in
+                        // registers while its three plane values are divided.
+                        vt_slot <= cmd_w0[27:18];
+                        vt_tile <= cmd_w0[17:12];
+                        vt_x <= cmd_x[0];
+                        vt_y <= cmd_y[0];
+                        vd_den <= {cmd_y[1][5:0], cmd_x[1]};
+                        vd_num[0] <= {cmd_y[1][15:6], 20'd0};
+                        vd_num[1] <= {cmd_w0[11:2], 20'd0};
+                        vd_num[2] <= 30'd1 << 20;
+                        for (k = 0; k < 3; k = k + 1) begin
+                            vd_rem[k] <= 0; vd_q[k] <= 0;
+                        end
+                        vd_bit <= 5'd29;
+                        state <= S_VDIV;
+                    end else if (cmd_op[3]) begin
+                        // TRIV or TEXV: read the three slots it names.
+                        vi[0] <= cmd_w0[29:20];
+                        vi[1] <= cmd_w0[19:10];
+                        vi[2] <= cmd_w0[9:0];
+                        tex_setup <= !cmd_op[2];
+                        vr_step <= 0;
+                        state <= S_VRD;
                     end
                 end
+            S_VDIV: begin
+                for (k = 0; k < 3; k = k + 1) begin
+                    if ({vd_rem[k], vd_num[k][29]} >= {1'b0, vd_den}) begin
+                        vd_rem[k] <= {vd_rem[k], vd_num[k][29]} - {1'b0, vd_den};
+                        vd_q[k] <= {vd_q[k][28:0], 1'b1};
+                    end else begin
+                        vd_rem[k] <= {vd_rem[k][20:0], vd_num[k][29]};
+                        vd_q[k] <= {vd_q[k][28:0], 1'b0};
+                    end
+                    vd_num[k] <= vd_num[k] << 1;
+                end
+                if (vd_bit == 0)
+                    state <= S_VWR;
+                else
+                    vd_bit <= vd_bit - 1'b1;
+            end
+            S_VWR: begin
+                vst_we <= 1'b1;
+                vst_waddr <= vt_slot;
+                vst_wdata <= {vt_x, vt_y, 8'd0, vt_tile, vd_q[0][23:0],
+                              vd_q[1][23:0], vd_q[2][13:0]};
+                state <= S_IDLE;
+            end
+            S_VRD: begin
+                // One slot asked for a clock, each answering two clocks later:
+                // the address register moves on one edge and the store's
+                // output on the next.
+                case (vr_step)
+                    3'd0: vst_raddr <= vi[0];
+                    3'd1: vst_raddr <= vi[1];
+                    3'd2: vst_raddr <= vi[2];
+                    default: ;
+                endcase
+                if (vr_step == 3'd2 || vr_step == 3'd3) begin
+                    cap_x[vr_step - 3'd2] <= vst_q[107:92];
+                    cap_y[vr_step - 3'd2] <= vst_q[91:76];
+                    cap_c[vr_step - 3'd2] <= vst_q[75:68];
+                    cap_u[vr_step - 3'd2] <= vst_q[61:38];
+                    cap_v[vr_step - 3'd2] <= vst_q[37:14];
+                    cap_r[vr_step - 3'd2] <= vst_q[13:0];
+                    if (vr_step == 3'd2)
+                        cap_tile <= vst_q[67:62];
+                end
+                if (vr_step == 3'd4) begin
+                    vx[0] <= cap_x[0]; vx[1] <= cap_x[1]; vx[2] <= vst_q[107:92];
+                    vy[0] <= cap_y[0]; vy[1] <= cap_y[1]; vy[2] <= vst_q[91:76];
+                    c0_e <= cap_c[0]; c1_e <= cap_c[1]; c2_e <= vst_q[75:68];
+                    pu[0] <= cap_u[0]; pu[1] <= cap_u[1]; pu[2] <= vst_q[61:38];
+                    pv[0] <= cap_v[0]; pv[1] <= cap_v[1]; pv[2] <= vst_q[37:14];
+                    pr[0] <= cap_r[0]; pr[1] <= cap_r[1]; pr[2] <= vst_q[13:0];
+                    tex_tile <= cap_tile;
+                    tex_on <= tex_setup;
+                    tris <= tris + 1'b1;
+                    state <= S_BOX;
+                end
+                vr_step <= vr_step + 1'b1;
+            end
+            S_TP0: begin
+                ta1[0] <= $signed({24'd0, pu[1]}) - $signed({24'd0, pu[0]});
+                ta2[0] <= $signed({24'd0, pu[2]}) - $signed({24'd0, pu[0]});
+                ta1[1] <= $signed({24'd0, pv[1]}) - $signed({24'd0, pv[0]});
+                ta2[1] <= $signed({24'd0, pv[2]}) - $signed({24'd0, pv[0]});
+                ta1[2] <= $signed({34'd0, pr[1]}) - $signed({34'd0, pr[0]});
+                ta2[2] <= $signed({34'd0, pr[2]}) - $signed({34'd0, pr[0]});
+                for (k = 0; k < 12; k = k + 1)
+                    macc[k] <= 0;
+                state <= S_TPMUL;
+                digit <= 8;
+                tp_triple <= 1'b1;
+            end
+            S_TPMUL: begin
+                if (tp_triple) begin
+                    // Three times each difference, which the digit wants.
+                    for (k = 0; k < 3; k = k + 1) begin
+                        ta1x3[k] <= ta1[k] + (ta1[k] <<< 1);
+                        ta2x3[k] <= ta2[k] + (ta2[k] <<< 1);
+                    end
+                    tp_triple <= 1'b0;
+                end else begin
+                    for (k = 0; k < 3; k = k + 1) begin
+                        macc[4 * k] <= (macc[4 * k] <<< 2) +
+                            radix4w({dy[2][16], dy[2]}, digit, ta1[k], ta1x3[k]);
+                        macc[4 * k + 1] <= (macc[4 * k + 1] <<< 2) +
+                            radix4w({dy[0][16], dy[0]}, digit, ta2[k], ta2x3[k]);
+                        macc[4 * k + 2] <= (macc[4 * k + 2] <<< 2) +
+                            radix4w({dx[0][16], dx[0]}, digit, ta2[k], ta2x3[k]);
+                        macc[4 * k + 3] <= (macc[4 * k + 3] <<< 2) +
+                            radix4w({dx[2][16], dx[2]}, digit, ta1[k], ta1x3[k]);
+                    end
+                    if (digit == 0) state <= S_TPN;
+                    digit <= digit - 1'b1;
+                end
+            end
+            S_TPN: begin
+                // det = -S, so the quotient is negative when the numerator's
+                // sign and S's agree.
+                for (k = 0; k < 3; k = k + 1) begin
+                    dv_num[2 * k] <= tp_nx[k] < 0 ? -tp_nx[k] : tp_nx[k];
+                    dv_neg[2 * k] <= (tp_nx[k] < 0) == (s_reg < 0);
+                    dv_num[2 * k + 1] <= tp_ny[k] < 0 ? -tp_ny[k] : tp_ny[k];
+                    dv_neg[2 * k + 1] <= (tp_ny[k] < 0) == (s_reg < 0);
+                end
+                for (k = 0; k < 6; k = k + 1) begin
+                    dv_rem[k] <= 0; dv_q[k] <= 0;
+                end
+                dv_den <= s_abs;
+                det_zero <= s_reg == 0;
+                dv_bit <= 6'd41;
+                state <= S_TPDIV;
+            end
+            S_TPDIV: begin
+                for (k = 0; k < 6; k = k + 1) begin
+                    if ({dv_rem[k], dv_num[k][41]} >= dv_den) begin
+                        dv_rem[k] <= {dv_rem[k], dv_num[k][41]} - dv_den;
+                        dv_q[k] <= {dv_q[k][30:0], 1'b1};
+                    end else begin
+                        dv_rem[k] <= {dv_rem[k][33:0], dv_num[k][41]};
+                        dv_q[k] <= {dv_q[k][30:0], 1'b0};
+                    end
+                    dv_num[k] <= dv_num[k] << 1;
+                end
+                if (dv_bit == 0)
+                    state <= S_TPSIGN;
+                else
+                    dv_bit <= dv_bit - 1'b1;
+            end
+            S_TPSIGN: begin
+                // A triangle of no area keeps the first corner's value and
+                // no steps, which is tex_plane's own rule for it.
+                for (k = 0; k < 6; k = k + 1)
+                    tg[k] <= det_zero ? 32'd0 : dv_neg[k] ? -dv_q[k] : dv_q[k];
+                state <= S_TPG3;
+            end
+            S_TPG3: begin
+                for (k = 0; k < 6; k = k + 1) begin
+                    tg3[k] <= tg[k] + (tg[k] << 1);
+                    oacc[k] <= 0;
+                end
+                digit <= 8;
+                state <= S_TPORG;
+            end
+            S_TPORG: begin
+                for (k = 0; k < 3; k = k + 1) begin
+                    oacc[2 * k] <= (oacc[2 * k] << 2) +
+                        radix4n(ox[0], digit, tg[2 * k], tg3[2 * k]);
+                    oacc[2 * k + 1] <= (oacc[2 * k + 1] << 2) +
+                        radix4n(oy[0], digit, tg[2 * k + 1], tg3[2 * k + 1]);
+                end
+                if (digit == 0) state <= S_TPFIN;
+                digit <= digit - 1'b1;
+            end
+            S_TPFIN: begin
+                tex_a <= {8'd0, pu[0]} + oacc[0] + oacc[1];
+                tex_arow <= {8'd0, pu[0]} + oacc[0] + oacc[1];
+                tex_as <= tg[0] << 4; tex_aj <= tg[1] << 4;
+                tex_b <= {8'd0, pv[0]} + oacc[2] + oacc[3];
+                tex_brow <= {8'd0, pv[0]} + oacc[2] + oacc[3];
+                tex_bs <= tg[2] << 4; tex_bj <= tg[3] << 4;
+                tex_c <= {18'd0, pr[0]} + oacc[4] + oacc[5];
+                tex_crow <= {18'd0, pr[0]} + oacc[4] + oacc[5];
+                tex_cs <= tg[4] << 4; tex_cj <= tg[5] << 4;
+                state <= S_SCAN;
+            end
             S_CARD: begin
                 // Three clocks a pixel. The store is a block RAM, so its data
                 // arrives the clock after its address, and the address is a
@@ -713,7 +1080,7 @@ module raster #(
                 // written as an entry of the art's own palette, so it goes
                 // straight to the scan with the planes the caller left at the
                 // bounding box's first pixel.
-                state <= tex_on ? S_SCAN : S_PAL;
+                state <= tex_on ? (tex_setup ? S_TP0 : S_SCAN) : S_PAL;
             end
             S_PAL: begin
                 // The three corners' palette entries, in the five bits a

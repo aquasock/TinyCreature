@@ -561,11 +561,16 @@ CELL=4824us SPRITE=247us`, with the fill's own triangle call inside `SUB` at
 plain one, so the shares matter more than the absolute numbers. The plants are
 56 per cent of the frame: 953 five-card trees and 452 bushes, 5,217 cards at
 8.8 us each, which is the villager-card price the ladder measured. The terrain
-walk is 36 ms, of which the cull arithmetic in `submit()` is 21 ms and the
-command words 1.7 ms. On this landscape emission is two per cent of the frame,
-so a command list or an expander has almost nothing to win, and the next lever
-is fewer cards per tree at distance. `PHASE_DETAIL=0` is the default, so the
-plain build is unchanged.
+walk is 36 ms, of which `submit()` timed 21 ms and the fill's triangle call
+1.7 ms. That last figure was wrong about the words: a posted write's cost lands
+on whatever bus access comes after it, often a cache refill inside `vertex()`
+or `submit()`, so the sample charged the words to their neighbours. Throwing
+the words away measured them instead -- the same plain Celtic build drew in
+77.1 ms, 65.1 ms without the terrain's words, 67.0 ms without the plants',
+55.0 ms without any, and 66.1 ms keeping the words but skipping the plants'
+plane divides -- so the command words are 22 ms of the frame and the plants'
+setup divides 11 ms, which is what the vertex store below was built against.
+`PHASE_DETAIL=0` is the default, so the plain build is unchanged.
 
 The run converts the land, prints the PC's totals, loads the program and the
 land file, and fails unless the board reports `TinyCreature TERRAIN OK` with
@@ -650,6 +655,40 @@ rock-steady 15. If a frame ever misses the hold the run prints
 `BAD TINYCREATURE CADENCE` rather than jittering on unannounced. The cost is
 that the mouse is read once a frame, so a report waits up to the hold to be
 acted on: a mean 38 ms before, a flat 50 now.
+
+### The vertex store
+
+The fabric also keeps a store of 1024 vertices, so a triangle of any shape is
+sent as its corners once and then one word. `VTX` writes a shaded vertex -- a
+slot, a Q4 screen corner and a palette entry -- in two words; `VTXT` a
+textured one -- a slot, the corner, a tile, the tile's u and v at that corner
+in Q4 texels and the camera-space depth -- in three, and the store divides out
+the corner's three plane values, `(u << 20) / z`, `(v << 20) / z` and
+`(1 << 20) / z`. `TRIV` and `TEXV` are one word each, three ten-bit slots, and
+draw the shaded or textured triangle of those vertices. For `TEXV` the fabric
+works out the nine plane numbers a `TEX` command carries by the arithmetic
+`tex_plane` in `terrain.c` does: four products a plane, two truncating
+divides by the triangle's determinant, which is minus the edge functions' sum
+the setup already has, and the origin products kept to their low 32 bits as
+the C keeps them. So it draws the `TEX` the program would have sent, to the
+bit, and the board's frames did not move when the store went in. Commands run
+in order, so a slot can be written again as soon as the triangles naming it
+have been sent.
+
+The land's vertices are keyed to slots by the z front of the walk their row was
+reached from, the row's parity and the column modulo 256, so a cell's three
+corners never share a slot and the walk reuses the corners it sent for the cell
+beside it and the row before; Celtic sends about 0.7 vertices a triangle, three
+words where the whole triangle took four. A card face is four textured
+vertices and two `TEXV`s, fourteen words where two `TEX`es took twenty-six,
+and the CPU no longer divides for it at all. A frame's words fell to between
+0.56 and 0.60 of what they were, and the Celtic baseline went from a 77.1 ms
+draw and an 82.7 ms period to 61.7 ms and 67.5 ms with the frame CRC unchanged
+at `73f24771`; the phase build put the plants at 29.7 ms against 45.9 ms and
+`submit()` at 18.2 ms against 21.0 ms. A target without the store's two
+functions is sent whole triangles as before, which `TC_NO_STORE=1` asks of
+`terrain_host` and which draws the same frames. The setup cost timing: one of
+eight seeds, seed 3, closed the 75 MHz bus, at 76.65 MHz.
 
 ## openblack on a PC
 
