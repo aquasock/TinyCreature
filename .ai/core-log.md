@@ -2838,3 +2838,34 @@ Integrate the unit with the walker's cell stream: camera registers, the four cor
 - User Test: N/A
 
 ---
+
+## 86 COMMIT Unreleased 2026-10-20T01:40:00-07:00
+
+#### Coming From:
+
+Unreleased a05e86e
+
+#### Purpose:
+
+Wire the transform into the raster's camera file and register interface, check it through the bus on both lands, and measure what the unit costs in the core.
+
+#### Outcome:
+
+`fpga/raster.sv` now holds the transform's camera file and request/result path: `CAM_A` and `CAM_D` at 0x6c and 0x70 write eight 32-bit camera values, `XF_GX`, `XF_GZ` and `XF_ALT` at 0x74 to 0x7c set the vertex, `XF_CTRL` at 0x80 starts a transform, and the status and results are read at 0x84 to 0x94; the register window is 256 bytes so those addresses fit. The `transform` module is instantiated in the raster now, and `tests/raster_tb.sv` runs the same 256 traced vertices a second time through the bus, writing the camera and each vertex and polling the result; Land 1 and Celtic both matched, and the frames were unchanged at `293e6ccf` and `5c2808f5` and at `4bb0a03f` and `9013c700`. Synthesis passes with the unit in the hierarchy, at 31,847 `LUT4` against 19,689 before, 9,110 `ALU`, 17,625 `DFFRE`, 1,714 `DFFCE` and the same 293 of 340 block RAMs. The resource cost fits, but the eight 32-bit camera products, the two 64-bit screen products and the divider's comparators are all combinational in this version, so the unit is not timing-closed: no place-and-route ran, and a board build now would almost certainly miss 75 MHz. No deployment ran. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+Replace the combinational multiplies and the divider's wide compares with the radix-4 lanes and a pipeline the bus clock can take, then feed the transform from the walker's cell FIFO with the land vertex reads, the slot keys and the triangle assembly. Until that arithmetic is timing-closed, a core build would fail the bus even though it synthesises; the transform's 12,158 added LUT4 are the measure of what a pipelined replacement should shrink.
+
+#### Files Modified:
+
+- fpga/raster.sv
+- tests/raster_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

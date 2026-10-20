@@ -288,6 +288,7 @@ module raster_tb;
     // and the CPU's screen position, depth and state.
     task automatic check_vert(input [8*256-1:0] path);
         integer f, gx, gz, alt, esx, esy, edepth, estate, n, bad, guard;
+        integer bsx, bsy, bd, bst;
         begin
             f = $fopen(path, "r");
             if (f == 0) begin
@@ -341,6 +342,62 @@ module raster_tb;
                         n = n + 1;
                     end
                     $fclose(f);
+                    // The same trace through the raster's camera file and
+                    // transform registers, not the testbench instance.
+                    f = $fopen(path, "r");
+                    if (f == 0) begin
+                        $display("FAIL: cannot reopen %0s", path);
+                        errors = errors + 1;
+                    end else begin
+                        if ($fscanf(f, "K %d %d %d %d %d %d %d\n",
+                                    vm_cam_x, vm_cam_y, vm_cam_z,
+                                    vm_sin_yaw, vm_cos_yaw,
+                                    vm_sin_pitch, vm_cos_pitch) != 7) begin
+                            $display("FAIL: bus transform camera");
+                            errors = errors + 1;
+                        end else begin
+                            write(15'h006c, 0); write(15'h0070, vm_cam_x);
+                            write(15'h006c, 1); write(15'h0070, vm_cam_y);
+                            write(15'h006c, 2); write(15'h0070, vm_cam_z);
+                            write(15'h006c, 3); write(15'h0070, vm_sin_yaw);
+                            write(15'h006c, 4); write(15'h0070, vm_cos_yaw);
+                            write(15'h006c, 5); write(15'h0070, vm_sin_pitch);
+                            write(15'h006c, 6); write(15'h0070, vm_cos_pitch);
+                            while ($fscanf(f, "V %d %d %d %d %d %d %d\n",
+                                           gx, gz, alt, esx, esy, edepth, estate) == 7) begin
+                                write(15'h0074, gx);
+                                write(15'h0078, gz);
+                                write(15'h007c, alt);
+                                write(15'h0080, 32'h1);
+                                read(15'h0084, q);
+                                guard = 0;
+                                while (!q[0] && guard < 300) begin
+                                    read(15'h0084, q);
+                                    guard = guard + 1;
+                                end
+                                if (!q[0]) begin
+                                    if (bad < 4)
+                                        $display("FAIL: bus transform timeout at %0d", n);
+                                    bad = bad + 1;
+                                end else begin
+                                    read(15'h0088, q); bsx = $signed(q[15:0]);
+                                    read(15'h008c, q); bsy = $signed(q[15:0]);
+                                    read(15'h0090, q); bd = q;
+                                    read(15'h0094, q); bst = q[1:0];
+                                    if (bsx !== $signed(esx[15:0]) ||
+                                        bsy !== $signed(esy[15:0]) ||
+                                        bd !== edepth || bst !== estate) begin
+                                        if (bad < 4)
+                                            $display("FAIL: bus transform %0d: grid %0d %0d %0d %0d, unit %0d %0d %0d %0d",
+                                                     n, esx, esy, edepth, estate,
+                                                     bsx, bsy, bd, bst);
+                                        bad = bad + 1;
+                                    end
+                                end
+                            end
+                        end
+                        $fclose(f);
+                    end
                     if (bad) begin
                         $display("FAIL: transform: %0d of %0d vertices wrong", bad, n);
                         errors = errors + 1;

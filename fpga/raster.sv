@@ -182,6 +182,41 @@ module raster #(
     reg [9:0] wblock = 0;
     reg wfront = 0;
     localparam W_IDLE = 0, W_Z = 1, W_X = 2, W_FLAG = 3, W_DONE = 4;
+    // The transform's camera file and its request/result registers. The
+    // camera is CAM_A then CAM_D, one 32-bit value a write.
+    reg [31:0] cam_reg [0:7];
+    reg [2:0] cam_a = 0;
+    reg [15:0] xf_gx = 0, xf_gz = 0;
+    reg [7:0] xf_alt = 0;
+    reg xf_start = 0, w_xf = 0;
+    reg [2:0] xf_wreg = 0;
+    reg xf_ready = 0;
+    reg signed [15:0] xf_sx_r = 0, xf_sy_r = 0;
+    reg [31:0] xf_depth_r = 0;
+    reg [1:0] xf_state_r = 0;
+    wire signed [15:0] xf_sx, xf_sy;
+    wire [31:0] xf_depth;
+    wire [1:0] xf_state;
+    wire xf_done;
+    transform xf(.clk(clk), .resetn(resetn),
+        .cam_x(cam_reg[0]), .cam_y(cam_reg[1]), .cam_z(cam_reg[2]),
+        .sin_yaw(cam_reg[3]), .cos_yaw(cam_reg[4]),
+        .sin_pitch(cam_reg[5]), .cos_pitch(cam_reg[6]),
+        .gx(xf_gx), .gz(xf_gz), .alt(xf_alt), .go(xf_start),
+        .sx(xf_sx), .sy(xf_sy), .depth(xf_depth), .state(xf_state),
+        .done(xf_done));
+    always @(posedge clk or negedge resetn)
+        if (!resetn) begin
+            xf_ready <= 0; xf_sx_r <= 0; xf_sy_r <= 0;
+            xf_depth_r <= 0; xf_state_r <= 0;
+        end else if (xf_start)
+            xf_ready <= 0;
+        else if (xf_done) begin
+            xf_sx_r <= xf_sx; xf_sy_r <= xf_sy;
+            xf_depth_r <= xf_depth; xf_state_r <= xf_state;
+            xf_ready <= 1;
+        end
+
     // terrain.c's farther(): the end farther from the camera cell, moving
     // toward it. The differences are 17-bit signed so the comparison is
     // exact for any grid this store holds.
@@ -214,8 +249,8 @@ module raster #(
     wire busy, working;
     wire accept = hready_in && hsel && htrans[1];
     wire word = hsize == 3'd2 && haddr[1:0] == 0;
-    wire [4:0] reg_index = haddr[6:2];
-    wire is_reg = haddr[14:7] == 0;
+    wire [5:0] reg_index = haddr[7:2];
+    wire is_reg = haddr[14:8] == 0;
     wire is_fb = is_reg && !hwrite && reg_index == 9;
     // The register window is now 128 bytes: the old 0x00 to 0x3c keep their
     // indices, and the land's two registers sit at 0x40 and 0x44.
@@ -223,11 +258,13 @@ module raster #(
               (hwrite ? ((reg_index <= 1) ||
                          (reg_index >= 7 && reg_index <= 8) ||
                          (reg_index >= 11 && reg_index <= 14) ||
-                         (reg_index >= 16 && reg_index <= 23))
+                         (reg_index >= 16 && reg_index <= 23) ||
+                         (reg_index >= 27 && reg_index <= 32))
                       : ((reg_index >= 1 && reg_index <= 7) ||
                          reg_index == 9 || reg_index == 10 ||
                          reg_index == 15 || reg_index == 17 ||
-                         (reg_index >= 24 && reg_index <= 26)));
+                         (reg_index >= 24 && reg_index <= 26) ||
+                         (reg_index >= 33 && reg_index <= 37)));
     // The CPU's read port request, served when the line fetch leaves it.
     reg cpu_rd = 0;
     wire cpu_rd_grant;
@@ -242,6 +279,7 @@ module raster #(
             w_land <= 0; w_land_addr <= 0; r_land <= 0; r_land_wait <= 0;
             walk_go <= 0; w_walk <= 0; r_wfifo <= 0; r_wfifo_wait <= 0;
             wfifo_rd <= 0;
+            w_xf <= 0; xf_start <= 0;
         end else begin
             if (working) busy_cycles <= busy_cycles + 1'b1;
             if (err2) begin
@@ -310,6 +348,18 @@ module raster #(
                 r_wfifo <= 0; r_wfifo_wait <= 1;
             end else if (r_wfifo_wait) begin
                 hrdata <= wfifo_q; hready <= 1; r_wfifo_wait <= 0;
+            end else if (w_xf) begin
+                w_xf <= 0; hready <= 1;
+                case (xf_wreg)
+                    3'd0: cam_a <= hwdata[2:0];
+                    3'd1: cam_reg[cam_a] <= hwdata;
+                    3'd2: xf_gx <= hwdata[15:0];
+                    3'd3: xf_gz <= hwdata[15:0];
+                    3'd4: xf_alt <= hwdata[7:0];
+                    3'd5: xf_start <= hwdata[0];
+                endcase
+            end else if (xf_start) begin
+                xf_start <= 0;
             end else if (w_crc) begin
                 // One cycle of w_crc is the scan's start pulse.
                 w_crc <= 0; hready <= 1;
@@ -342,6 +392,11 @@ module raster #(
                         15: hrdata <= busy_cycles;
                         24: hrdata <= {28'd0, wfull, wempty, wdone, wbusy};
                         26: hrdata <= {16'd0, wcount};
+                        33: hrdata <= {31'd0, xf_ready};
+                        34: hrdata <= {16'd0, xf_sx_r};
+                        35: hrdata <= {16'd0, xf_sy_r};
+                        36: hrdata <= xf_depth_r;
+                        37: hrdata <= {30'd0, xf_state_r};
                         default: hrdata <= 0;
                     endcase
                 if (accept) begin
@@ -360,6 +415,9 @@ module raster #(
                     end else if (hwrite && reg_index >= 18 && reg_index <= 23) begin
                         hready <= 0; w_walk <= 1;
                         walk_wreg <= reg_index[2:0] - 3'd2;
+                    end else if (hwrite && reg_index >= 27 && reg_index <= 32) begin
+                        hready <= 0; w_xf <= 1;
+                        xf_wreg <= reg_index[2:0] - 3'd3;
                     end else if (hwrite && reg_index == 0) begin
                         hready <= 0; w_fifo <= 1;
                     end else if (hwrite && reg_index == 7) begin
