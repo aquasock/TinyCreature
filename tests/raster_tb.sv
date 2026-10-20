@@ -76,6 +76,12 @@ module raster_tb;
     endfunction
     integer tris_sent [0:1];
 
+    // The land store's packed image, made by tools/pack_land.py from the same
+    // TCL2 the host draws: two vertex words or eight cell flags a word.
+    reg [31:0] land_words [0:69999];
+    integer land_vw, land_fw;
+    reg [8*256-1:0] land_path;
+
     // The shading's tables, which the program hands the fabric once: the 256
     // palette entries in five bits a channel, and the 32768-entry table from
     // a colour those channels make back to an entry.
@@ -99,6 +105,69 @@ module raster_tb;
                                  tile_bytes[a + 1], tile_bytes[a + 0]});
             end
             $display("tiles loaded: %0d tiles of 32 by 32", TILE_COUNT);
+        end
+    endtask
+
+    // The land store's upload and read-back: the same packed image the walker
+    // will read, checked word for word through LAND_ADDR and LAND_DATA.
+    task automatic check_land(input [8*256-1:0] path);
+        integer f, i, bad;
+        reg [31:0] q, want, w;
+        begin
+            f = $fopen(path, "r");
+            if (f == 0) begin
+                $display("FAIL: cannot open %0s", path);
+                errors = errors + 1;
+            end else begin
+                if ($fscanf(f, "%d %d\n", land_vw, land_fw) != 2) begin
+                    $display("FAIL: land header"); errors = errors + 1;
+                end else if (land_vw + land_fw > 70000) begin
+                    $display("FAIL: land image too large: %0d words",
+                             land_vw + land_fw); errors = errors + 1;
+                end else begin
+                    for (i = 0; i < land_vw + land_fw; i = i + 1)
+                        if ($fscanf(f, "%h\n", land_words[i]) != 1) begin
+                            $display("FAIL: land word %0d", i);
+                            errors = errors + 1;
+                        end
+                    $fclose(f);
+                    write(15'h0040, 32'h0);
+                    for (i = 0; i < land_vw; i = i + 1)
+                        write(15'h0044, land_words[i]);
+                    write(15'h0040, 32'h10000);
+                    for (i = 0; i < land_fw; i = i + 1)
+                        write(15'h0044, land_words[land_vw + i]);
+                    bad = 0;
+                    write(15'h0040, 32'h0);
+                    for (i = 0; i < 2 * land_vw; i = i + 1) begin
+                        read(15'h0044, q);
+                        want = (i & 1) ? (land_words[i >> 1] >> 16)
+                                       : (land_words[i >> 1] & 32'hffff);
+                        if (q[15:0] !== want[15:0]) bad = bad + 1;
+                    end
+                    if (bad) begin
+                        $display("FAIL: land vertices, %0d of %0d wrong",
+                                 bad, 2 * land_vw);
+                        errors = errors + 1;
+                    end
+                    bad = 0;
+                    write(15'h0040, 32'h10000);
+                    for (i = 0; i < 4 * land_fw; i = i + 1) begin
+                        read(15'h0044, q);
+                        w = land_words[land_vw + (i >> 2)];
+                        want = (w >> (8 * (i & 3))) & 32'hff;
+                        if (q[7:0] !== want[7:0]) bad = bad + 1;
+                    end
+                    if (bad) begin
+                        $display("FAIL: land flags, %0d of %0d wrong",
+                                 bad, 4 * land_fw);
+                        errors = errors + 1;
+                    end
+                    if (!bad && errors == 0)
+                        $display("land: %0d vertex words and %0d flag words read back",
+                                 land_vw, land_fw);
+                end
+            end
         end
     endtask
 
@@ -300,6 +369,10 @@ module raster_tb;
         end
         load_tables;
         load_tiles;
+        if (!$value$plusargs("land=%s", land_path))
+            $display("NOTE: no +land=, land store not checked");
+        else
+            check_land(land_path);
         read(15'h10, tris0);
         write(15'h04, 32'h0);          // draw into buffer 0
         push(cmd0, 0);

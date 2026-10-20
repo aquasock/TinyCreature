@@ -43,6 +43,7 @@ make -s -C "$root/firmware/terrain" BUILD="$out" \
     CARD_YAW="${TINYCREATURE_CARD_YAW:-0}" \
     CARD_DEPTH="${TINYCREATURE_CARD_DEPTH:-48}" \
     CARD_EDGE="${TINYCREATURE_CARD_EDGE:-0}" clean host
+python3 -I "$root/tools/pack_land.py" "$land" "$out/land.hex"
 # The defaults retain the two established views: frame 0 sees the whole
 # island; frame 75 is close in, with triangles cut at the near plane. The
 # overrides let a new primitive be checked at other points around the orbit.
@@ -65,6 +66,6 @@ vvp -n "$out/raster_tb" +cmd0="$out/$dump0.cmd" +cmd1="$out/$dump1.cmd" \
     +fb0="$out/$dump0.fb" +fb1="$out/$dump1.fb" +crc0="$crc0" +crc01="$crc01" \
     +pal="$out/fpal.hex" +lut="$out/flut.hex" +tiles="$out/ftiles.hex" \
     +nz0="$nz0" +nz1="$nz1" +dump="$out/wrong.txt" \
-    +framedump="$out/$dump0.sim.fb" \
+    +framedump="$out/$dump0.sim.fb" +land="$out/land.hex" \
     | tee "$out/raster_tb.log"
 grep -q '^PASS raster_tb' "$out/raster_tb.log"

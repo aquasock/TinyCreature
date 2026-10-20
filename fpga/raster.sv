@@ -164,6 +164,7 @@ module raster #(
 
     // ---- Bus slave ----
     reg target = 0, err2 = 0, w_ctrl = 0, w_rb = 0, w_crc = 0, r_fb = 0;
+    reg w_land = 0, w_land_addr = 0, r_land = 0, r_land_wait = 0;
     reg [1:0] r_byte = 0;
     reg r_issued = 0;
     reg [31:0] r_data = 0;
@@ -180,15 +181,19 @@ module raster #(
     wire busy, working;
     wire accept = hready_in && hsel && htrans[1];
     wire word = hsize == 3'd2 && haddr[1:0] == 0;
-    wire [3:0] reg_index = haddr[5:2];
-    wire is_reg = haddr[14:6] == 0;
+    wire [4:0] reg_index = haddr[6:2];
+    wire is_reg = haddr[14:7] == 0;
     wire is_fb = is_reg && !hwrite && reg_index == 9;
+    // The register window is now 128 bytes: the old 0x00 to 0x3c keep their
+    // indices, and the land's two registers sit at 0x40 and 0x44.
     wire ok = word && is_reg &&
-              (hwrite ? (reg_index <= 1 || reg_index >= 7 && reg_index <= 8) ||
-                        reg_index == 11 || reg_index == 12 || reg_index == 13 ||
-                        reg_index == 14
-                      : (reg_index >= 1 && reg_index <= 7) || reg_index == 9 ||
-                        reg_index == 10 || reg_index == 15);
+              (hwrite ? ((reg_index <= 1) ||
+                         (reg_index >= 7 && reg_index <= 8) ||
+                         (reg_index >= 11 && reg_index <= 14) ||
+                         reg_index == 16 || reg_index == 17)
+                      : ((reg_index >= 1 && reg_index <= 7) ||
+                         reg_index == 9 || reg_index == 10 ||
+                         reg_index == 15 || reg_index == 17));
     // The CPU's read port request, served when the line fetch leaves it.
     reg cpu_rd = 0;
     wire cpu_rd_grant;
@@ -200,6 +205,7 @@ module raster #(
             hready <= 1; hresp <= 0; hrdata <= 0; err2 <= 0; w_fifo <= 0;
             w_ctrl <= 0; w_crc <= 0; r_fb <= 0; show <= 0; target <= 0;
             stalls <= 0; cpu_rd <= 0; r_issued <= 0; busy_cycles <= 0;
+            w_land <= 0; w_land_addr <= 0; r_land <= 0; r_land_wait <= 0;
         end else begin
             if (working) busy_cycles <= busy_cycles + 1'b1;
             if (err2) begin
@@ -231,6 +237,20 @@ module raster #(
                     tiles_addr <= tiles_addr + 16'd4;
                 end else
                     tiles_step <= tiles_step + 1'b1;
+            end else if (w_land_addr) begin
+                w_land_addr <= 0; hready <= 1;
+            end else if (w_land) begin
+                w_land <= 0; hready <= 1;
+            end else if (r_land) begin
+                // The store loads land_q on this edge; the data phase
+                // follows one clock later.
+                r_land <= 0; r_land_wait <= 1;
+            end else if (r_land_wait) begin
+                hrdata <= land_rmode
+                          ? (land_fraw >> (8 * land_rsel)) & 16'h00ff
+                          : (land_rsel[0] ? land_vraw[31:16]
+                                          : land_vraw[15:0]);
+                hready <= 1; r_land_wait <= 0;
             end else if (w_crc) begin
                 // One cycle of w_crc is the scan's start pulse.
                 w_crc <= 0; hready <= 1;
@@ -268,6 +288,12 @@ module raster #(
                         hready <= 0; hresp <= 1; err2 <= 1;
                     end else if (is_fb) begin
                         hready <= 0; r_fb <= 1; r_byte <= 0; cpu_rd <= 1;
+                    end else if (!hwrite && reg_index == 17) begin
+                        hready <= 0; r_land <= 1;
+                    end else if (hwrite && reg_index == 16) begin
+                        hready <= 0; w_land_addr <= 1;
+                    end else if (hwrite && reg_index == 17) begin
+                        hready <= 0; w_land <= 1;
                     end else if (hwrite && reg_index == 0) begin
                         hready <= 0; w_fifo <= 1;
                     end else if (hwrite && reg_index == 7) begin
@@ -421,6 +447,59 @@ module raster #(
         pal_q <= palette[pal_addr];
         lut_q <= lut[lut_addr];
         tile_q <= tiles[tile_raddr];
+    end
+
+    // ---- The land, packed for the walker ----
+    // A vertex is one 16-bit word, {colour, altitude}; a cell's three flag
+    // bits -- split, first triangle, second triangle -- are one nibble, two
+    // cells a byte. Sized for the accepted Celtic grid, 240 by 224 cells;
+    // Land 1's smaller grid fits the same stores. The walker is not here
+    // yet, so nothing reads these but the upload's own read-back.
+    localparam LAND_VX = 241, LAND_VZ = 225;
+    localparam LAND_CX = 240, LAND_CZ = 224;
+    localparam LAND_VERTICES = LAND_VX * LAND_VZ;   // 54,225
+    localparam LAND_CELLS = LAND_CX * LAND_CZ;      // 53,760
+    localparam LAND_VERTEX_WORDS = (LAND_VERTICES + 1) / 2;
+    localparam LAND_FLAG_WORDS = (LAND_CELLS + 7) / 8;
+    // One 32-bit word a write, so the memory has a single write port: two
+    // vertex words a word, or eight cells' nibbles. The odd last vertex's
+    // high half is zero.
+    (* ram_style = "block" *) reg [31:0] land_v [0:LAND_VERTEX_WORDS - 1];
+    (* ram_style = "block" *) reg [31:0] land_f [0:LAND_FLAG_WORDS - 1];
+    // No initial value on these pointers: the block-RAM mapper refuses a read
+    // address register with one, and the first LAND_ADDR write sets them.
+    reg [16:0] land_waddr, land_raddr;
+    // The memories' own output registers, directly fed so the mapper can use
+    // the block RAM's output flip-flops; the byte or half selection is made
+    // in the bus cycle after, from these.
+    reg [31:0] land_vraw = 0, land_fraw = 0;
+    reg land_rmode = 0;
+    reg [1:0] land_rsel = 0;
+    // A LAND_ADDR write sets both pointers; bit 16 picks flags over vertices.
+    // A LAND_DATA write takes one 32-bit word and moves the write pointer; a
+    // LAND_DATA read returns one 16-bit vertex or one flag byte and moves the
+    // read pointer by that unit.
+    always @(posedge clk) begin
+        if (w_land_addr) begin
+            land_waddr <= {hwdata[16], hwdata[15:0]};
+            land_raddr <= {hwdata[16], hwdata[15:0]};
+        end
+        if (w_land) begin
+            if (land_waddr[16]) begin
+                land_f[land_waddr[15:2]] <= hwdata;
+                land_waddr <= land_waddr + 17'd4;
+            end else begin
+                land_v[land_waddr[15:1]] <= hwdata;
+                land_waddr <= land_waddr + 17'd2;
+            end
+        end
+        if (r_land) begin
+            land_vraw <= land_v[land_raddr[15:1]];
+            land_fraw <= land_f[land_raddr[15:2]];
+            land_rmode <= land_raddr[16];
+            land_rsel <= land_raddr[1:0];
+            land_raddr <= land_raddr + 1'b1;
+        end
     end
 
     // ---- The vertex store: 1024 slots of 144 bits, four 36-bit block RAMs

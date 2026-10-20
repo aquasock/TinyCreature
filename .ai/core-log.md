@@ -2668,3 +2668,37 @@ The depth path is off the critical list, so the terrain walker with the land in 
 - User Test: PASS
 
 ---
+
+
+## 81 COMMIT Unreleased 2026-10-20T00:07:47-07:00
+
+#### Coming From:
+
+Unreleased fcb21a7
+
+#### Purpose:
+
+Add the walker's packed land store to the fabric, with a deterministic upload and a read-back, and check it and its block-RAM cost in simulation before any walker logic is written.
+
+#### Outcome:
+
+`fpga/raster.sv` now carries a land store sized for the accepted Celtic grid: 241 by 225 vertex words of `{colour, altitude}`, two a 32-bit word, 27,113 words, and 240 by 224 cells' three flag bits, eight nibbles a 32-bit word, 6,720 words. `LAND_ADDR` at 0x40 sets both pointers, bit 16 choosing flags over vertices, and `LAND_DATA` at 0x44 takes one 32-bit word a write or returns one 16-bit vertex or one flag byte a read; the register window is 128 bytes now, with the old addresses keeping their indices. The store came to 70 block RAMs, 293 of 340 against 223 before, leaving 47 for the walker. `tools/pack_land.py` is new: it checks the TCL2 magic, version, length and body CRC and writes the count line and packed words the testbench streams. `tests/raster_tb.sv` gained an upload and read-back of both stores, and `tools/test_tang32_raster.sh` generates the packed image with the tool and passes it as `+land=`. Land 1 read back its 23,513 vertex words and 5,824 flag words exactly, and Celtic its 27,113 and 6,720, while both frames stayed what they were: `293e6ccf` and `5c2808f5` for Land 1, `4bb0a03f` and `9013c700` for Celtic. The first two synthesis attempts failed on the memory: pair writes implied two write ports, and a shifter between the memory and its output register hid the register from the mapper; the store now writes one 32-bit word a write and registers the raw memory outputs before selecting a half or byte, and the synthesis stage passes with 15,903 LUT4, 7,976 ALU, 12,176 `DFFRE`, 1,962 `DFF` and 1,535 `DFFCE`. No place-and-route ran, nothing was built for the board and nothing was deployed; the walker does not read the store yet. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The walker's front end comes next: the block cull and the far-to-near cell order, with the same slot keys the CPU's stored path uses, compared against the CPU twin's cell and slot sequence in simulation. The vertex transform and projection follow, then the near-plane clip and the triangle assembly, and only then the production uploader and a board build. The store's 70 block RAMs leave 47, so the front end's slot-owner table and triangle queue should stay small until a sweep says otherwise.
+
+#### Files Modified:
+
+- fpga/raster.sv
+- tests/raster_tb.sv
+- tools/pack_land.py
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---
