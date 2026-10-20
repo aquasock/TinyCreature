@@ -2545,3 +2545,33 @@ Stop at this failed sweep as approved and obtain approval for a new cycle that c
 - User Test: NOT RUN
 
 ---
+
+## 77 COMMIT Unreleased 2026-10-19T21:06:16-07:00
+
+#### Coming From:
+
+Unreleased e2a058b
+
+#### Purpose:
+
+Restore nextpnr's documented default heap-placement timeout behavior and retry the depth core with one approved eight-seed sweep.
+
+#### Outcome:
+
+`tools/build_tang32.sh` no longer supplies the erroneous `--placer-heap-cell-placement-timeout 50000` default, while the generic `TINY_NES_NEXTPNR_ARGS` hook remains available in the TinyNES patch. The Land 1 frame 0 and frame 75 raster regression again matched `terrain_host` byte for byte with CRCs `293e6ccf` and `5c2808f5`. One seeds 1 through 8 sweep was run with `TINY_NES_NEXTPNR_ARGS` explicitly unset, but every seed again failed legal placement before routing and reported a maximum of 10,000 attempts per cell followed by failure at attempt 10,001; omitting the option therefore did not produce the larger limit implied by this nextpnr binary's help text. No core was produced, so deployment and user testing did not run. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+Obtain approval for a distinct placement experiment that sets `--placer-heap-cell-placement-timeout 0`, which the binary documents as disabling the per-cell timeout, then run one eight-seed sweep and deploy only if a seed clears every existing timing, clock-route and memory gate; if unlimited placement still cannot legalise the design, return to the remaining enabled datapath banks or compare `synth_gowin -nodffe` in synthesis before another hardware build.
+
+#### Files Modified:
+
+- tools/build_tang32.sh
+
+#### Status:
+
+- Build: FAIL
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---
