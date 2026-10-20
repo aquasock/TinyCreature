@@ -1881,3 +1881,108 @@ module raster #(
     assign raddr1 = (fetching && f_buf) ? f_addr
                    : (crc_scanning ? crc_addr : cpu_raddr);
 endmodule
+
+// ---- The transform unit: terrain.c's to_camera() and project_xy() ----
+// The camera rotation is eight small signed products, so it is combinational;
+// the reciprocal is a radix-4 long division, two quotient digits a clock, and
+// the screen product is the 64-bit one the C takes. This unit is checked
+// against tests/vert_model.sv and not yet instantiated by the raster.
+module transform(
+    input wire clk, input wire resetn,
+    input wire signed [31:0] cam_x, cam_y, cam_z,
+    input wire signed [31:0] sin_yaw, cos_yaw, sin_pitch, cos_pitch,
+    input wire [15:0] gx, gz,
+    input wire [7:0] alt,
+    input wire go,
+    output reg signed [15:0] sx, sy,
+    output reg [31:0] depth,
+    output reg [1:0] state,
+    output reg done
+);
+    localparam T_IDLE = 0, T_CAM = 1, T_DIV = 2, T_DONE = 3;
+    reg [1:0] tstate = T_IDLE;
+    reg signed [31:0] tx = 0, ty = 0, tz = 0;
+    reg tfront = 0;
+    reg [31:0] tq = 0, trem = 0;
+    reg [4:0] tstep = 0;
+    reg signed [31:0] tinv = 0;
+
+    // The camera rotation, exactly as terrain.c does it.
+    wire signed [31:0] wx = $signed({16'd0, gx}) * 32'sd160;
+    wire signed [31:0] wy = ($signed({24'd0, alt}) * 32'sd2744) >>> 8;
+    wire signed [31:0] wz = $signed({16'd0, gz}) * 32'sd160;
+    wire signed [31:0] dx = wx - cam_x;
+    wire signed [31:0] dy = wy - cam_y;
+    wire signed [31:0] dz = wz - cam_z;
+    wire signed [31:0] rz = (dx * sin_yaw + dz * cos_yaw) >>> 14;
+    wire signed [31:0] cx = (dx * cos_yaw - dz * sin_yaw) >>> 14;
+    wire signed [31:0] cy = (dy * cos_pitch + rz * sin_pitch) >>> 14;
+    wire signed [31:0] cz = (rz * cos_pitch - dy * sin_pitch) >>> 14;
+
+    // The radix-4 division: the next two numerator bits, then the largest
+    // digit that fits, two quotient digits a clock.
+    wire [31:0] shift = (trem << 2) | ((32'd1 << 30) >> (2 * tstep)) & 3;
+    wire [31:0] den2 = tz << 1;
+    wire [31:0] den3 = tz + den2;
+    wire [1:0] digit = shift >= den3 ? 2'd3 :
+                       shift >= den2 ? 2'd2 : shift >= tz ? 2'd1 : 2'd0;
+    wire [31:0] rem_next = shift - (digit == 2'd3 ? den3 :
+                                    digit == 2'd2 ? den2 :
+                                    digit == 2'd1 ? tz : 32'd0);
+    wire [31:0] q_next = tq | ((32'd0 + digit) << (2 * tstep));
+
+    // The screen point, with the 64-bit product the C takes.
+    wire signed [63:0] xinv = {{32{tx[31]}}, tx} * {{32{tinv[31]}}, tinv};
+    wire signed [63:0] yinv = {{32{ty[31]}}, ty} * {{32{tinv[31]}}, tinv};
+    wire signed [31:0] xoff = (xinv >>> 18);
+    wire signed [31:0] yoff = (yinv >>> 18);
+    wire signed [31:0] sxr = 32'sd2560 + xoff;
+    wire signed [31:0] syr = 32'sd1440 - yoff;
+    wire wide = sxr > 32'sd32767 || sxr < -32'sd32768 ||
+                syr > 32'sd32767 || syr < -32'sd32768;
+    wire signed [15:0] sxc = sxr > 32'sd32767 ? 16'sd32767 :
+                             sxr < -32'sd32768 ? -16'sd32768 : sxr[15:0];
+    wire signed [15:0] syc = syr > 32'sd32767 ? 16'sd32767 :
+                             syr < -32'sd32768 ? -16'sd32768 : syr[15:0];
+
+    always @(posedge clk or negedge resetn) begin
+        if (!resetn) begin
+            tstate <= T_IDLE; done <= 0; sx <= 0; sy <= 0;
+            depth <= 0; state <= 0;
+        end else case (tstate)
+            T_IDLE:
+                if (go) begin
+                    done <= 0;
+                    tx <= cx; ty <= cy; tz <= cz;
+                    tfront <= cz >= 32'sd128;
+                    if (cz < 32'sd128) begin
+                        sx <= 0; sy <= 0; depth <= 0; state <= 2'd1;
+                        done <= 1;
+                    end else
+                        tstate <= T_CAM;
+                end
+            T_CAM: begin
+                tq <= 0; trem <= 0; tstep <= 5'd15;
+                tstate <= T_DIV;
+            end
+            T_DIV: begin
+                trem <= rem_next;
+                tq <= q_next;
+                if (tstep == 0) begin
+                    tinv <= q_next;
+                    tstate <= T_DONE;
+                end else
+                    tstep <= tstep - 1'b1;
+            end
+            T_DONE: begin
+                sx <= sxc;
+                sy <= syc;
+                depth <= tinv;
+                state <= wide ? 2'd2 : 2'd0;
+                done <= 1;
+                tstate <= T_IDLE;
+            end
+            default: tstate <= T_IDLE;
+        endcase
+    end
+endmodule

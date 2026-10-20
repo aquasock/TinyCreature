@@ -2807,3 +2807,34 @@ The hardware transform engine comes next: a sequential radix-4 multiplier and di
 - User Test: N/A
 
 ---
+
+## 85 COMMIT Unreleased 2026-10-20T01:29:00-07:00
+
+#### Coming From:
+
+Unreleased 5dd111a
+
+#### Purpose:
+
+Put the transform arithmetic in hardware: the camera rotation combinationally, the reciprocal as a radix-4 long division, and the screen product at the C's 64-bit width, checked against the CPU trace.
+
+#### Outcome:
+
+`fpga/raster.sv` gains a `transform` module, not yet instantiated by the raster: the eight signed products and shifts of `to_camera` are combinational, `(1 << 30) / z` is a sixteen-step radix-4 division taking two quotient digits a clock, and `x * inv` and `y * inv` are the 64-bit products the C takes, shifted and cast back to 32 bits, with the 2560 and 1440 origins and the int16 clamp and front, behind and wide states. `tests/raster_tb.sv` instantiates it beside the model and runs every traced vertex through it; Land 1 and Celtic both matched all 256 vertices, with the frames unchanged at `293e6ccf` and `5c2808f5` and at `4bb0a03f` and `9013c700`. The first run never left idle because the test cleared `go` in the same time step the unit sampled it; the clear is one nanosecond after the edge now, and a 200-clock guard turns a future miss into a reported failure instead of a hang. The unit takes about nineteen clocks a vertex: at 75 MHz that is 13.7 ms for the 54,225 unique grid vertices, or 27 ms for four corners of each of the 26,542 drawn cells, so the slot de-duplication and parallel lanes are what stands between it and the CPU's 10.2 ms `VERT` phase. The module is not in the core's hierarchy, so synthesis, block RAM use and the deployed core are unchanged; no place-and-route or deployment ran. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+Integrate the unit with the walker's cell stream: camera registers, the four corners' altitude and colour from the land store, the slot keys and the de-duplication the CPU's stored path uses, then the near-plane clip and the triangle assembly into the existing setup. The four-corner stream and the nineteen-clock latency are the performance question; a vertex cache or parallel divider lanes is the next cut if the integrated fabric frame does not fit under the CPU's plant work.
+
+#### Files Modified:
+
+- fpga/raster.sv
+- tests/raster_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

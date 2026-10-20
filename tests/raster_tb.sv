@@ -41,6 +41,22 @@ module raster_tb;
         .gx(vm_gx), .gz(vm_gz), .alt(vm_alt),
         .sx(vm_sx), .sy(vm_sy), .depth(vm_depth), .state(vm_state));
 
+    // The synthesised-shaped unit, checked against the same trace.
+    reg [15:0] eng_gx = 0, eng_gz = 0;
+    reg [7:0] eng_alt = 0;
+    reg eng_go = 0;
+    wire signed [15:0] eng_sx, eng_sy;
+    wire [31:0] eng_depth;
+    wire [1:0] eng_state;
+    wire eng_done;
+    transform eng(.clk(clk), .resetn(resetn),
+        .cam_x(vm_cam_x), .cam_y(vm_cam_y), .cam_z(vm_cam_z),
+        .sin_yaw(vm_sin_yaw), .cos_yaw(vm_cos_yaw),
+        .sin_pitch(vm_sin_pitch), .cos_pitch(vm_cos_pitch),
+        .gx(eng_gx), .gz(eng_gz), .alt(eng_alt), .go(eng_go),
+        .sx(eng_sx), .sy(eng_sy), .depth(eng_depth), .state(eng_state),
+        .done(eng_done));
+
     integer errors = 0;
 
     // One AHB transfer: the address phase on the edge after hready is
@@ -271,7 +287,7 @@ module raster_tb;
     // frame's camera, and each V line is a corner's grid position, altitude
     // and the CPU's screen position, depth and state.
     task automatic check_vert(input [8*256-1:0] path);
-        integer f, gx, gz, alt, esx, esy, edepth, estate, n, bad;
+        integer f, gx, gz, alt, esx, esy, edepth, estate, n, bad, guard;
         begin
             f = $fopen(path, "r");
             if (f == 0) begin
@@ -289,14 +305,37 @@ module raster_tb;
                     while ($fscanf(f, "V %d %d %d %d %d %d %d\n",
                                    gx, gz, alt, esx, esy, edepth, estate) == 7) begin
                         vm_gx = gx; vm_gz = gz; vm_alt = alt;
+                        eng_gx = gx; eng_gz = gz; eng_alt = alt;
                         #1;
                         if ($signed(vm_sx) !== $signed(esx[15:0]) ||
                             $signed(vm_sy) !== $signed(esy[15:0]) ||
                             vm_depth !== edepth || vm_state !== estate) begin
                             if (bad < 4)
-                                $display("FAIL: vert %0d: %0d,%0d alt %0d grid %0d %0d %0d %0d, model %0d %0d %0d %0d",
+                                $display("FAIL: vert model %0d: %0d,%0d alt %0d grid %0d %0d %0d %0d, model %0d %0d %0d %0d",
                                          n, gx, gz, alt, esx, esy, edepth, estate,
                                          $signed(vm_sx), $signed(vm_sy), vm_depth, vm_state);
+                            bad = bad + 1;
+                        end
+                        eng_go = 1;
+                        @(posedge clk);
+                        #1 eng_go = 0;
+                        guard = 0;
+                        while (!eng_done && guard < 200) begin
+                            @(posedge clk);
+                            guard = guard + 1;
+                        end
+                        if (!eng_done) begin
+                            if (bad < 4)
+                                $display("FAIL: transform timeout at %0d", n);
+                            bad = bad + 1;
+                        end
+                        if ($signed(eng_sx) !== $signed(esx[15:0]) ||
+                            $signed(eng_sy) !== $signed(esy[15:0]) ||
+                            eng_depth !== edepth || eng_state !== estate) begin
+                            if (bad < 4)
+                                $display("FAIL: transform %0d: %0d,%0d alt %0d grid %0d %0d %0d %0d, unit %0d %0d %0d %0d",
+                                         n, gx, gz, alt, esx, esy, edepth, estate,
+                                         $signed(eng_sx), $signed(eng_sy), eng_depth, eng_state);
                             bad = bad + 1;
                         end
                         n = n + 1;
