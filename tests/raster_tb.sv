@@ -51,6 +51,7 @@ module raster_tb;
     wire signed [15:0] eng_sx, eng_sy;
     wire [31:0] eng_depth;
     wire [1:0] eng_state;
+    wire signed [31:0] eng_camx, eng_camy, eng_camz;
     transform eng(.clk(clk), .resetn(resetn),
         .cam_x(vm_cam_x), .cam_y(vm_cam_y), .cam_z(vm_cam_z),
         .sin_yaw(vm_sin_yaw), .cos_yaw(vm_cos_yaw),
@@ -59,7 +60,8 @@ module raster_tb;
         .in_gx(eng_gx), .in_gz(eng_gz), .in_alt(eng_alt),
         .out_valid(eng_out_valid), .out_tag(eng_out_tag),
         .out_gx(eng_out_gx), .out_gz(eng_out_gz), .out_alt(eng_out_alt),
-        .sx(eng_sx), .sy(eng_sy), .depth(eng_depth), .state(eng_state));
+        .sx(eng_sx), .sy(eng_sy), .depth(eng_depth), .state(eng_state),
+        .camx(eng_camx), .camy(eng_camy), .camz(eng_camz));
 
     integer errors = 0;
     integer tck = 0;

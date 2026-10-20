@@ -150,3 +150,33 @@ The near-plane and guard clip, so the fabric draws the triangles it now skips an
 - User Test: PASS
 
 ---
+## 6 COMMIT Unreleased 2026-10-20T14:13:28-07:00
+
+#### Coming From:
+
+Unreleased d65233e
+
+#### Purpose:
+
+Cut the triangles the vertex store cannot carry at the near plane, so the fabric draws the geometry it had been skipping, and hand the state to the next agent.
+
+#### Outcome:
+
+The fabric now has a near-plane clip: `sdiv64` divides a 64-bit signed numerator by a 32-bit one truncating toward zero as C's does, checked on its own bench against ten cases including every sign combination, and the feeder re-derives an undrawable triangle's three corners in camera space through the transform, cuts the edges that cross the plane, projects each cut point at NEAR -- where `(1 << 30) / 128` is exactly 2^23, so the projection is a five-bit shift and not a multiply -- and draws the polygon as a fan of whole four-word TRI commands through the same command queue, which now takes its length from the word that starts a command so the assembly can send either kind. The transform gained camera-space outputs beside its screen corner, and a sixteen-cell bench with the camera moved inside the land produced the first clipped triangles, 32 before the close walk and 34 after, so the path executes. It has not been checked against the CPU: measured against a corner-interpolated picture it can only be close, because a cut corner takes the palette entry of the corner it was cut from where terrain.c shades it from the interpolated weights, and the guard band is not implemented at all, both of which the user accepted as the scope. Synthesis of the clip is 25,285 `LUT4` against 21,800, 11,003 `ALU` against 10,418, 19,233 `DFFRE` against 18,487 and 292 of 340 block RAMs unchanged, so the cut costs more logic than the whole walker and assembler did, and on a design already marginal for the placer seed 7 failed placement outright while the other seven were still placing; the user stopped the sweep there rather than spend an hour on a build whose end was visible. The full-land simulation started alongside it never reached its first checkpoint before it too was stopped, so the store path has not been re-checked since the clip arrived. The board still runs seed 4's overclocked core (`ae350_soc.bin` SHA-256 `db2869114add7c10`) with the fabric-walk program from entry 5, which is what the user last watched; entry 80's core is backed up in `build/core-entry80/` and seed 4's pack in `build/core-seed4/`. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md`, `.ai/core-reference.md` and `.ai/core-syntax.md` are unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+Check the clip against the CPU before trusting it: the full-land testbench should compare the fabric's walk frame against the program's whole command stream, TRI commands included, rather than against the store path alone, and the two known differences -- a cut corner's colour and the missing guard band -- will show as the pixels that remain. Then decide what to do about the clip's cost, since 3,485 more `LUT4` on a design that closes at 71.38 MHz and cannot place on every seed is the wrong direction: the candidates are reusing the transform's own lanes for the corner re-runs instead of a second copy, cutting the polygon buffer down, and moving the clip to the CPU for the few triangles that need it if the depth buffer can be made to cover their order. The walk also still costs 144 clocks a cell, 26.7 ms a frame, which is the pipelining work entry 5 set out, and the archived entry 51 `BAD TINYCREATURE PIXELS` and the art queue stay open.
+
+#### Files Modified:
+
+- fpga/raster.sv
+- tests/raster_tb.sv
+
+#### Status:
+
+- Build: FAIL
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---
