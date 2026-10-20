@@ -2738,3 +2738,36 @@ The fabric front end is next: read the packed land flags, take the block-shown b
 - User Test: N/A
 
 ---
+
+
+## 83 COMMIT Unreleased 2026-10-20T00:42:26-07:00
+
+#### Coming From:
+
+Unreleased b2eec59
+
+#### Purpose:
+
+Put the terrain cell walk in the fabric, driven by the packed land store, the CPU's block-shown bitset and the camera cell, and check its order and flags against the CPU trace.
+
+#### Outcome:
+
+`fpga/raster.sv` now has the walker's registers at 0x48 to 0x68: `WALK_CX` and `WALK_CZ`, the grid's `WALK_CELLS`, the block bitset's address and data (`WALK_SHOW_A`, `WALK_SHOW_D`), `WALK_CTRL`, a status word (busy, done, empty, full), the cell FIFO and a count. The walker reads the packed land flags a word of eight cells at a time, applies the CPU's block-shown bitset, reproduces terrain.c's `farther` interleave, filters on `flags & 6`, and pushes `{front, gz, gx}` to a 256-entry FIFO, stalling when it is full; the block cull itself stays on the CPU for now, and the testbench supplies its 182- or 210-bit result. `tests/raster_tb.sv` reads the trace's `T`, `B` and `C` lines, uploads the grid, camera cell and bitset, starts the walk, drains the FIFO and compares every cell and front; `tools/test_tang32_raster.sh` passes the trace as `+walk=`. Land 1's 21,223 cells and Celtic's 26,542 cells matched the model, and the frames were unchanged at `293e6ccf` and `5c2808f5` for Land 1 and `4bb0a03f` and `9013c700` for Celtic, with the land store still reading back exactly. The first run lost cells from about the 3,824th because the FIFO's level was declared ten bits over nine-bit pointers, so `full` never asserted and writes overwrote unread entries; the level is nine bits now and full is its top bit. Synthesis passes, with the FIFO implemented as registers rather than block RAM (the block style did not map), at 17,202 `DFFRE`, 19,689 `LUT4`, 8,375 `ALU`, 2,000 `DFF` and 1,576 `DFFCE`; the block RAMs stay at 293 of 340. No place-and-route or deployment ran. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The vertex transform and projection come next: `to_camera` and `project_xy` in the fabric for the walker's cells, with the land's altitude and colour words, then the near-plane clip and the triangle assembly into the existing setup. The slot keys, which entry 82 pinned against the CPU in the model, move into that stage and the block cull can follow. The FIFO's register cost leaves the block RAMs free but the transform must watch `DFFRE` and `LUT4`, which are already at 17,202 and 19,689.
+
+#### Files Modified:
+
+- fpga/raster.sv
+- tests/raster_tb.sv
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

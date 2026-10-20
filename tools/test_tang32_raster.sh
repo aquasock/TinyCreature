@@ -69,5 +69,6 @@ vvp -n "$out/raster_tb" +cmd0="$out/$dump0.cmd" +cmd1="$out/$dump1.cmd" \
     +pal="$out/fpal.hex" +lut="$out/flut.hex" +tiles="$out/ftiles.hex" \
     +nz0="$nz0" +nz1="$nz1" +dump="$out/wrong.txt" \
     +framedump="$out/$dump0.sim.fb" +land="$out/land.hex" \
+    +walk="$out/cells.txt" \
     | tee "$out/raster_tb.log"
 grep -q '^PASS raster_tb' "$out/raster_tb.log"

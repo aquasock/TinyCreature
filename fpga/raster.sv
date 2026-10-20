@@ -165,6 +165,39 @@ module raster #(
     // ---- Bus slave ----
     reg target = 0, err2 = 0, w_ctrl = 0, w_rb = 0, w_crc = 0, r_fb = 0;
     reg w_land = 0, w_land_addr = 0, r_land = 0, r_land_wait = 0;
+    // The walker's controls, the block bitset and its cell FIFO. The cell
+    // entries are {14'd0, front, gz[7:0], gx[8:0]}.
+    reg [15:0] wcx = 0, wcz = 0, wcells_x = 0, wcells_z = 0;
+    reg [2:0] wshow_a = 0;
+    reg [223:0] wshown = 0;
+    reg walk_go = 0, w_walk = 0;
+    reg [2:0] walk_wreg = 0;
+    reg r_wfifo = 0, r_wfifo_wait = 0;
+    reg [31:0] wfifo_q = 0;
+    reg [8:0] wfifo_wr = 0, wfifo_rd = 0;
+    (* ram_style = "block" *) reg [31:0] wfifo [0:255];
+    reg [2:0] wstate = 0;
+    reg [15:0] wz_lo = 0, wz_hi = 0, wx_lo = 0, wx_hi = 0;
+    reg [15:0] wgz = 0, wgx = 0, wrow_base = 0, wcount = 0, wcell = 0;
+    reg [9:0] wblock = 0;
+    reg wfront = 0;
+    localparam W_IDLE = 0, W_Z = 1, W_X = 2, W_FLAG = 3, W_DONE = 4;
+    // terrain.c's farther(): the end farther from the camera cell, moving
+    // toward it. The differences are 17-bit signed so the comparison is
+    // exact for any grid this store holds.
+    wire signed [16:0] xda = $signed({1'b0, wcx}) - $signed({1'b0, wx_lo});
+    wire signed [16:0] xdb = $signed({1'b0, wx_hi}) - $signed({1'b0, wcx});
+    wire [16:0] xaa = xda[16] ? -xda : xda;
+    wire [16:0] xab = xdb[16] ? -xdb : xdb;
+    wire xpick_lo = xaa >= xab;
+    wire signed [16:0] zda = $signed({1'b0, wcz}) - $signed({1'b0, wz_lo});
+    wire signed [16:0] zdb = $signed({1'b0, wz_hi}) - $signed({1'b0, wcz});
+    wire [16:0] zaa = zda[16] ? -zda : zda;
+    wire [16:0] zab = zdb[16] ? -zdb : zdb;
+    wire zpick_lo = zaa >= zab;
+    wire [15:0] wcell_now = wrow_base + (xpick_lo ? wx_lo : wx_hi);
+    always @(posedge clk)
+        wfifo_q <= wfifo[wfifo_rd[7:0]];
     reg [1:0] r_byte = 0;
     reg r_issued = 0;
     reg [31:0] r_data = 0;
@@ -190,10 +223,11 @@ module raster #(
               (hwrite ? ((reg_index <= 1) ||
                          (reg_index >= 7 && reg_index <= 8) ||
                          (reg_index >= 11 && reg_index <= 14) ||
-                         reg_index == 16 || reg_index == 17)
+                         (reg_index >= 16 && reg_index <= 23))
                       : ((reg_index >= 1 && reg_index <= 7) ||
                          reg_index == 9 || reg_index == 10 ||
-                         reg_index == 15 || reg_index == 17));
+                         reg_index == 15 || reg_index == 17 ||
+                         (reg_index >= 24 && reg_index <= 26)));
     // The CPU's read port request, served when the line fetch leaves it.
     reg cpu_rd = 0;
     wire cpu_rd_grant;
@@ -206,6 +240,8 @@ module raster #(
             w_ctrl <= 0; w_crc <= 0; r_fb <= 0; show <= 0; target <= 0;
             stalls <= 0; cpu_rd <= 0; r_issued <= 0; busy_cycles <= 0;
             w_land <= 0; w_land_addr <= 0; r_land <= 0; r_land_wait <= 0;
+            walk_go <= 0; w_walk <= 0; r_wfifo <= 0; r_wfifo_wait <= 0;
+            wfifo_rd <= 0;
         end else begin
             if (working) busy_cycles <= busy_cycles + 1'b1;
             if (err2) begin
@@ -251,6 +287,29 @@ module raster #(
                           : (land_rsel[0] ? land_vraw[31:16]
                                           : land_vraw[15:0]);
                 hready <= 1; r_land_wait <= 0;
+            end else if (w_walk) begin
+                w_walk <= 0; hready <= 1;
+                case (walk_wreg)
+                    3'd0: wcx <= hwdata[15:0];
+                    3'd1: wcz <= hwdata[15:0];
+                    3'd2: begin
+                        wcells_x <= hwdata[15:0];
+                        wcells_z <= hwdata[31:16];
+                    end
+                    3'd3: wshow_a <= hwdata[2:0];
+                    3'd4: wshown[{wshow_a, 5'd0} +: 32] <= hwdata;
+                    3'd5: begin
+                        walk_go <= hwdata[0];
+                        wfifo_rd <= 0;
+                    end
+                endcase
+            end else if (walk_go) begin
+                walk_go <= 0;
+            end else if (r_wfifo) begin
+                wfifo_rd <= wfifo_rd + 1'b1;
+                r_wfifo <= 0; r_wfifo_wait <= 1;
+            end else if (r_wfifo_wait) begin
+                hrdata <= wfifo_q; hready <= 1; r_wfifo_wait <= 0;
             end else if (w_crc) begin
                 // One cycle of w_crc is the scan's start pulse.
                 w_crc <= 0; hready <= 1;
@@ -281,6 +340,8 @@ module raster #(
                         7: hrdata <= crc_reg;
                         10: hrdata <= {16'd0, nz_latch};
                         15: hrdata <= busy_cycles;
+                        24: hrdata <= {28'd0, wfull, wempty, wdone, wbusy};
+                        26: hrdata <= {16'd0, wcount};
                         default: hrdata <= 0;
                     endcase
                 if (accept) begin
@@ -294,6 +355,11 @@ module raster #(
                         hready <= 0; w_land_addr <= 1;
                     end else if (hwrite && reg_index == 17) begin
                         hready <= 0; w_land <= 1;
+                    end else if (!hwrite && reg_index == 25) begin
+                        hready <= 0; r_wfifo <= 1;
+                    end else if (hwrite && reg_index >= 18 && reg_index <= 23) begin
+                        hready <= 0; w_walk <= 1;
+                        walk_wreg <= reg_index[2:0] - 3'd2;
                     end else if (hwrite && reg_index == 0) begin
                         hready <= 0; w_fifo <= 1;
                     end else if (hwrite && reg_index == 7) begin
@@ -469,6 +535,12 @@ module raster #(
     // No initial value on these pointers: the block-RAM mapper refuses a read
     // address register with one, and the first LAND_ADDR write sets them.
     reg [16:0] land_waddr, land_raddr;
+    // During a walk's cell step the flag word comes from the walker's cell;
+    // otherwise from the bus read-back's byte address.
+    wire [13:0] land_f_ra = wstate == W_X
+                            ? {1'b0, wcell_now[15:3]}
+                            : wstate == W_FLAG
+                              ? {1'b0, wcell[15:3]} : land_raddr[15:2];
     // The memories' own output registers, directly fed so the mapper can use
     // the block RAM's output flip-flops; the byte or half selection is made
     // in the bus cycle after, from these.
@@ -495,11 +567,67 @@ module raster #(
         end
         if (r_land) begin
             land_vraw <= land_v[land_raddr[15:1]];
-            land_fraw <= land_f[land_raddr[15:2]];
             land_rmode <= land_raddr[16];
             land_rsel <= land_raddr[1:0];
             land_raddr <= land_raddr + 1'b1;
         end
+        land_fraw <= land_f[land_f_ra];
+    end
+
+    // ---- The walker: terrain.c's far-to-near cell order ----
+    // Rows farthest from the camera row first, and in each row the columns
+    // farthest from its column first. A cell in a shown block whose flags
+    // carry either triangle is pushed to the FIFO with its front, gx and gz;
+    // the walk stalls when the FIFO is full and the test drains it.
+    wire [8:0] wlevel = wfifo_wr - wfifo_rd;
+    wire wempty = wlevel == 0;
+    wire wfull = wlevel[8];
+    wire wbusy = wstate != W_IDLE && wstate != W_DONE;
+    wire wdone = wstate == W_DONE;
+    always @(posedge clk or negedge resetn) begin
+        if (!resetn) begin
+            wstate <= W_IDLE; wfifo_wr <= 0; wcount <= 0;
+        end else if (walk_go) begin
+            wstate <= W_Z; wfifo_wr <= 0; wcount <= 0;
+            wz_lo <= 0; wz_hi <= wcells_z - 1'b1;
+        end else case (wstate)
+            W_Z: if (wz_lo > wz_hi)
+                     wstate <= W_DONE;
+                 else begin
+                     wgz <= zpick_lo ? wz_lo : wz_hi;
+                     if (zpick_lo) wz_lo <= wz_lo + 1'b1;
+                     else wz_hi <= wz_hi - 1'b1;
+                     wfront <= (zpick_lo ? wz_lo : wz_hi) < wcz ? 1'b0 : 1'b1;
+                     wrow_base <= (zpick_lo ? wz_lo : wz_hi) * wcells_x;
+                     wx_lo <= 0; wx_hi <= wcells_x - 1'b1;
+                     wstate <= W_X;
+                 end
+            W_X: if (wx_lo > wx_hi)
+                     wstate <= W_Z;
+                 else begin
+                     wgx <= xpick_lo ? wx_lo : wx_hi;
+                     if (xpick_lo) wx_lo <= wx_lo + 1'b1;
+                     else wx_hi <= wx_hi - 1'b1;
+                     wcell <= wcell_now;
+                     wblock <= ((wgz >> 4) * (wcells_x >> 4)) +
+                               ((xpick_lo ? wx_lo : wx_hi) >> 4);
+                     wstate <= W_FLAG;
+                 end
+            W_FLAG: if (!wshown[wblock])
+                         wstate <= W_X;
+                     else if (((land_fraw >> (4 * wcell[2:0])) & 7) & 6) begin
+                         if (!wfull) begin
+                             wfifo[wfifo_wr[7:0]] <=
+                                 {14'd0, wfront, wgz[7:0], wgx[8:0]};
+                             wfifo_wr <= wfifo_wr + 1'b1;
+                             wcount <= wcount + 1'b1;
+                             wstate <= W_X;
+                         end
+                     end else
+                         wstate <= W_X;
+            W_DONE: ;
+            default: wstate <= W_DONE;
+        endcase
     end
 
     // ---- The vertex store: 1024 slots of 144 bits, four 36-bit block RAMs

@@ -81,6 +81,11 @@ module raster_tb;
     reg [31:0] land_words [0:69999];
     integer land_vw, land_fw;
     reg [8*256-1:0] land_path;
+    // The CPU's cell trace: one line a drawn cell, checked against the
+    // walker's FIFO.
+    integer wx_t [0:39999], wz_t [0:39999], wf_t [0:39999];
+    integer walk_n;
+    reg [8*256-1:0] walk_path;
 
     // The shading's tables, which the program hands the fabric once: the 256
     // palette entries in five bits a channel, and the 32768-entry table from
@@ -166,6 +171,81 @@ module raster_tb;
                     if (!bad && errors == 0)
                         $display("land: %0d vertex words and %0d flag words read back",
                                  land_vw, land_fw);
+                end
+            end
+        end
+    endtask
+
+    // The fabric walker against the CPU's traced cell order. The trace gives
+    // the grid, camera cell, block bitset and the drawn cells; the walker is
+    // given the first three and its FIFO is drained against the last.
+    task automatic check_walk(input [8*256-1:0] path);
+        integer f, i, n, bad, done, empty;
+        integer tx, tz, tbx, tbz, tcx, tcz, gx, gz, front, s0, s1, s2, s3;
+        reg [31:0] w, q, st;
+        begin
+            f = $fopen(path, "r");
+            if (f == 0) begin
+                $display("FAIL: cannot open %0s", path);
+                errors = errors + 1;
+            end else begin
+                if ($fscanf(f, "T %d %d %d %d %d %d\n",
+                            tx, tz, tbx, tbz, tcx, tcz) != 6) begin
+                    $display("FAIL: walk trace header");
+                    errors = errors + 1;
+                end else begin
+                    write(15'h0048, tcx);
+                    write(15'h004c, tcz);
+                    write(15'h0050, (tz << 16) | tx);
+                    for (i = 0; i < (tbx * tbz + 31) / 32; i = i + 1) begin
+                        if ($fscanf(f, "B %h\n", w) != 1) begin
+                            $display("FAIL: walk block bits %0d", i);
+                            errors = errors + 1;
+                        end
+                        write(15'h0054, i);
+                        write(15'h0058, w);
+                    end
+                    n = 0;
+                    while ($fscanf(f, "C %d %d %d %d %d %d %d\n",
+                                   gx, gz, front, s0, s1, s2, s3) == 7) begin
+                        if (n < 40000) begin
+                            wx_t[n] = gx; wz_t[n] = gz; wf_t[n] = front;
+                        end
+                        n = n + 1;
+                    end
+                    $fclose(f);
+                    walk_n = n;
+                    write(15'h005c, 1);
+                    done = 0; empty = 0; i = 0; bad = 0;
+                    while (!(done && empty)) begin
+                        read(15'h0060, st);
+                        done = st[1]; empty = st[2];
+                        if (!empty) begin
+                            read(15'h0064, q);
+                            if (i >= walk_n)
+                                bad = bad + 1;
+                            else if (q[8:0] !== wx_t[i] ||
+                                     q[16:9] !== wz_t[i] ||
+                                     q[17] !== wf_t[i]) begin
+                                if (bad < 4)
+                                    $display("FAIL: walk %0d: %0d %0d %0d, model %0d %0d %0d",
+                                             i, q[8:0], q[16:9], q[17],
+                                             wx_t[i], wz_t[i], wf_t[i]);
+                                bad = bad + 1;
+                            end
+                            i = i + 1;
+                        end
+                    end
+                    if (i != walk_n) begin
+                        $display("FAIL: walker emitted %0d cells, model has %0d",
+                                 i, walk_n);
+                        bad = bad + 1;
+                    end
+                    if (bad) begin
+                        $display("FAIL: walker: %0d wrong", bad);
+                        errors = errors + 1;
+                    end else
+                        $display("walk: %0d cells match the model", walk_n);
                 end
             end
         end
@@ -373,6 +453,10 @@ module raster_tb;
             $display("NOTE: no +land=, land store not checked");
         else
             check_land(land_path);
+        if (!$value$plusargs("walk=%s", walk_path))
+            $display("NOTE: no +walk=, walker not checked");
+        else
+            check_walk(walk_path);
         read(15'h10, tris0);
         write(15'h04, 32'h0);          // draw into buffer 0
         push(cmd0, 0);
