@@ -164,7 +164,8 @@ module raster #(
 
     // ---- Bus slave ----
     reg target = 0, err2 = 0, w_ctrl = 0, w_rb = 0, w_crc = 0, r_fb = 0;
-    reg w_land = 0, w_land_addr = 0, r_land = 0, r_land_wait = 0;
+    reg w_land = 0, w_land_addr = 0, r_land = 0, r_land_wait = 0,
+        r_land_wait2 = 0;
     // The walker's controls, the block bitset and its cell FIFO. The cell
     // entries are {14'd0, front, gz[7:0], gx[8:0]}.
     reg [15:0] wcx = 0, wcz = 0, wcells_x = 0, wcells_z = 0;
@@ -172,7 +173,7 @@ module raster #(
     reg [223:0] wshown = 0;
     reg walk_go = 0, w_walk = 0;
     reg [2:0] walk_wreg = 0;
-    reg r_wfifo = 0, r_wfifo_wait = 0;
+    reg r_wfifo = 0, r_wfifo_wait = 0, f_pop = 0;
     reg [31:0] wfifo_q = 0;
     reg [8:0] wfifo_wr = 0, wfifo_rd = 0;
     (* ram_style = "block" *) reg [31:0] wfifo [0:255];
@@ -191,6 +192,18 @@ module raster #(
     reg xf_start = 0, w_xf = 0;
     reg [2:0] xf_wreg = 0;
     reg xf_ready = 0;
+    // The bus's own way to look at a slot the walk stored: an address, then
+    // two reads of the same slot's fields, served while the engine is idle.
+    reg [9:0] slot_addr = 0;
+    reg [1:0] r_slot = 0;
+    reg r_slot_hi = 0;
+    reg w_slot = 0;
+    // The walker's feeder and the bus share the transform, so each vertex
+    // carries a tag and each caller takes only its own results. The feeder
+    // has the earlier claim on a round.
+    reg feed_req = 0, feed_en = 0, feed_done = 0, feed_start = 0;
+    reg [15:0] f_gx = 0, f_gz = 0;
+    reg [7:0] f_alt = 0;
     reg signed [15:0] xf_sx_r = 0, xf_sy_r = 0;
     reg [31:0] xf_depth_r = 0;
     reg [1:0] xf_state_r = 0;
@@ -203,15 +216,18 @@ module raster #(
     // The unit takes a vertex when it says it is ready, so the start write
     // is held until then; the pipeline is four rounds deep and takes one a
     // round, so a start waits at most one round.
-    wire xf_go = xf_start && xf_in_ready;
+    wire xf_go = xf_start && xf_in_ready && !feed_req;
+    wire xf_out_tag;
     transform xf(.clk(clk), .resetn(resetn),
         .cam_x(cam_reg[0]), .cam_y(cam_reg[1]), .cam_z(cam_reg[2]),
         .sin_yaw(cam_reg[3]), .cos_yaw(cam_reg[4]),
         .sin_pitch(cam_reg[5]), .cos_pitch(cam_reg[6]),
-        .in_valid(xf_start), .in_ready(xf_in_ready),
-        .in_gx(xf_gx), .in_gz(xf_gz), .in_alt(xf_alt),
-        .out_valid(xf_done), .out_gx(xf_out_gx), .out_gz(xf_out_gz),
-        .out_alt(xf_out_alt),
+        .in_valid(feed_req || xf_start), .in_ready(xf_in_ready),
+        .in_tag(feed_req),
+        .in_gx(feed_req ? f_gx : xf_gx), .in_gz(feed_req ? f_gz : xf_gz),
+        .in_alt(feed_req ? f_alt : xf_alt),
+        .out_valid(xf_done), .out_tag(xf_out_tag),
+        .out_gx(xf_out_gx), .out_gz(xf_out_gz), .out_alt(xf_out_alt),
         .sx(xf_sx), .sy(xf_sy), .depth(xf_depth), .state(xf_state));
     always @(posedge clk or negedge resetn)
         if (!resetn) begin
@@ -219,7 +235,7 @@ module raster #(
             xf_depth_r <= 0; xf_state_r <= 0;
         end else if (xf_start)
             xf_ready <= 0;
-        else if (xf_done) begin
+        else if (xf_done && !xf_out_tag) begin
             xf_sx_r <= xf_sx; xf_sy_r <= xf_sy;
             xf_depth_r <= xf_depth; xf_state_r <= xf_state;
             xf_ready <= 1;
@@ -267,12 +283,14 @@ module raster #(
                          (reg_index >= 7 && reg_index <= 8) ||
                          (reg_index >= 11 && reg_index <= 14) ||
                          (reg_index >= 16 && reg_index <= 23) ||
-                         (reg_index >= 27 && reg_index <= 32))
+                         (reg_index >= 27 && reg_index <= 32) ||
+                         reg_index == 38)
                       : ((reg_index >= 1 && reg_index <= 7) ||
                          reg_index == 9 || reg_index == 10 ||
                          reg_index == 15 || reg_index == 17 ||
                          (reg_index >= 24 && reg_index <= 26) ||
-                         (reg_index >= 33 && reg_index <= 37)));
+                         (reg_index >= 33 && reg_index <= 37) ||
+                         reg_index == 39 || reg_index == 40));
     // The CPU's read port request, served when the line fetch leaves it.
     reg cpu_rd = 0;
     wire cpu_rd_grant;
@@ -285,7 +303,9 @@ module raster #(
             w_ctrl <= 0; w_crc <= 0; r_fb <= 0; show <= 0; target <= 0;
             stalls <= 0; cpu_rd <= 0; r_issued <= 0; busy_cycles <= 0;
             w_land <= 0; w_land_addr <= 0; r_land <= 0; r_land_wait <= 0;
+            r_land_wait2 <= 0;
             walk_go <= 0; w_walk <= 0; r_wfifo <= 0; r_wfifo_wait <= 0;
+            w_slot <= 0; r_slot <= 0; feed_start <= 0;
             wfifo_rd <= 0;
             w_xf <= 0; xf_start <= 0;
         end else begin
@@ -328,11 +348,19 @@ module raster #(
                 // follows one clock later.
                 r_land <= 0; r_land_wait <= 1;
             end else if (r_land_wait) begin
-                hrdata <= land_rmode
-                          ? (land_fraw >> (8 * land_rsel)) & 16'h00ff
-                          : (land_rsel[0] ? land_vraw[31:16]
-                                          : land_vraw[15:0]);
-                hready <= 1; r_land_wait <= 0;
+                r_land_wait <= 0;
+                if (land_rmode) begin
+                    // A flag byte: the flags' own read already answered.
+                    hrdata <= (land_fraw >> (8 * land_rsel)) & 16'h00ff;
+                    hready <= 1;
+                end else
+                    // A vertex: the address register has just taken the
+                    // store's, so the word lands one clock later.
+                    r_land_wait2 <= 1;
+            end else if (r_land_wait2) begin
+                r_land_wait2 <= 0;
+                hrdata <= land_rsel[0] ? land_vq[31:16] : land_vq[15:0];
+                hready <= 1;
             end else if (w_walk) begin
                 w_walk <= 0; hready <= 1;
                 case (walk_wreg)
@@ -346,16 +374,31 @@ module raster #(
                     3'd4: wshown[{wshow_a, 5'd0} +: 32] <= hwdata;
                     3'd5: begin
                         walk_go <= hwdata[0];
+                        feed_start <= hwdata[1];
                         wfifo_rd <= 0;
                     end
                 endcase
             end else if (walk_go) begin
                 walk_go <= 0;
+            end else if (f_pop) begin
+                wfifo_rd <= wfifo_rd + 1'b1;
             end else if (r_wfifo) begin
                 wfifo_rd <= wfifo_rd + 1'b1;
                 r_wfifo <= 0; r_wfifo_wait <= 1;
             end else if (r_wfifo_wait) begin
                 hrdata <= wfifo_q; hready <= 1; r_wfifo_wait <= 0;
+            end else if (feed_start) begin
+                feed_start <= 0;
+            end else if (w_slot) begin
+                slot_addr <= hwdata[9:0]; w_slot <= 0; hready <= 1;
+            end else if (r_slot == 2'd1) begin
+                // The store's read port has the slot; the next clock returns
+                // what it answered.
+                r_slot <= 2'd2;
+            end else if (r_slot == 2'd2) begin
+                r_slot <= 2'd0; hready <= 1;
+                hrdata <= r_slot_hi ? {8'd0, vst_q[111:104], vst_q[35:12]}
+                                    : {vst_q[127:112], vst_q[143:128]};
             end else if (w_xf) begin
                 w_xf <= 0; hready <= 1;
                 case (xf_wreg)
@@ -398,7 +441,8 @@ module raster #(
                         7: hrdata <= crc_reg;
                         10: hrdata <= {16'd0, nz_latch};
                         15: hrdata <= busy_cycles;
-                        24: hrdata <= {28'd0, wfull, wempty, wdone, wbusy};
+                        24: hrdata <= {27'd0, feed_done, wfull, wempty,
+                                       wdone, wbusy};
                         26: hrdata <= {16'd0, wcount};
                         33: hrdata <= {31'd0, xf_ready};
                         34: hrdata <= {16'd0, xf_sx_r};
@@ -420,6 +464,16 @@ module raster #(
                         hready <= 0; w_land <= 1;
                     end else if (!hwrite && reg_index == 25) begin
                         hready <= 0; r_wfifo <= 1;
+                    end else if (hwrite && reg_index == 38) begin
+                        hready <= 0; w_slot <= 1;
+                    end else if (!hwrite && (reg_index == 39 || reg_index == 40)) begin
+                        // The probe waits for the engine to let go of the
+                        // store's read port, then takes it for a clock.
+                        hready <= 0;
+                        if (!vst_busy) begin
+                            r_slot <= 2'd1;
+                            r_slot_hi <= reg_index == 40;
+                        end
                     end else if (hwrite && reg_index >= 18 && reg_index <= 23) begin
                         hready <= 0; w_walk <= 1;
                         walk_wreg <= reg_index[2:0] - 3'd2;
@@ -581,6 +635,164 @@ module raster #(
         tile_q <= tiles[tile_raddr];
     end
 
+    // ---- The walker's feeder: each cell's corners through the transform,
+    // into the slots the triangle assembly will name ----
+    // terrain.c's rule, corner for corner: a vertex's slot is the z front its
+    // row was reached from, the row's parity and its column modulo 256, and
+    // the owner table says which grid vertex each slot holds this walk, so a
+    // corner a neighbouring cell has already sent is not transformed twice.
+    // The owner is taken when the corner is sent, as emit_stored() takes it,
+    // and only a corner in front of the near plane writes its slot, which is
+    // the only kind the CPU's store holds. The land store is addressed with
+    // the grid's own stride, cells_x + 1, because the packed vertices are the
+    // land's rows and not this unit's largest ones.
+    localparam FD_IDLE = 0, FD_CLEAR = 1, FD_POP = 2, FD_NEXT = 3, FD_WAIT = 4,
+               FD_WORD = 5, FD_SEND = 6;
+    reg [2:0] fst = FD_IDLE;
+    reg [10:0] f_clr = 0;
+    reg [15:0] f_stride = 1, f_vbase = 0;
+    reg [8:0] f_cx = 0;
+    reg [7:0] f_z = 0;
+    reg f_front = 0;
+    reg [1:0] f_k = 0;
+    reg [16:0] f_vi = 0, f_id = 0;
+    reg [9:0] f_slot = 0;
+    reg [7:0] f_colour = 0;
+    // The owner of each slot this walk, the grid vertex it holds plus one.
+    (* ram_style = "block" *) reg [16:0] owner [0:1023];
+    reg [16:0] owner_q = 0;
+    reg owner_we = 0;
+    reg [16:0] owner_wd = 0;
+    // Results come back in the order they were sent, so a short queue holds
+    // what each vertex still in the unit will write.
+    reg [9:0] q_slot [0:3];
+    reg [7:0] q_col [0:3];
+    reg [1:0] q_wr = 0, q_rd = 0;
+    reg [2:0] q_n = 0;
+    wire q_full = q_n == 3'd4;
+    wire [15:0] f_vx = {7'd0, f_cx} + {15'd0, f_k[0]};
+    wire [15:0] f_vz = {8'd0, f_z} + {15'd0, f_k[1]};
+    wire [15:0] f_row = f_vbase + (f_k[1] ? f_stride : 16'd0);
+    wire [16:0] f_vi_n = {1'b0, f_row} + {1'b0, f_vx};
+    wire [9:0] f_slot_n = {f_front, f_vz[0], f_vx[7:0]};
+    wire [16:0] f_id_n = f_vi_n + 17'd1;
+    wire next_corner = f_k == 2'd3;
+    // A push and a pop in the same clock leave the depth alone, so it is one
+    // sum and not two assignments.
+    wire q_pop = xf_done && xf_out_tag && q_n != 0;
+    wire q_push = fst == FD_SEND && xf_in_ready;
+    wire [9:0] owner_ra = fst == FD_NEXT ? f_slot_n
+                        : (fst == FD_WAIT || fst == FD_SEND) ? f_slot
+                        : f_clr[9:0];
+    always @(posedge clk) begin
+        owner_q <= owner[owner_ra];
+        if (owner_we) owner[owner_ra] <= owner_wd;
+    end
+    always @(posedge clk or negedge resetn) begin
+        if (!resetn) begin
+            fst <= FD_IDLE;
+            f_clr <= 0; owner_we <= 0; fw_we <= 0;
+            q_wr <= 0; q_rd <= 0; q_n <= 0;
+            f_stride <= 1; f_cx <= 0; f_z <= 0; f_k <= 0; f_front <= 0;
+            f_vi <= 0; f_slot <= 0; f_colour <= 0; f_vbase <= 0; f_id <= 0;
+            f_pop <= 0;
+        end else begin
+            fw_we <= 0;
+            // A result comes back in the order it was sent, so the queue's
+            // head is the vertex it belongs to.
+            q_n <= q_n + (q_push ? 3'd1 : 3'd0) - (q_pop ? 3'd1 : 3'd0);
+            if (q_pop) begin
+                q_rd <= q_rd + 1'b1;
+                if (xf_state == 0) begin
+                    fw_we <= 1;
+                    fw_slot <= q_slot[q_rd];
+                    fw_data <= {xf_sx, xf_sy, q_col[q_rd], 6'd0,
+                                24'd0, 24'd0, 14'd0, xf_depth[23:0], 12'd0};
+                end
+            end
+            case (fst)
+                FD_IDLE: begin
+                    feed_req <= 0;
+                    owner_we <= 0;
+                    // The program's start is one clock wide; the feeder holds
+                    // it until the walk it belongs to is over.
+                    if (feed_start) feed_en <= 1;
+                    if (feed_en || feed_start) begin
+                        f_stride <= wcells_x + 16'd1;
+                        f_clr <= 0;
+                        feed_done <= 0;
+                        fst <= FD_CLEAR;
+                    end
+                end
+                FD_CLEAR: begin
+                    // The owners start clear, so the first corner of every
+                    // slot in the walk is sent.
+                    owner_we <= 1; owner_wd <= 0;
+                    if (f_clr == 11'd1023) begin
+                        owner_we <= 0; fst <= FD_POP;
+                    end else
+                        f_clr <= f_clr + 1'b1;
+                end
+                FD_POP: begin
+                    feed_req <= 0; owner_we <= 0;
+                    if (!wempty) begin
+                        f_cx <= wfifo_q[8:0];
+                        f_z <= wfifo_q[16:9];
+                        f_front <= wfifo_q[17];
+                        f_vbase <= wfifo_q[16:9] * f_stride;
+                        f_pop <= 1;
+                        f_k <= 0;
+                        fst <= FD_NEXT;
+                    end else if (wdone && q_n == 0) begin
+                        // The walk is over and its results have landed.
+                        feed_done <= 1;
+                        feed_en <= 0;
+                        fst <= FD_IDLE;
+                    end
+                end
+                FD_NEXT: begin
+                    // The pointer move the pop asked for has happened.
+                    f_pop <= 0;
+                    f_vi <= f_vi_n;
+                    f_slot <= f_slot_n;
+                    f_id <= f_id_n;
+                    fst <= FD_WAIT;
+                end
+                FD_WAIT: begin
+                    if (owner_q == f_id) begin
+                        if (next_corner) fst <= FD_POP;
+                        else begin f_k <= f_k + 1'b1; fst <= FD_NEXT; end
+                    end else if (q_full) begin
+                        // The unit takes one a round; until a result lands
+                        // there is nowhere to put the vertex's slot.
+                    end else
+                        fst <= FD_WORD;
+                end
+                FD_WORD: begin
+                    // The store has answered with this corner's word.
+                    f_colour <= f_vi[0] ? land_vq[31:24] : land_vq[15:8];
+                    f_gx <= f_vx; f_gz <= f_vz;
+                    f_alt <= f_vi[0] ? land_vq[23:16] : land_vq[7:0];
+                    feed_req <= 1;
+                    fst <= FD_SEND;
+                end
+                FD_SEND: begin
+                    if (xf_in_ready) begin
+                        feed_req <= 0;
+                        owner_we <= 1; owner_wd <= f_id;
+                        q_slot[q_wr] <= f_slot;
+                        q_col[q_wr] <= f_colour;
+                        q_wr <= q_wr + 1'b1;
+                        if (next_corner) fst <= FD_POP;
+                        else begin f_k <= f_k + 1'b1; fst <= FD_NEXT; end
+                    end else
+                        owner_we <= 0;
+                end
+                default: fst <= FD_IDLE;
+            endcase
+        end
+    end
+
     // ---- The land, packed for the walker ----
     // A vertex is one 16-bit word, {colour, altitude}; a cell's three flag
     // bits -- split, first triangle, second triangle -- are one nibble, two
@@ -610,7 +822,19 @@ module raster #(
     // The memories' own output registers, directly fed so the mapper can use
     // the block RAM's output flip-flops; the byte or half selection is made
     // in the bus cycle after, from these.
-    reg [31:0] land_vraw = 0, land_fraw = 0;
+    reg [31:0] land_fraw = 0;
+    // The corner's address is held for as long as the corner is in hand: the
+    // unit takes one a round, so the feeder waits on it, and a reverted
+    // address would leave the wrong vertex in the store's output register.
+    wire [15:0] land_vra = fst == FD_NEXT ? f_vi_n[15:1]
+                        : (fst == FD_WAIT || fst == FD_WORD || fst == FD_SEND)
+                          ? f_vi[15:1] : land_raddr[15:1];
+    reg [15:0] land_ra = 0;
+    reg [31:0] land_vq = 0;          // the store's own output register
+    always @(posedge clk) begin
+        land_ra <= land_vra;
+        land_vq <= land_v[land_ra];
+    end
     reg land_rmode = 0;
     reg [1:0] land_rsel = 0;
     // A LAND_ADDR write sets both pointers; bit 16 picks flags over vertices.
@@ -632,11 +856,12 @@ module raster #(
             end
         end
         if (r_land) begin
-            land_vraw <= land_v[land_raddr[15:1]];
             land_rmode <= land_raddr[16];
             land_rsel <= land_raddr[1:0];
             land_raddr <= land_raddr + 1'b1;
         end
+        // The walker's feeder asks for a vertex while it walks and the bus
+        // asks while the program inspects the store; they never run at once.
         land_fraw <= land_f[land_f_ra];
     end
 
@@ -710,13 +935,23 @@ module raster #(
     reg vst_we = 0;
     reg [9:0] vst_waddr = 0, vst_raddr = 0;
     reg [143:0] vst_wdata = 0, vst_q = 0;
+    // The walker's feeder writes slots as well, and it has the store to
+    // itself while it feeds: a program that started a fabric walk is not
+    // sending vertex commands in that frame. The bus's own slot probe borrows
+    // the read port for a clock, and is only served while the engine is not
+    // drawing.
+    reg fw_we = 0;
+    reg [9:0] fw_slot = 0;
+    reg [143:0] fw_data = 0;
+    wire [9:0] vst_ra = r_slot == 2'd1 ? slot_addr : vst_raddr;
     // Setup and the assembler never write in the same clock: the assembler
     // holds back while setup could (vst_busy), and setup's own vertex write
     // is a command the assembler had to stop for.
     always @(posedge clk) begin
-        if (vst_we) vstore[vst_waddr] <= vst_wdata;
+        if (fw_we) vstore[fw_slot] <= fw_data;
+        else if (vst_we) vstore[vst_waddr] <= vst_wdata;
         else if (asm_we) vstore[asm_waddr] <= asm_wdata;
-        vst_q <= vstore[vst_raddr];
+        vst_q <= vstore[vst_ra];
     end
 
     // ---- Engine ----
@@ -2001,8 +2236,9 @@ module transform(
     input wire signed [31:0] cam_x, cam_y, cam_z,
     input wire signed [31:0] sin_yaw, cos_yaw, sin_pitch, cos_pitch,
     input wire in_valid, output wire in_ready,
+    input wire in_tag,
     input wire [15:0] in_gx, in_gz, input wire [7:0] in_alt,
-    output reg out_valid,
+    output reg out_valid, output reg out_tag,
     output reg [15:0] out_gx, out_gz, output reg [7:0] out_alt,
     output reg signed [15:0] sx, sy,
     output reg [31:0] depth, output reg [1:0] state
@@ -2020,6 +2256,9 @@ module transform(
     reg signed [31:0] i_dx = 0, i_dy = 0, i_dz = 0, i_sy = 0, i_cy = 0;
     reg signed [31:0] i_sp = 0, i_cp = 0;
     reg [15:0] i_gx = 0, i_gz = 0; reg [7:0] i_alt = 0; reg i_v = 0;
+    // A caller's tag rides the same four rounds as its vertex, so two callers
+    // can share the unit without guessing whose result is whose.
+    reg i_tag = 0, a_tag = 0, b_tag = 0, c_tag = 0;
     wire signed [63:0] q0, q1, q2, q3;
     mullane y0(.clk(clk), .resetn(resetn), .load(load), .a(i_dx), .b(i_sy), .p(q0));
     mullane y1(.clk(clk), .resetn(resetn), .load(load), .a(i_dz), .b(i_cy), .p(q1));
@@ -2099,8 +2338,10 @@ module transform(
             c_gx <= 0; c_gz <= 0; c_alt <= 0; c_v <= 0;
             i_dx <= 0; i_dy <= 0; i_dz <= 0; i_sy <= 0; i_cy <= 0;
             i_sp <= 0; i_cp <= 0; i_gx <= 0; i_gz <= 0; i_alt <= 0; i_v <= 0;
-            out_valid <= 0; out_gx <= 0; out_gz <= 0; out_alt <= 0;
+            out_valid <= 0; out_tag <= 0;
+            out_gx <= 0; out_gz <= 0; out_alt <= 0;
             sx <= 0; sy <= 0; depth <= 0; state <= 0;
+            i_tag <= 0; a_tag <= 0; b_tag <= 0; c_tag <= 0;
         end else if (take) begin
             // Each round's result is taken from the registers as they stood
             // before this clock, which is the vertex that round worked on.
@@ -2126,7 +2367,9 @@ module transform(
             i_sy <= sin_yaw; i_cy <= cos_yaw;
             i_sp <= sin_pitch; i_cp <= cos_pitch;
             i_gx <= in_gx; i_gz <= in_gz; i_alt <= in_alt;
-            i_v <= in_valid;
+            i_v <= in_valid; i_tag <= in_tag;
+            a_tag <= i_tag; b_tag <= a_tag; c_tag <= b_tag;
+            out_tag <= c_tag;
         end else
             out_valid <= 0;
     end

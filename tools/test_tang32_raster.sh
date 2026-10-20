@@ -8,7 +8,10 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 game="$root/build/wineprefix/drive_c/Program Files (x86)/Lionhead Studios Ltd/Black & White"
 lnd="${TINYCREATURE_LND:-$game/Data/Landscape/Land1.lnd}"
-out="$root/build/raster-tb"
+# TINYCREATURE_RASTER_BUILD picks another build tree, so two lands or a
+# deliberately broken unit can be simulated side by side.
+out="${TINYCREATURE_RASTER_BUILD:-$root/build/raster-tb}"
+raster="${TINYCREATURE_RASTER_SV:-$root/fpga/raster.sv}"
 mkdir -p "$out" "$root/build/land"
 land="$root/build/land/$(basename "${lnd%.*}").tcl"
 frame0="${TINYCREATURE_RASTER_FRAME0:-0}"
@@ -64,7 +67,7 @@ PY
 )
 read -r crc0 crc01 nz0 nz1 <<<"$crcs"
 iverilog -g2012 -s raster_tb -o "$out/raster_tb" \
-    "$root/tests/raster_tb.sv" "$root/tests/vert_model.sv" "$root/fpga/raster.sv"
+    "$root/tests/raster_tb.sv" "$root/tests/vert_model.sv" "$raster"
 vvp -n "$out/raster_tb" +cmd0="$out/$dump0.cmd" +cmd1="$out/$dump1.cmd" \
     +fb0="$out/$dump0.fb" +fb1="$out/$dump1.fb" +crc0="$crc0" +crc01="$crc01" \
     +pal="$out/fpal.hex" +lut="$out/flut.hex" +tiles="$out/ftiles.hex" \

@@ -57,3 +57,34 @@ Connect the walker's cell FIFO to the unit's handshake: fetch each drawn cell's 
 - User Test: N/A
 
 ---
+## 3 COMMIT Unreleased 2026-10-20T09:58:34-07:00
+
+#### Coming From:
+
+Unreleased ea85565
+
+#### Purpose:
+
+Connect the walker's cells to the transform and the vertex store, with terrain.c's slot rule and its owner de-duplication, so the fabric computes and stores the screen position of every corner the walk draws.
+
+#### Outcome:
+
+The walker's FIFO now has a feeder: each cell's four corners are addressed in the packed land store, de-duplicated through a 1024-entry owner table in one block RAM against terrain.c's rule -- the z front the row was reached from, the row's parity and the column modulo 256 -- sent through the transform a round apart, and written into the vertex store as `{x, y, colour, depth}` when they are in front of the near plane, which is what the CPU's store holds. Results return in issue order through a four-deep queue. The transform carries a one-bit tag so the walker and the bus can share it and each take only its own results, and three registers were added for looking at the store afterwards, `0x98` a slot address with `0x9c` and `0xa0` its corner and its colour and depth, served while the engine is not drawing. The land store is addressed with the grid's own stride, `cells_x + 1`, because the packed vertices are the land's rows and not the 241 the store is sized at; Land 1's rows are 225 wide. Three defects were found and fixed on the way. Synthesis caught two registers with two driving always blocks, `wfifo_rd` and `feed_en`, which iverilog resolves silently and hardware cannot, and it refused to map `land_v` until its read address was a register rather than a mux of one and a combinational index. Simulation then caught the feeder's land address reverting to the bus's pointer while it waited on a full result queue, which paired the right slot with the previous vertex's word: 115 of 1024 slots disagreed with the model on Land 1 and 113 on Celtic until the corner's address was held for as long as the corner was in hand. A fourth, the queue depth assigned twice in one clock when a push and a pop landed together, was fixed to one sum and changed nothing measurable. Both lands pass now -- 21,223 cells and 84,892 corner visits on Land 1, 26,542 and 106,168 on Celtic -- with every slot the walk should have written matching the model field for field, the 256-vertex transform checks and the frames unchanged at `293e6ccf` and `5c2808f5` and at `4bb0a03f` and `9013c700`, since nothing draws from these slots yet. A copy with the slot column shifted one bit fails the slot check alone, 288 of 1024 slots wrong, so the gate is live. The synthesis is 21,082 `LUT4` against 20,645, 10,372 `ALU` against 10,257, 17,640 `DFFRE` and 3,307 `DFFCE` with 2,065 `DFF` against 17,472 and 3,171 with 2,000, and 294 of 340 block RAMs against 293, the owner table taking the extra one; it has not been placed and routed. `tools/test_tang32_raster.sh` gained `TINYCREATURE_RASTER_BUILD` and `TINYCREATURE_RASTER_SV` so two lands and a deliberately broken copy can be simulated side by side. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md`, `.ai/core-reference.md` and `.ai/core-syntax.md` are unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+Issue each cell's triangle from the slots the feeder has filled: the near-plane and guard clip terrain.c's submit() applies, the triangle command naming three slots, and the coupling that keeps the fill's slot reads ahead of the next walk write, since the walk runs a few cells ahead of the assembly. Then a build, an eight-seed sweep and the user's flight test. The archived entry 51 `BAD TINYCREATURE PIXELS` at 2,000 and 3,000 villager-sized cards and the art queue stay open.
+
+#### Files Modified:
+
+- fpga/raster.sv
+- tests/raster_tb.sv
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

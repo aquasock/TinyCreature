@@ -45,7 +45,7 @@ module raster_tb;
     reg [15:0] eng_gx = 0, eng_gz = 0;
     reg [7:0] eng_alt = 0;
     reg eng_valid = 0;
-    wire eng_ready, eng_out_valid;
+    wire eng_ready, eng_out_valid, eng_out_tag;
     wire [15:0] eng_out_gx, eng_out_gz;
     wire [7:0] eng_out_alt;
     wire signed [15:0] eng_sx, eng_sy;
@@ -55,10 +55,10 @@ module raster_tb;
         .cam_x(vm_cam_x), .cam_y(vm_cam_y), .cam_z(vm_cam_z),
         .sin_yaw(vm_sin_yaw), .cos_yaw(vm_cos_yaw),
         .sin_pitch(vm_sin_pitch), .cos_pitch(vm_cos_pitch),
-        .in_valid(eng_valid), .in_ready(eng_ready),
+        .in_valid(eng_valid), .in_ready(eng_ready), .in_tag(1'b0),
         .in_gx(eng_gx), .in_gz(eng_gz), .in_alt(eng_alt),
-        .out_valid(eng_out_valid), .out_gx(eng_out_gx), .out_gz(eng_out_gz),
-        .out_alt(eng_out_alt),
+        .out_valid(eng_out_valid), .out_tag(eng_out_tag),
+        .out_gx(eng_out_gx), .out_gz(eng_out_gz), .out_alt(eng_out_alt),
         .sx(eng_sx), .sy(eng_sy), .depth(eng_depth), .state(eng_state));
 
     integer errors = 0;
@@ -282,6 +282,168 @@ module raster_tb;
                         errors = errors + 1;
                     end else
                         $display("walk: %0d cells match the model", walk_n);
+                end
+            end
+        end
+    endtask
+
+    // The walker's feeder against the CPU's slot rule: the fabric walks the
+    // land, transforms each corner the walk has not already sent and stores it
+    // in the slot terrain.c would have named. This replays the same rule over
+    // the same trace, corner for corner, and requires the store to agree with
+    // the model position for position.
+    task automatic check_slots(input [8*256-1:0] walk_path,
+                               input [8*256-1:0] vert_path);
+        integer f, fv, i, n, bad, guard, k;
+        integer tx, tz, tbx, tbz, tcx, tcz;
+        integer gx, gz, front, s0, s1, s2, s3;
+        integer vx, vz, slot, id, widx, vw, alt, col;
+        integer own [0:1023];
+        integer hsx [0:1023], hsy [0:1023], hd [0:1023], hc [0:1023];
+        integer ecx [0:1023], ecz [0:1023], ek [0:1023];
+        integer dx2, dz2, dk2;
+        reg [0:1023] has;
+        reg [31:0] w, q, st;
+        begin
+            f = $fopen(walk_path, "r");
+            if (f == 0) begin
+                $display("FAIL: cannot open %0s", walk_path);
+                errors = errors + 1;
+            end else begin
+                if ($fscanf(f, "T %d %d %d %d %d %d\n",
+                            tx, tz, tbx, tbz, tcx, tcz) != 6) begin
+                    $display("FAIL: slot walk trace header");
+                    errors = errors + 1;
+                end else begin
+                    // The camera the frame was drawn with.
+                    fv = $fopen(vert_path, "r");
+                    if (fv == 0) begin
+                        $display("FAIL: cannot open %0s", vert_path);
+                        errors = errors + 1;
+                    end else begin
+                        if ($fscanf(fv, "K %d %d %d %d %d %d %d\n",
+                                    vm_cam_x, vm_cam_y, vm_cam_z, vm_sin_yaw,
+                                    vm_cos_yaw, vm_sin_pitch,
+                                    vm_cos_pitch) != 7) begin
+                            $display("FAIL: slot walk camera");
+                            errors = errors + 1;
+                        end
+                        $fclose(fv);
+                    end
+                    write(15'h006c, 0); write(15'h0070, vm_cam_x);
+                    write(15'h006c, 1); write(15'h0070, vm_cam_y);
+                    write(15'h006c, 2); write(15'h0070, vm_cam_z);
+                    write(15'h006c, 3); write(15'h0070, vm_sin_yaw);
+                    write(15'h006c, 4); write(15'h0070, vm_cos_yaw);
+                    write(15'h006c, 5); write(15'h0070, vm_sin_pitch);
+                    write(15'h006c, 6); write(15'h0070, vm_cos_pitch);
+                    write(15'h0048, tcx);
+                    write(15'h004c, tcz);
+                    write(15'h0050, (tz << 16) | tx);
+                    for (i = 0; i < (tbx * tbz + 31) / 32; i = i + 1) begin
+                        if ($fscanf(f, "B %h\n", w) != 1) begin
+                            $display("FAIL: slot walk block bits %0d", i);
+                            errors = errors + 1;
+                        end
+                        write(15'h0054, i);
+                        write(15'h0058, w);
+                    end
+                    $fclose(f);
+                    // Start the walk with the feeder behind it, and wait for
+                    // its last result to land.
+                    write(15'h005c, 32'h3);
+                    guard = 0;
+                    read(15'h0060, st);
+                    while (!st[4] && guard < 2000000) begin
+                        read(15'h0060, st);
+                        guard = guard + 1;
+                    end
+                    if (!st[4]) begin
+                        $display("FAIL: slot walk did not finish");
+                        errors = errors + 1;
+                    end
+                    // Replay the walk's own rule: each corner the slot has
+                    // not held this walk is sent, and stores its position if
+                    // it is in front of the near plane.
+                    f = $fopen(walk_path, "r");
+                    if ($fscanf(f, "T %d %d %d %d %d %d\n",
+                                tx, tz, tbx, tbz, tcx, tcz) != 6) begin
+                        $display("FAIL: slot trace reread");
+                        errors = errors + 1;
+                    end
+                    for (i = 0; i < (tbx * tbz + 31) / 32; i = i + 1)
+                        if ($fscanf(f, "B %h\n", w) != 1)
+                            $display("NOTE: slot trace block %0d unread", i);
+                    for (i = 0; i < 1024; i = i + 1) begin
+                        own[i] = 0; has[i] = 0;
+                    end
+                    n = 0; bad = 0;
+                    while ($fscanf(f, "C %d %d %d %d %d %d %d\n",
+                                   gx, gz, front, s0, s1, s2, s3) == 7) begin
+                        for (k = 0; k < 4; k = k + 1) begin
+                            vx = gx + (k & 1);
+                            vz = gz + (k >> 1);
+                            slot = k == 0 ? s0 : k == 1 ? s1 : k == 2 ? s2 : s3;
+                            id = vz * (tx + 1) + vx + 1;
+                            if (own[slot] != id) begin
+                                own[slot] = id;
+                                widx = vz * (tx + 1) + vx;
+                                vw = land_words[widx >> 1];
+                                vw = (widx & 1) ? (vw >> 16) : (vw & 32'hffff);
+                                alt = vw & 255;
+                                col = (vw >> 8) & 255;
+                                vm_gx = vx; vm_gz = vz; vm_alt = alt;
+                                #1;
+                                if (vm_state == 0) begin
+                                    has[slot] = 1;
+                                    hsx[slot] = $signed(vm_sx);
+                                    hsy[slot] = $signed(vm_sy);
+                                    hd[slot] = vm_depth;
+                                    hc[slot] = col;
+                                    ecx[slot] = vx; ecz[slot] = vz; ek[slot] = k;
+                                end
+                            end
+                        end
+                        n = n + 1;
+                    end
+                    $fclose(f);
+                    for (i = 0; i < 1024; i = i + 1) begin
+                        if (has[i]) begin
+                            write(15'h0098, i);
+                            read(15'h009c, q);
+                            read(15'h00a0, w);
+                            if ($signed(q[15:0]) !== hsx[i] ||
+                                $signed(q[31:16]) !== hsy[i] ||
+                                w[23:0] !== hd[i] || w[31:24] !== hc[i]) begin
+                                if (bad < 4) begin
+                                    $display("FAIL: slot %0d: %0d %0d %0d %0d, model %0d %0d %0d %0d (vertex %0d,%0d corner %0d)",
+                                             i, $signed(q[15:0]), $signed(q[31:16]),
+                                             w[23:0], w[31:24],
+                                             hsx[i], hsy[i], hd[i], hc[i],
+                                             ecx[i], ecz[i], ek[i]);
+                                    for (dk2 = 0; dk2 < 4; dk2 = dk2 + 1) begin
+                                        dx2 = ecx[i] + (dk2 & 1);
+                                        dz2 = ecz[i] + (dk2 >> 1);
+                                        vw = land_words[(dz2 * (tx + 1) + dx2) >> 1];
+                                        vw = ((dz2 * (tx + 1) + dx2) & 1) ? (vw >> 16) : (vw & 32'hffff);
+                                        vm_gx = dx2; vm_gz = dz2; vm_alt = vw & 255;
+                                        #1;
+                                        $display("   corner %0d: %0d,%0d alt %0d col %0d -> %0d %0d %0d %0d",
+                                                 dk2, dx2, dz2, vw & 255, (vw >> 8) & 255,
+                                                 $signed(vm_sx), $signed(vm_sy),
+                                                 vm_depth, (vw >> 8) & 255);
+                                    end
+                                end
+                                bad = bad + 1;
+                            end
+                        end
+                    end
+                    if (bad) begin
+                        $display("FAIL: slots: %0d of 1024 wrong", bad);
+                        errors = errors + 1;
+                    end else
+                        $display("slots: %0d corners over %0d cells match the model",
+                                 n * 4, n);
                 end
             end
         end
@@ -694,8 +856,10 @@ module raster_tb;
             check_walk(walk_path);
         if (!$value$plusargs("vert=%s", vert_path))
             $display("NOTE: no +vert=, transform model not checked");
-        else
+        else begin
+            check_slots(walk_path, vert_path);
             check_vert(vert_path);
+        end
         read(15'h10, tris0);
         write(15'h04, 32'h0);          // draw into buffer 0
         push(cmd0, 0);
