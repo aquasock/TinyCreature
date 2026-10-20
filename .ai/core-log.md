@@ -2575,3 +2575,33 @@ Obtain approval for a distinct placement experiment that sets `--placer-heap-cel
 - User Test: NOT RUN
 
 ---
+
+## 78 COMMIT Unreleased 2026-10-19T21:33:53-07:00
+
+#### Coming From:
+
+Unreleased 78665d2
+
+#### Purpose:
+
+Test whether unlimited heap legalization can place the depth core and expose any later build gate in one eight-seed sweep.
+
+#### Outcome:
+
+`tools/build_tang32.sh` now defaults its existing nextpnr argument hook to `--placer-heap-cell-placement-timeout 0`, which removed the 10,000-attempt ceiling. Seven seeds completed legalization and routing instead of failing placement, but every completed seed missed the 75 MHz bus constraint: seeds 1, 2, 3, 4, 6, 7 and 8 reached 65.89, 66.41, 71.59, 66.45, 65.50, 60.50 and 65.73 MHz respectively, while all passed the 74.25 MHz pixel constraint at 84.65 to 96.78 MHz. Seed 5 remained in legalization after about 25.5 minutes and was terminated at the user's request to finish this handoff. Seed 3's 13.97 ns bus critical path starts at the raster command FIFO block RAM output and crosses the command assembler's `cur_len` and `completing` decode before reaching an enabled register, with 8.14 ns of logic and 5.83 ns of routing, so unlimited placement has moved the blocker from legality to an actionable timing path. No seed passed every build gate, no core was kept or deployed, and the board remains on entry 74's core, which must not be paired with the repository's three-word depth `VTX` firmware. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+Shorten the command assembler's FIFO-to-control path around `first_word`, `cur_len`, `completing` and the `got + 1` comparisons, preferably by registering or splitting the first-word decode without reducing the one-word-per-clock steady-state intake, then rerun the pixel-exact raster regression and synthesis before another seeds 1 through 8 sweep with unlimited legalization; deploy only after a seed passes the bus and pixel timing, clock-route and memory gates, and then ask the user to judge the plant-base depth changes.
+
+#### Files Modified:
+
+- tools/build_tang32.sh
+
+#### Status:
+
+- Build: FAIL
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---

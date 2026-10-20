@@ -21,6 +21,7 @@ read -r -a seeds <<<"${TINYCREATURE_SEEDS:-1 2 3 4 5 6 7 8}"
 bash "$root/tools/fetch_tang32.sh"
 export APICULA_FORK="${APICULA_FORK:-$(dirname "$root")/apicula-mathieufro}"
 export TINY_NES_EXTRA_SV="$root/fpga/raster.sv"
+export TINY_NES_NEXTPNR_ARGS="${TINY_NES_NEXTPNR_ARGS:---placer-heap-cell-placement-timeout 0}"
 build_soc="$source_dir/tools/build_ae350_soc.sh"
 
 mkdir -p "$out"
