@@ -79,6 +79,22 @@
 #define RASTER_TILES_A TN_REG(0x18034)
 #define RASTER_TILES_D TN_REG(0x18038)
 #define RASTER_BUSYCYC TN_REG(0x1803c)
+/* The walker's own way in: the land store, the frame's walk, and the camera
+ * file the transform reads. fpga/raster.sv explains each. */
+#define RASTER_LAND_A  TN_REG(0x18040)
+#define RASTER_LAND_D  TN_REG(0x18044)
+#define RASTER_WALK_X  TN_REG(0x18048)
+#define RASTER_WALK_Z  TN_REG(0x1804c)
+#define RASTER_WALK_GRID TN_REG(0x18050)
+#define RASTER_WALK_BLK_I TN_REG(0x18054)
+#define RASTER_WALK_BLK_D TN_REG(0x18058)
+#define RASTER_WALK_GO TN_REG(0x1805c)
+#define RASTER_WALK_ST TN_REG(0x18060)
+#define RASTER_CAM_A   TN_REG(0x1806c)
+#define RASTER_CAM_D   TN_REG(0x18070)
+#ifndef TC_FABRIC_WALK
+#define TC_FABRIC_WALK 0
+#endif
 #define RASTER_BUS_MHZ 75u   /* the bus clock the BUSY counter counts */
 #define RASTER_ID_VALUE 0x54435231u /* "TCR1" */
 
@@ -289,6 +305,73 @@ static const uint8_t *receive(uint32_t *bytes)
 	return buffer + 8;
 }
 
+#if TC_FABRIC_WALK
+/* The land, packed for the fabric's walker: two vertices a word, {colour,
+ * altitude} each with the low vertex first, then the cells' flag nibbles,
+ * eight to a word. It is the shape tools/pack_land.py writes for the unit's
+ * testbench, and the stride the walker reads is the land's own, cells_x + 1. */
+static void fabric_land_upload(const struct tc_land *land)
+{
+	uint32_t vx = (uint32_t)land->cells_x + 1u;
+	uint32_t vz = (uint32_t)land->cells_z + 1u;
+	uint32_t vertices = vx * vz;
+	RASTER_LAND_A = 0;
+	for (uint32_t i = 0; i < vertices; i += 2u) {
+		uint32_t w = (uint32_t)land->altitude[i] |
+			     (uint32_t)land->colour[i] << 8;
+		if (i + 1u < vertices)
+			w |= ((uint32_t)land->altitude[i + 1u] |
+			      (uint32_t)land->colour[i + 1u] << 8) << 16;
+		RASTER_LAND_D = w;
+	}
+	uint32_t cells = (uint32_t)land->cells_x * (uint32_t)land->cells_z;
+	RASTER_LAND_A = 0x10000u;
+	for (uint32_t i = 0; i < cells; i += 8u) {
+		uint32_t w = 0;
+		for (uint32_t k = 0; k < 8u && i + k < cells; k++)
+			w |= (uint32_t)(land->cells[i + k] & 7u) << (4u * k);
+		RASTER_LAND_D = w;
+	}
+	while (RASTER_STATUS & RASTER_BUSY)
+		;
+}
+
+/* One frame's walk in the fabric: the camera file, the camera cell, the grid
+ * and the blocks the cull kept, then the start. The unit reports when its
+ * assembly has gone idle after the walk, which is when the frame is done. */
+static void fabric_walk(void *ctx, const uint8_t *shown, uint32_t bx,
+			uint32_t bz, uint32_t cells_x, uint32_t cells_z,
+			const int32_t cam[7], uint32_t cx, uint32_t cz)
+{
+	(void)ctx;
+	for (unsigned k = 0; k < 7u; k++) {
+		RASTER_CAM_A = k;
+		RASTER_CAM_D = (uint32_t)cam[k];
+	}
+	RASTER_WALK_X = cx;
+	RASTER_WALK_Z = cz;
+	RASTER_WALK_GRID = cells_z << 16 | cells_x;
+	uint32_t words = (bx * bz + 31u) / 32u;
+	for (uint32_t w = 0; w < words; w++) {
+		uint32_t bits = 0;
+		for (uint32_t k = 0; k < 32u; k++) {
+			uint32_t b = w * 32u + k;
+			if (b < bx * bz && shown[b])
+				bits |= 1u << k;
+		}
+		RASTER_WALK_BLK_I = w;
+		RASTER_WALK_BLK_D = bits;
+	}
+	RASTER_WALK_GO = 3u;
+	/* The walk clears its done bit when it takes the start, so the frame is
+	 * over when that bit is back with the assembly idle. */
+	while (RASTER_WALK_ST & 0x10u)
+		;
+	while ((RASTER_WALK_ST & 0x30u) != 0x30u)
+		;
+}
+#endif
+
 // The fabric target: each call is one rasterizer command.
 static void fabric_rows(void *ctx, uint32_t first, uint32_t end, uint8_t colour)
 {
@@ -470,10 +553,20 @@ int main(void)
 	const struct tc_target target = FABRIC ?
 		(struct tc_target){fabric_rows, fabric_triangle, fabric_card,
 				   fabric_tex, 0, phase_now, phase,
-				   fabric_vertex, fabric_tri} :
+				   fabric_vertex, fabric_tri,
+#if TC_FABRIC_WALK
+				   fabric_walk
+#else
+				   0
+#endif
+				   } :
 		(struct tc_target){tc_soft_rows, tc_soft_triangle, tc_soft_card,
 				   tc_soft_tex, &soft, phase_now, phase,
-				   tc_soft_vertex, tc_soft_tri};
+				   tc_soft_vertex, tc_soft_tri, 0};
+#if TC_FABRIC_WALK
+	if (FABRIC)
+		fabric_land_upload(&land);
+#endif
 	uint32_t late0 = TN_VIDEO_LATE, vbl0 = TN_VIDEO_FRAMES;
 	uint32_t stalls0 = FABRIC ? RASTER_STALLS : 0;
 	uint32_t crc = 0, lit = 0;
@@ -532,9 +625,13 @@ int main(void)
 		longest = t1 - t0 > longest ? t1 - t0 : longest;
 		finish += t2 - t1;
 		uint32_t sent = FABRIC ? RASTER_TRIS - tris0 : soft.triangles;
-		if (sent != stats.triangles)
-			fail("TRIS");
-		tris += stats.triangles;
+		if (TC_FABRIC_WALK && FABRIC)
+			tris += sent;      /* the fabric named them, not the program */
+		else {
+			if (sent != stats.triangles)
+				fail("TRIS");
+			tris += stats.triangles;
+		}
 		pixels += FABRIC ? RASTER_PIXELS - pixels0 : soft.pixels;
 
 		// The frame as drawn, folded by the fabric into the run's CRC-32, or

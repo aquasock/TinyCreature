@@ -118,3 +118,35 @@ Give the firmware the walk: pack the land's vertices and flags for the fabric's 
 - User Test: NOT RUN
 
 ---
+## 5 COMMIT Unreleased 2026-10-20T13:54:05-07:00
+
+#### Coming From:
+
+Unreleased fdff4f7
+
+#### Purpose:
+
+Give the firmware the walk, so the fabric walks and draws the land itself instead of the AE350 walking it and sending the triangles.
+
+#### Outcome:
+
+The renderer's target gained a walk callback: a target that walks the land itself is handed the block bitset the cull kept, the block grid, the cell grid, the camera cell and the camera's seven numbers, and the program then sends no terrain of its own. `main.c` implements it for the board: a `FABRIC_WALK` build knob packs the land's vertices as `{colour, altitude}` words and its cells' flag nibbles and uploads them through the land store's two registers once at startup, and each frame writes the transform's camera file, the camera cell, the grid and the bitset, starts the walk with its feed bit, and waits for the walker's done bit with the assembly idle before the frame is flipped. The first attempt passed the block grid where the cell grid belongs, so the unit walked a fourteen by thirteen patch at the island's corner, declared no triangles and the run reported `TRIS=0`; with the cell grid in place the board reported `TinyCreature TERRAIN OK MODE=FABRIC LAND=96a94274 FRAMES=600 TRIS=35400 PIXELS=31406 DRAW=26784us MAX=31061us CRC=69580a88 PHWALK=26738us FABRIC=16833us CAMFOCUS=111,103 CAMEYE=110,283 CAMTURN=179`, and the user watched it and accepted it. Every one of those 35,400 triangles was declared by the fabric, the AE350's own walk being off for the run, which reports `CELLS=0`, and the walk and assembly cost 26.7 ms a frame with 16.8 ms of fill inside it. The frame is not the host's: the board drew 31,406 pixels against 33,115 and its CRC differs, which is the assembly having no near-plane or guard clip, so a triangle with a corner behind the camera is skipped where the CPU cuts and draws part of it, and no cull, so back-facing triangles are sent and left for the fill to reject; the core is also still the overclocked seed 4, closing at 71.38 MHz and clocked at 75. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md`, `.ai/core-reference.md` and `.ai/core-syntax.md` are unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The near-plane and guard clip, so the fabric draws the triangles it now skips and the frame can be compared against the host's instead of merely watched. Then congestion and timing, the design closing at 71.38 MHz against the 75 it runs at, and the cull, which would stop sending the triangles the fill rejects. The archived entry 51 `BAD TINYCREATURE PIXELS` and the art queue stay open.
+
+#### Files Modified:
+
+- firmware/terrain/Makefile
+- firmware/terrain/main.c
+- firmware/terrain/terrain.c
+- firmware/terrain/terrain.h
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

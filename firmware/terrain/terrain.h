@@ -142,6 +142,14 @@ struct tc_target {
 	 * its tile from its first vertex. */
 	void (*vertex)(void *ctx, const struct tc_vertex *v);
 	void (*tri)(void *ctx, uint32_t a, uint32_t b, uint32_t c, int textured);
+	/* A target that walks the land itself: given the block bitset, the camera
+	 * cell and the camera's seven numbers, it draws the frame the walk would
+	 * have drawn. The program then sends no terrain commands of its own. NULL
+	 * for every target that draws what it is told, which is all of them but
+	 * the board talking to a fabric that carries the walker. */
+	void (*walk)(void *ctx, const uint8_t *shown, uint32_t blocks_x,
+		     uint32_t blocks_z, uint32_t cells_x, uint32_t cells_z,
+		     const int32_t cam[7], uint32_t cx, uint32_t cz);
 };
 
 /* The shading the fill does. A triangle's three corners carry three palette

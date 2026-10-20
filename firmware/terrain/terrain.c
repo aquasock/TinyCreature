@@ -2774,6 +2774,27 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 		}
 	}
 #endif
+	if (out->walk != NULL) {
+		/* The fabric carries this frame's walk. It is given what the walk
+		 * is driven by -- the blocks the cull kept, the camera cell and the
+		 * camera's numbers -- and the program sends no terrain of its own,
+		 * because the fabric writes the vertex store and names the
+		 * triangles itself. */
+		const int32_t cam[7] = {cam_x, cam_y, cam_z, sin_yaw, cos_yaw,
+					sin_pitch, cos_pitch};
+		uint64_t w0 = timed ? out->now() : 0;
+		out->walk(out->ctx, block_shown, blocks_x, blocks_z,
+			  land->cells_x, land->cells_z, cam,
+			  (uint32_t)cx, (uint32_t)cz);
+		if (timed) {
+			uint64_t t = out->now();
+			out->phase[TC_PHASE_WALK] = (uint32_t)(t - w0);
+			phase_at = t;
+		}
+		if (timed)
+			out->phase[TC_PHASE_SPRITE] = 0;
+		return;
+	}
 	int32_t z_lo = 0, z_hi = land->cells_z - 1;
 	/* The store's screen corners are this frame's, so it holds nothing yet. */
 	memset(slot_owner, 0, sizeof slot_owner);
