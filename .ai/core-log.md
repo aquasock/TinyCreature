@@ -2900,3 +2900,33 @@ Pipeline and parallelise the products and the reciprocal: four to eight multipli
 - User Test: N/A
 
 ---
+
+## 88 COMMIT Unreleased 2026-10-20T01:56:00-07:00
+
+#### Coming From:
+
+Unreleased 61bbab2
+
+#### Purpose:
+
+Record the walker's state, the deployed core and the exact next steps as a handoff for the next agent.
+
+#### Outcome:
+
+The board runs entry 80's seed 5 core, `ae350_soc.bin` SHA-256 `23c0166497ddc081be8b4276b1b42d5c1b5833bef296c29a20f8d4581455309d` and `ae350_soc.fs` SHA-256 `13fdddc75f637fbb47abe716d67cc5f181e5206f53d80190b8ab30ef7c96d077`, at 78.98 MHz bus and 94.63 MHz pixel, flying the accepted Celtic scene. Since then the source has gained the walker's four units: the packed land store and its read-back (entry 81), the CPU cell trace and `tools/land_walk.py` model (entry 82), the fabric cell walk against that model (entry 83), the CPU vertex trace and `tests/vert_model.sv` (entry 84), the transform unit against the trace (entry 85), the camera file and transform registers in the raster (entry 86), and the sequential `mulseq` arithmetic (entry 87). `tools/test_tang32_raster.sh` still passes on Land 1 and Celtic: the land store reads back exactly, 21,223 and 26,542 cells match the model, and 256 traced vertices match the CPU through the testbench model, the standalone unit and the raster's own registers, with the frames unchanged at `293e6ccf` and `5c2808f5` and at `4bb0a03f` and `9013c700`. The current source synthesises at 20,633 `LUT4`, 9,121 `ALU`, 18,056 `DFFRE`, 1,767 `DFFCE` and 293 of 340 block RAMs. It has not been placed and routed: the sequential transform is exact but takes about 208 clocks a vertex, 150 ms for the unique grid vertices and 295 ms for four corners of each drawn cell, so it would not make a usable frame and the board must stay on seed 5. The walker's cell FIFO, the land vertex reads, the slot keys, the near-plane clip and the triangle assembly are not yet connected: no terrain is drawn by the fabric. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+First make the arithmetic a frame: four to eight multiplier lanes issuing the four yaw and four pitch products together, and several divide lanes or the TEXV setup's existing lanes shared, targeting one vertex every eight to sixteen clocks. Then connect the walker's cell FIFO to that unit with the land store's vertex words, the slot keys and the CPU's de-duplication, still against the traces; then the near-plane and guard clip and the triangle assembly into the existing setup; then a build, an eight-seed sweep and the user's flight test. The open defects are entry 51's `BAD TINYCREATURE PIXELS` at 2,000 and 3,000 villager-sized cards and the art queue -- authored-tall plant sprites, grass as ground cover and the 13 dropped sprites if the tile store is widened. The RTC and LoRa check was a bench detour, not project code; TinyNES's `LORA-001` is stale for this bench and belongs to that project.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---
