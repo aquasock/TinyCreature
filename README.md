@@ -765,11 +765,14 @@ triangle took a Celtic frame from 0.89 to 1.35 million fabric cycles after its
 multiplies and divides were cut to the digits they need. The core places once
 the command assembler reads each word's last-word flag from the FIFO beside
 it, written as the CPU pushes the command, instead of decoding a length and
-comparing it on the block RAM's output: seed 7 closed the 75 MHz bus at
-75.27 MHz and the 74.25 MHz pixel clock at 92.00 MHz, the only one of eight
-seeds to pass every gate, and the core uses 223 of 340 block RAMs. The board
-ran the Celtic scene on seed 7's `ae350_soc.bin`, SHA-256
-`96af99100554022831f24b0f711f7cb5105afb97dcc7be33b0d4c2fc86d2555a`, drew the
+comparing it on the block RAM's output. That put seed 7 at 75.27 MHz; the
+depth test then moved into the scan's first phase, where the buffer read
+already holds the pixel, and the bus path became the TEXV plane setup instead
+of the depth compare. Seed 5 closed at 78.98 MHz bus and 94.63 MHz pixel, the
+only one of eight seeds to pass every gate, and the core uses 223 of 340
+block RAMs. The board ran the Celtic scene on seed 5's `ae350_soc.bin`,
+SHA-256
+`23c0166497ddc081be8b4276b1b42d5c1b5833bef296c29a20f8d4581455309d`, drew the
 plants' sunk bases behind the terrain, and the user passed it.
 
 ## openblack on a PC

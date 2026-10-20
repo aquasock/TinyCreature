@@ -558,6 +558,8 @@ module raster #(
     reg fzmode = 0;
     reg signed [31:0] fd = 0, fd_row = 0, fd_s = 0, fd_j = 0;
     reg [17:0] d18_p = 0, zd1_r = 0;
+    reg [17:0] tex_z = 0;   // a textured pixel's depth, held through its divide
+    reg zpass_r = 0;
     reg zw1_r = 0;
     // The depth buffer, one 18-bit value a pixel of the target: read at the
     // address the scan stands on, a clock before the pass is decided, and
@@ -577,7 +579,9 @@ module raster #(
                 depth18 = v[23:6];
         end
     endfunction
-    wire zpass = !fzmode || d18_p >= zq;
+    // The depth test is taken in the scan's first phase, where d18_p and zq
+    // both hold this pixel, and registered for the second: the compare then
+    // ends at one register instead of fanning out to the fill's enables.
     // The fill's copies of the planes, taken at the hand-over.
     reg ftex_on = 0;
     reg [5:0] ftile = 0;
@@ -1324,6 +1328,9 @@ module raster #(
                         ftex_aj <= tex_aj; ftex_bj <= tex_bj; ftex_cj <= tex_cj;
                         fzmode <= zplane;
                         fd <= zd0; fd_row <= zd0; fd_s <= zd_s; fd_j <= zd_j;
+                        d18_p <= depth18(zd0);
+                        zpass_r <= 1'b0;
+                        tex_z <= 18'd0;
                         fstate <= F_SCAN;
                     end
                 end
@@ -1394,7 +1401,10 @@ module raster #(
                     tn_a <= ftex_a;
                     tn_b <= ftex_b;
                     tn_c <= ftex_c;
-                    d18_p <= depth18(fd);
+                    // The depth buffer's read for this pixel landed this
+                    // clock, so its test belongs here, before the second
+                    // phase needs the answer.
+                    zpass_r <= !fzmode || d18_p >= zq;
                     if (fi == fi1) begin
                         if (fj == fj1)
                             last_p <= 1;
@@ -1429,27 +1439,31 @@ module raster #(
                         // The texel this pixel names: the two numerators
                         // divided by the interpolated reciprocal of depth,
                         // ten quotient bits each.
-                        if (covered_r && zpass) begin
+                        if (covered_r && zpass_r) begin
                             tex_rem <= tn_a >= 0 ? tn_a : -tn_a;
                             tex_q <= 0;
                             tex_bit <= 4'd9;
                             tex_second <= 1'b0;
+                            tex_z <= d18_p;
                             fstate <= F_TEXDIV;
                         end else if (last_p)
                             fstate <= F_IDLE;
                     end else begin
                         lut_addr <= mixed;
-                        we1_r <= covered_r && zpass;
-                        zw1_r <= covered_r && zpass && fzmode;
+                        we1_r <= covered_r && zpass_r;
+                        zw1_r <= covered_r && zpass_r && fzmode;
                         zd1_r <= d18_p;
                         a1_r <= addr_r;
-                        if (covered_r && zpass)
+                        if (covered_r && zpass_r)
                             pixels <= pixels + 1'b1;
                         if (last_p) begin
                             fstate <= F_DRAIN;
                             drain <= 2'd2;
                         end
                     end
+                    // fd has already stepped to the next pixel's depth, so
+                    // it is the one the next first phase tests.
+                    d18_p <= depth18(fd);
                 end
                 phase <= ~phase;
             end
@@ -1513,7 +1527,7 @@ module raster #(
                     waddr <= addr_r;
                     wdata <= ART_FIRST_W + tile_q[7:0];
                     zwe <= (tile_q[7:0] != TEX_KEY) && fzmode;
-                    zwaddr <= addr_r; zwdata <= d18_p;
+                    zwaddr <= addr_r; zwdata <= tex_z;
                     if (tile_q[7:0] != TEX_KEY)
                         pixels <= pixels + 1'b1;
                     tex_w <= 2'd0;
@@ -1529,9 +1543,13 @@ module raster #(
         end
     end
 
+    // The depth read is issued a pixel ahead: in phase 0 zq holds this
+    // pixel's depth. The hand-over cycle primes it with the first pixel's
+    // address, since faddr still holds the previous triangle's last.
+    wire [15:0] zraddr = fill_start && hand_kind == H_TRI ? addr : faddr;
     always @(posedge clk) begin
         if (zwe) zbuf[zwaddr] <= zwdata;
-        zq <= zbuf[faddr];
+        zq <= zbuf[zraddr];
     end
 
     // ---- Frame buffers: one write port (the engine, into the target),

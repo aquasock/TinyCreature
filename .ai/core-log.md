@@ -2636,3 +2636,35 @@ The depth buffer is on the board, so the next approved renderer stage is the ter
 - User Test: PASS
 
 ---
+
+
+## 80 COMMIT Unreleased 2026-10-19T23:43:26-07:00
+
+#### Coming From:
+
+Unreleased f7ec3ec
+
+#### Purpose:
+
+Move the depth test off the block RAM output path, place the depth core with margin, deploy the clean seed, and confirm the picture is unchanged.
+
+#### Outcome:
+
+The bus critical path after entry 79 ran 13.286 ns from the depth buffer's block RAM output through the 18-bit `d18_p >= zq` compare and the `covered_r && zpass` fanout to `tex_second`'s enable, leaving 0.047 ns of slack at 75 MHz. `fpga/raster.sv` now takes the test in the scan's first phase, where `zq` already holds this pixel's depth and `fd` holds its depth plane, and registers the result as `zpass_r` for the second phase; `d18_p` is loaded at the end of the second phase from the already-stepped `fd` and initialised at hand-over from `zd0`, so the compare is between two registers. The depth read address is the first pixel's during a triangle's hand-over cycle, priming `zq` for the first phase, and a textured pixel's depth is held in `tex_z` through its divide so the write still uses the pixel's own value. Every command grouping and every frame are unchanged: the stored path matched at Land 1 frames 0 and 75 with CRCs `293e6ccf` and `5c2808f5`, and the whole-triangle path with `TC_NO_STORE=1` matched at `11af32c7` and `929b08b1`. Synthesis used 12,100 `DFFRE`, 1,946 `DFF`, 1,531 `DFFCE`, 15,430 `LUT4` and 7,928 `ALU`. One eight-seed sweep with unlimited legalization placed all eight; seed 5 was the only clean one, at 78.98 MHz bus and 94.63 MHz pixel, and the bus path is now the TEXV plane setup from `dv_q` to `oacc` at 12.662 ns, with 6.802 ns of logic and 5.528 ns of routing. Seeds 1, 2, 3, 4, 6 and 8 missed the bus at 74.81, 65.48, 68.59, 72.32, 72.52 and 69.86 MHz; seed 7 was still routing when the user asked to stop the rest and was terminated. The build kept seed 5's `ae350_soc.bin` SHA-256 `23c0166497ddc081be8b4276b1b42d5c1b5833bef296c29a20f8d4581455309d` and `ae350_soc.fs` SHA-256 `13fdddc75f637fbb47abe716d67cc5f181e5206f53d80190b8ab30ef7c96d077`, at 223 of 340 block RAMs. The board loaded the same Celtic scene and terrain program -- 135,252 bytes at 185.8 KB/s and 162,942 bytes of land -- and the user flew it, found it looks good, and passed it. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The depth path is off the critical list, so the terrain walker with the land in block RAM can proceed against a 78.98 MHz bus; its first step should still be a timing measure, and the TEXV plane setup's long division and 48-bit multiplies are now the path to watch. Entry 51's `BAD TINYCREATURE PIXELS` at 2,000 and 3,000 villager-sized cards should be re-run with the depth core and vertex store on the board. The art queue stands: authored-tall plant sprites, grass as ground cover, and the 13 sprites the green selection dropped if the tile store is widened from 64 to 128, which is another core rebuild and sweep.
+
+#### Files Modified:
+
+- README.md
+- fpga/raster.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
