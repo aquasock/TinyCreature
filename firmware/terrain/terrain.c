@@ -68,14 +68,15 @@
 #define BLOCK     16    // cells a side in a block
 #define GUARD     32000 // Q4: corners sent to a target stay within 2000 pixels
 
-// A vertex, 8 bytes so that a frame's walk writes as little to the SDRAM as
-// it can, and so that four vertices share a cache line. The camera-space
-// position it was computed from is not kept: the record holds what every
-// drawn triangle needs, and the rare vertex that needs more recomputes it
-// from its place in the grid.
+// A vertex, 12 bytes so that a frame's walk writes as little to the SDRAM as
+// it can. The camera-space position it was computed from is not kept: the
+// record holds what every drawn triangle needs -- its screen corner and the
+// depth the fabric's depth buffer compares -- and the rare vertex that needs
+// more recomputes it from its place in the grid.
 struct vertex {
 	int16_t sx, sy;    // screen, Q4, exact when VERT_FRONT
 	uint32_t stamp;    // generation << 2 | state
+	uint32_t depth;    // (1 << 30) / z, when in front of the near plane
 };
 
 // What a vertex's record holds, in the two low bits of stamp.
@@ -809,11 +810,15 @@ static struct vertex *vertex(uint32_t gx, uint32_t gz)
 	struct vertex *v = &vertices[gz * verts_x + gx];
 	if ((v->stamp >> 2) != generation) {
 		int32_t x, y, z, sx = 0, sy = 0;
-		uint32_t state = VERT_BEHIND;
+		uint32_t state = VERT_BEHIND, depth = 0;
 		to_camera((int32_t)gx * CELL, height(land->altitude[gz * verts_x + gx]),
 			  (int32_t)gz * CELL, &x, &y, &z);
 		if (z >= NEAR) {
-			project_xy(x, y, z, &sx, &sy);
+			// project_xy's reciprocal, which is also the vertex's depth.
+			int64_t inv = (1 << 30) / z;
+			sx = TC_WIDTH * 8 + (int32_t)(x * inv >> 18);
+			sy = TC_HEIGHT * 8 - (int32_t)(y * inv >> 18);
+			depth = (uint32_t)inv;
 			state = VERT_FRONT;
 			if (sx > 32767 || sx < -32768 || sy > 32767 || sy < -32768) {
 				// Held clamped and flagged; submit() recomputes it.
@@ -824,6 +829,7 @@ static struct vertex *vertex(uint32_t gx, uint32_t gz)
 		}
 		v->sx = (int16_t)sx;
 		v->sy = (int16_t)sy;
+		v->depth = depth;
 		v->stamp = generation << 2 | state;
 	}
 #if TC_PHASE_DETAIL
@@ -836,8 +842,29 @@ static struct vertex *vertex(uint32_t gx, uint32_t gz)
 void tc_soft_rows(void *ctx, uint32_t first, uint32_t end, uint8_t colour)
 {
 	struct tc_soft *soft = ctx;
-	for (uint32_t r = first; r < end && r < TC_HEIGHT; r++)
+	for (uint32_t r = first; r < end && r < TC_HEIGHT; r++) {
 		memset(soft->fb + r * soft->stride, colour, TC_WIDTH);
+		if (soft->zbuf)
+			memset(soft->zbuf + r * TC_WIDTH, 0, TC_WIDTH * sizeof(uint32_t));
+	}
+}
+
+/* A depth plane, as tex_plane gives one: the value at the box's first pixel and
+ * the steps a pixel across and a row down. The fabric accumulates it in 32
+ * bits, which is why the sum is taken in unsigned arithmetic here. */
+struct depth_plane {
+	int32_t d0, dx, dy;
+};
+
+/* The depth a pixel of a plane compares: its D, shifted and held to 18 bits. */
+static uint32_t depth_at(const struct depth_plane *d, int32_t i, int32_t j)
+{
+	int32_t v = (int32_t)((uint32_t)d->d0 + (uint32_t)i * (uint32_t)d->dx +
+			      (uint32_t)j * (uint32_t)d->dy);
+	if (v < 0)
+		return 0;
+	v >>= TC_DEPTH_SHIFT;
+	return v > TC_DEPTH_MAX ? TC_DEPTH_MAX : (uint32_t)v;
 }
 
 // fpga/raster.sv's rule: pixel (i, j) of the screen is filled when, at its
@@ -848,8 +875,8 @@ void tc_soft_rows(void *ctx, uint32_t first, uint32_t end, uint8_t colour)
 // triangle, being the sum of three affine functions whose slopes cancel.
 // The weight of the first corner is F1 / S, of the second F2 / S and of the
 // third F0 / S, each edge function measuring the far corner from its edge.
-void tc_soft_triangle(void *ctx, const int32_t *x, const int32_t *y,
-		      uint32_t colours)
+static void soft_shaded(void *ctx, const int32_t *x, const int32_t *y,
+			uint32_t colours, const struct depth_plane *depth)
 {
 	struct tc_soft *soft = ctx;
 	soft->triangles++;
@@ -882,7 +909,9 @@ void tc_soft_triangle(void *ctx, const int32_t *x, const int32_t *y,
 		uint8_t *line = soft->fb + (uint32_t)j * soft->stride;
 		int64_t e0 = row[0], e1 = row[1], e2 = row[2];
 		for (int32_t i = i0; i <= i1; i++) {
-			if ((e0 | e1 | e2) >= 0) {
+			uint32_t d = depth ? depth_at(depth, i - i0, j - j0) : 0;
+			uint32_t *z = depth ? &soft->zbuf[(uint32_t)j * TC_WIDTH + (uint32_t)i] : NULL;
+			if ((e0 | e1 | e2) >= 0 && (!z || d >= *z)) {
 				int64_t f0 = e0 << 2, f2 = e2 << 2;
 				/* A triangle of no area has F all zero, so all
 				 * three thresholds pass; its one corner colours
@@ -894,6 +923,8 @@ void tc_soft_triangle(void *ctx, const int32_t *x, const int32_t *y,
 					b = (f0 >= s) + (f0 >= s2) + (f0 >= s3);
 				}
 				line[i] = shade(soft->pal5, soft->lut, colours, a, b);
+				if (z)
+					*z = d;
 				soft->pixels++;
 			}
 			e0 += step_x[0];
@@ -903,6 +934,12 @@ void tc_soft_triangle(void *ctx, const int32_t *x, const int32_t *y,
 		for (int k = 0; k < 3; k++)
 			row[k] += step_y[k];
 	}
+}
+
+void tc_soft_triangle(void *ctx, const int32_t *x, const int32_t *y,
+		      uint32_t colours)
+{
+	soft_shaded(ctx, x, y, colours, NULL);
 }
 
 // Clip a convex polygon of n Q4 screen points, in place, to within GUARD of
@@ -1023,7 +1060,8 @@ static void emit_stored(const int32_t *x, const int32_t *y, uint32_t colours,
 			continue;
 		slot_owner[slot[k]] = id;
 		struct tc_vertex s = {.slot = slot[k], .x = x[k], .y = y[k],
-				      .colour = colours >> (8 * k) & 0xffu};
+				      .colour = colours >> (8 * k) & 0xffu,
+				      .depth = v[k]->depth};
 		out->vertex(out->ctx, &s);
 	}
 	out->tri(out->ctx, slot[0], slot[1], slot[2], 0);
@@ -1547,7 +1585,8 @@ void tc_soft_card(void *soft, const struct tc_card *c)
  * into the tile, which is what the fabric's restoring divide and its address
  * arithmetic do. The planes' own steps are the integers the caller worked out,
  * so the twin and the fabric advance by the same increments and cannot drift. */
-void tc_soft_tex(void *soft, const struct tc_tex *t)
+static void soft_textured(void *soft, const struct tc_tex *t,
+			  const struct depth_plane *depth)
 {
 	struct tc_soft *s = soft;
 	const uint8_t *art = art_tile(t->tile);
@@ -1608,10 +1647,22 @@ void tc_soft_tex(void *soft, const struct tc_tex *t)
 			uint8_t texel = art[v * TC_TILE_SIZE + u];
 			if (texel == TC_TILE_KEY)
 				continue;
+			if (depth) {
+				uint32_t d = depth_at(depth, dx, dy);
+				uint32_t *z = &s->zbuf[(uint32_t)j * TC_WIDTH + (uint32_t)i];
+				if (d < *z)
+					continue;
+				*z = d;
+			}
 			row[i] = (uint8_t)(TC_ART_FIRST + texel);
 			s->pixels++;
 		}
 	}
+}
+
+void tc_soft_tex(void *soft, const struct tc_tex *t)
+{
+	soft_textured(soft, t, NULL);
 }
 
 /* The camera readout: where the eye and its focus are, in the island's own
@@ -2005,9 +2056,18 @@ void tc_soft_tri(void *soft, uint32_t a, uint32_t b, uint32_t c, int textured)
 		x[k] = p[k]->x;
 		y[k] = p[k]->y;
 	}
+	/* The depth plane: a shaded vertex brought its D, and the store divides
+	 * a textured one's out of its z. */
+	int64_t D[3];
+	for (unsigned k = 0; k < 3; k++)
+		D[k] = textured ? ((int64_t)1 << 30) / p[k]->z : (int64_t)p[k]->depth;
+	struct depth_plane depth;
+	int32_t i0, j0;
+	tex_origin(x, y, &i0, &j0);
+	tex_plane(x, y, D, i0, j0, &depth.d0, &depth.dx, &depth.dy);
 	if (!textured) {
-		tc_soft_triangle(soft, x, y, p[0]->colour | p[1]->colour << 8 |
-					     p[2]->colour << 16);
+		soft_shaded(soft, x, y, p[0]->colour | p[1]->colour << 8 |
+					p[2]->colour << 16, &depth);
 		return;
 	}
 	struct tc_tex t;
@@ -2021,7 +2081,7 @@ void tc_soft_tri(void *soft, uint32_t a, uint32_t b, uint32_t c, int textured)
 		tv[k] = (int32_t)p[k]->v;
 	}
 	tex_corners(&t, z, tu, tv);
-	tc_soft_tex(soft, &t);
+	soft_textured(soft, &t, &depth);
 }
 
 /* A quad as the two triangles the fill draws it with, from four Q4 screen

@@ -24,6 +24,7 @@
 #include "terrain.h"
 
 static uint8_t frame[TC_HEIGHT][TC_WIDTH];
+static uint32_t depth[TC_HEIGHT * TC_WIDTH];
 static FILE *commands;
 
 // tc_soft, which also writes each command as fpga/raster.sv takes it.
@@ -92,6 +93,7 @@ static void vertex(void *ctx, const struct tc_vertex *v)
 			fprintf(commands, "%08x\n", 5u << 28 | v->slot << 18 | v->colour);
 			fprintf(commands, "%08x\n",
 				(uint32_t)(uint16_t)v->y << 16 | (uint16_t)v->x);
+			fprintf(commands, "%08x\n", v->depth);
 		} else {
 			fprintf(commands, "%08x\n",
 				6u << 28 | v->slot << 18 | v->tile << 12 | v->v << 2);
@@ -275,7 +277,7 @@ int main(int argc, char **argv)
 	uint32_t crc = 0;
 	uint64_t tris = 0, pixels = 0;
 	struct tc_soft soft = {.fb = &frame[0][0], .stride = TC_WIDTH,
-			       .pal5 = shade.pal5, .lut = shade.lut};
+			       .pal5 = shade.pal5, .lut = shade.lut, .zbuf = depth};
 	/* TC_NO_STORE leaves the vertex store out, which sends every triangle
 	 * whole as before it existed: the same frames, by a different stream. */
 	const char *no_store = getenv("TC_NO_STORE");

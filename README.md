@@ -747,6 +747,28 @@ functions is sent whole triangles as before, which `TC_NO_STORE=1` asks of
 `terrain_host` and which draws the same frames. The setup cost timing: one of
 eight seeds, seed 3, closed the 75 MHz bus, at 76.65 MHz.
 
+### The depth buffer, not yet on the board
+
+The source now carries a depth buffer, and the core it needs does not yet
+place. A stored triangle carries a plane of its corners' depth, D = (1 << 30)
+/ z -- the same reciprocal the projection takes -- worked out by `tex_plane`'s
+arithmetic, and a pixel it covers is written only when D >> 6, held to 18 bits,
+is no less than the buffer's; a tie goes to the later triangle, so the walk's
+painter order still decides ties. Rows clear the buffer as they fill; whole
+triangles, cards and transparent texels test and write nothing. A shaded
+vertex brings its D as a third `VTX` word and the store divides a textured
+one's out of its z; the store is 144 bits wide for it and the buffer is 57,600
+18-bit values. The twin draws the Celtic baseline at CRC `44f4ef06`, 181 pixels
+a frame fewer than without depth, most of them plants' sunk bases now behind
+the terrain, and the simulation matches it on seven configurations. Plane
+setup for every stored triangle took a Celtic frame from 0.89 to 1.35 million
+fabric cycles after its multiplies and divides were cut to the digits they
+need. The core does not place: all eight seeds failed nextpnr's legalisation
+of flip-flops near the block RAMs, which are at 223 of 340. **The committed
+firmware sends the three-word `VTX` only this core understands, so a board
+build of it on entry 74's core, which the board runs, draws wrongly**; build
+the firmware from `6112725` for the board until the depth core places.
+
 ## openblack on a PC
 
 The landscape playground keeps each original world's dimensions, terrain,

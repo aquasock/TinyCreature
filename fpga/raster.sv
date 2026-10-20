@@ -60,13 +60,15 @@
 //         the value at the first pixel of the clamped bounding box and the
 //         step a pixel across and a row down of three planes: the tile's u,
 //         its v and the reciprocal of depth, which the fill steps and divides.
-//   VTX   2 words: 5 << 28 | slot << 18 | colour, then y << 16 | x: a shaded
-//         vertex into slot 0 to 1023 of the vertex store.
+//   VTX   3 words: 5 << 28 | slot << 18 | colour, then y << 16 | x, then D:
+//         a shaded vertex into slot 0 to 1023 of the vertex store, D being its
+//         depth, (1 << 30) / z, below 2^24.
 //   VTXT  3 words: 6 << 28 | slot << 18 | tile << 12 | v << 2, then
 //         y << 16 | x, then u << 22 | z: a textured vertex, u and v in Q4
 //         texels below 1024 and z the Q4 camera-space depth, 128 or more and
 //         below 2^22. The store keeps the corner's three plane values,
-//         (u << 20) / z, (v << 20) / z and (1 << 20) / z, divided here.
+//         (u << 20) / z, (v << 20) / z and (1 << 20) / z, and its depth
+//         (1 << 30) / z, divided here.
 //   TRIV  1 word: 3 << 30 | a << 20 | b << 10 | c: the shaded triangle of
 //         three stored vertices, drawn as the TRI of their corners and
 //         colours would be.
@@ -77,6 +79,13 @@
 //         truncation, so it draws the TEX the program would have sent.
 //         Commands run in order, so a slot may be written again as soon as
 //         the triangles that name it have been sent.
+// A TRIV or TEXV triangle carries a plane of its corners' D, worked out the
+// way TEXV's planes are, and is tested against a depth buffer of one 18-bit
+// value a pixel: a covered pixel is written, with its depth, only when its D
+// >> 6, held to 18 bits, is no less than the buffer's, so the nearer wins and
+// a tie goes to the later triangle. ROWS writes depth 0 as it fills, which
+// clears the buffer each frame; TRI, TEX and CARD test nothing and write no
+// depth, and neither does a transparent texel.
 // A triangle fills pixel (i, j) when, at its centre (16i + 8, 16j + 8), all
 // three edge functions F = (by - ay)(px - ax) - (bx - ax)(py - ay) over its
 // edges a to b are >= 0; pixels outside the screen are never visited. The
@@ -265,7 +274,7 @@ module raster #(
     // The assembler's own write into the vertex store, for a shaded vertex.
     reg asm_we = 0;
     reg [9:0] asm_waddr = 0;
-    reg [107:0] asm_wdata = 0;
+    reg [143:0] asm_wdata = 0;
     wire vst_busy;
     reg [7:0] cmd_colour = 0, cmd_first = 0, cmd_end = 0;
     // A triangle's three corner colours; the first is the byte a ROWS word
@@ -291,7 +300,7 @@ module raster #(
             4'd1: op_len = 4'd4;
             4'd3: op_len = 4'd5;
             4'd4: op_len = 4'd13;
-            4'd5: op_len = 4'd2;
+            4'd5: op_len = 4'd3;
             4'd6: op_len = 4'd3;
             default: op_len = 4'd1;
         endcase
@@ -349,8 +358,8 @@ module raster #(
                     if (vtx_direct) begin
                         asm_we <= 1'b1;
                         asm_waddr <= cmd_w0[27:18];
-                        asm_wdata <= {fifo_q[15:0], fifo_q[31:16], cmd_w0[7:0],
-                                      6'd0, 24'd0, 24'd0, 14'd0};
+                        asm_wdata <= {cmd_x[0], cmd_y[0], cmd_w0[7:0], 6'd0,
+                                      24'd0, 24'd0, 14'd0, fifo_q[23:0], 12'd0};
                     end else
                         cmd_full <= 1;
                     got <= 0; len <= 1;
@@ -408,19 +417,20 @@ module raster #(
         tile_q <= tiles[tile_raddr];
     end
 
-    // ---- The vertex store: 1024 slots of 108 bits, three 36-bit block RAMs
+    // ---- The vertex store: 1024 slots of 144 bits, four 36-bit block RAMs
     // wide ----
     // A slot holds the corner's Q4 screen position, its palette entry, the
-    // tile, and the three plane values a textured corner carries:
-    //   [107:92] x  [91:76] y  [75:68] colour  [67:62] tile
-    //   [61:38] (u << 20) / z  [37:14] (v << 20) / z  [13:0] (1 << 20) / z
+    // tile, the three plane values a textured corner carries and its depth:
+    //   [143:128] x  [127:112] y  [111:104] colour  [103:98] tile
+    //   [97:74] (u << 20) / z  [73:50] (v << 20) / z  [49:36] (1 << 20) / z
+    //   [35:12] (1 << 30) / z
     // The engine writes a slot as it takes the vertex command and reads the
     // three a triangle names one after another, each a clock after its
     // address, which is the same shape the tile store has.
-    (* ram_style = "block" *) reg [107:0] vstore [0:1023];
+    (* ram_style = "block" *) reg [143:0] vstore [0:1023];
     reg vst_we = 0;
     reg [9:0] vst_waddr = 0, vst_raddr = 0;
-    reg [107:0] vst_wdata = 0, vst_q = 0;
+    reg [143:0] vst_wdata = 0, vst_q = 0;
     // Setup and the assembler never write in the same clock: the assembler
     // holds back while setup could (vst_busy), and setup's own vertex write
     // is a command the assembler had to stop for.
@@ -438,7 +448,7 @@ module raster #(
                S_VDIV = 15, S_VWR = 16, S_VRD = 17,
                S_TP0 = 18, S_TPMUL = 19, S_TPN = 20, S_TPDIV = 21,
                S_TPSIGN = 22, S_TPG3 = 23, S_TPORG = 24, S_TPFIN = 25,
-               S_HAND = 26;
+               S_HAND = 26, S_TPSH = 27, S_TPSH2 = 28;
     reg [4:0] state = S_IDLE;
     // The fill's own states. Setup and fill run side by side: setup works the
     // next command out while the fill draws the last, and hands it over in
@@ -465,9 +475,9 @@ module raster #(
     // the remainder, which leaves twelve steps for the 24 bits a value holds.
     reg [21:0] vd_den = 0;
     reg [23:0] vd_den3 = 0;
-    reg [23:0] vd_num [0:2];
-    reg [21:0] vd_rem [0:2];
-    reg [23:0] vd_q [0:2];
+    reg [23:0] vd_num [0:3];
+    reg [21:0] vd_rem [0:3];
+    reg [23:0] vd_q [0:3];
     reg [3:0] vd_bit = 0;
 
     // ---- A stored triangle: its slots, and what the first two held ----
@@ -480,6 +490,7 @@ module raster #(
     reg [23:0] cap_u [0:1];
     reg [23:0] cap_v [0:1];
     reg [13:0] cap_r [0:1];
+    reg [23:0] cap_d [0:1];
     // A TEXV triangle has its planes worked out after its edges are set up;
     // a TEX one brought them in its command.
     reg tex_setup = 0;
@@ -487,6 +498,11 @@ module raster #(
     reg [23:0] pu [0:2];
     reg [23:0] pv [0:2];
     reg [13:0] pr [0:2];
+    reg [23:0] pd [0:2];
+    // A stored triangle carries a depth plane and is tested against the depth
+    // buffer; one sent whole does neither.
+    reg zplane = 0;
+    reg signed [31:0] zd0 = 0, zd_s = 0, zd_j = 0;
 
     // ---- A TEXV triangle's planes: tex_plane in hardware ----
     // For each of u, v and 1/z, with a1 and a2 the second and third corners'
@@ -499,23 +515,23 @@ module raster #(
     // edge setup has already summed. Twelve products in one pass of the
     // multiplier's nine digits, six long divisions side by side, then six
     // products of the origin offsets, low 32 bits only.
-    reg signed [47:0] ta1 [0:2];
-    reg signed [47:0] ta2 [0:2];
-    reg signed [47:0] ta1x3 [0:2];
-    reg signed [47:0] ta2x3 [0:2];
-    reg signed [47:0] macc [0:11];
-    reg [41:0] dv_num [0:5];
-    reg [34:0] dv_rem [0:5];
-    reg [31:0] dv_q [0:5];
-    reg dv_neg [0:5];
+    reg signed [47:0] ta1 [0:3];
+    reg signed [47:0] ta2 [0:3];
+    reg signed [47:0] ta1x3 [0:3];
+    reg signed [47:0] ta2x3 [0:3];
+    reg signed [47:0] macc [0:15];
+    reg [41:0] dv_num [0:7];
+    reg [34:0] dv_rem [0:7];
+    reg [31:0] dv_q [0:7];
+    reg dv_neg [0:7];
     reg [35:0] dv_den = 0;
     reg [37:0] dv_den3 = 0;
     reg det_zero = 0;
     reg [5:0] dv_bit = 0;
     reg tp_triple = 0;   // the multiplier's first clock makes the triples
-    reg [31:0] tg [0:5];
-    reg [31:0] tg3 [0:5];
-    reg [31:0] oacc [0:5];
+    reg [31:0] tg [0:7];
+    reg [31:0] tg3 [0:7];
+    reg [31:0] oacc [0:7];
 
     // ---- A textured triangle's own state ----
     // The three planes the fill steps -- the tile's u, its v and the
@@ -531,6 +547,31 @@ module raster #(
     reg signed [31:0] tex_arow = 0, tex_brow = 0, tex_crow = 0;
     reg signed [31:0] tex_as = 0, tex_bs = 0, tex_cs = 0;
     reg signed [31:0] tex_aj = 0, tex_bj = 0, tex_cj = 0;
+    // The fill's depth: the plane and whether this triangle tests against the
+    // buffer, this pixel's depth, and the write the pixel before will make.
+    reg fzmode = 0;
+    reg signed [31:0] fd = 0, fd_row = 0, fd_s = 0, fd_j = 0;
+    reg [17:0] d18_p = 0, zd1_r = 0;
+    reg zw1_r = 0;
+    // The depth buffer, one 18-bit value a pixel of the target: read at the
+    // address the scan stands on, a clock before the pass is decided, and
+    // written beside the frame buffer.
+    (* ram_style = "block" *) reg [17:0] zbuf [0:PIXELS - 1];
+    reg [17:0] zq = 0;
+    reg zwe = 0;
+    reg [15:0] zwaddr = 0;
+    reg [17:0] zwdata = 0;
+    function automatic [17:0] depth18(input signed [31:0] v);
+        begin
+            if (v < 0)
+                depth18 = 0;
+            else if ((v >>> 6) > 32'sd262143)
+                depth18 = 18'h3ffff;
+            else
+                depth18 = v[23:6];
+        end
+    endfunction
+    wire zpass = !fzmode || d18_p >= zq;
     // The fill's copies of the planes, taken at the hand-over.
     reg ftex_on = 0;
     reg [5:0] ftile = 0;
@@ -716,11 +757,12 @@ module raster #(
     // The same digit, on wider and on 32-bit multiplicands: the plane
     // numerators need 48 bits, and the origin products only their low 32.
     function automatic signed [47:0] radix4w(input signed [17:0] b,
-        input [3:0] k, input signed [47:0] a, input signed [47:0] a3);
+        input [3:0] k, input signed [47:0] a, input signed [47:0] a3,
+        input [3:0] top);
         reg [1:0] d;
         begin
             d = b[2 * k +: 2];
-            if (k == 8)
+            if (k == top)
                 case (d)
                     2'd0: radix4w = 0;
                     2'd1: radix4w = a;
@@ -738,11 +780,11 @@ module raster #(
     endfunction
 
     function automatic [31:0] radix4n(input signed [17:0] b, input [3:0] k,
-        input [31:0] a, input [31:0] a3);
+        input [31:0] a, input [31:0] a3, input [3:0] top);
         reg [1:0] d;
         begin
             d = b[2 * k +: 2];
-            if (k == 8)
+            if (k == top)
                 case (d)
                     2'd0: radix4n = 0;
                     2'd1: radix4n = a;
@@ -761,16 +803,34 @@ module raster #(
 
     // The plane numerators of each of u, v and 1/z, from the four products:
     // nx = -(a1 dy[2] + a2 dy[0]) and ny = a2 dx[0] + a1 dx[2].
-    wire signed [47:0] tp_nx [0:2];
-    wire signed [47:0] tp_ny [0:2];
+    wire signed [47:0] tp_nx [0:3];
+    wire signed [47:0] tp_ny [0:3];
     genvar gm;
     generate
-        for (gm = 0; gm < 3; gm = gm + 1) begin : tp_num
+        for (gm = 0; gm < 4; gm = gm + 1) begin : tp_num
             assign tp_nx[gm] = -(macc[4 * gm] + macc[4 * gm + 1]);
             assign tp_ny[gm] = macc[4 * gm + 2] + macc[4 * gm + 3];
         end
     endgenerate
     wire signed [35:0] s_abs = s_reg < 0 ? -s_reg : s_reg;
+    // The highest digit the plane products' multipliers need, and the origin
+    // products'.
+    wire [3:0] tp_top = max4(max4(top_digit({dy[2][16], dy[2]}), top_digit({dy[0][16], dy[0]})),
+                             max4(top_digit({dx[0][16], dx[0]}), top_digit({dx[2][16], dx[2]})));
+    wire [3:0] org_top = max4(top_digit(ox[0]), top_digit(oy[0]));
+    // The divides' numerators all fit below bit dv_msb + 1; the division runs
+    // only the radix-4 steps that cover them.
+    wire [41:0] dv_any = dv_num[0] | dv_num[1] | dv_num[2] | dv_num[3] |
+                         dv_num[4] | dv_num[5] | dv_num[6] | dv_num[7];
+    function automatic [5:0] msb42(input [41:0] v);
+        integer b;
+        begin
+            msb42 = 0;
+            for (b = 0; b < 42; b = b + 1)
+                if (v[b]) msb42 = b;
+        end
+    endfunction
+    reg [4:0] dv_steps = 0;
 
     // The least digit index whose signed pair still holds v: v fits in 2t + 2
     // signed bits.
@@ -803,6 +863,7 @@ module raster #(
                     tex_on <= 1'b0;
                     if (cmd_op == 4'd1 || cmd_op == 4'd4) begin
                         tex_setup <= 1'b0;
+                        zplane <= 1'b0;
                         for (k = 0; k < 3; k = k + 1) begin
                             vx[k] <= cmd_x[k]; vy[k] <= cmd_y[k];
                         end
@@ -852,7 +913,8 @@ module raster #(
                         vst_we <= 1'b1;
                         vst_waddr <= cmd_w0[27:18];
                         vst_wdata <= {cmd_x[0], cmd_y[0], cmd_w0[7:0], 6'd0,
-                                      24'd0, 24'd0, 14'd0};
+                                      24'd0, 24'd0, 14'd0,
+                                      cmd_y[1][7:0], cmd_x[1], 12'd0};
                     end else if (cmd_op == 4'd6) begin
                         // A textured vertex: the corner and the tile wait in
                         // registers while its three plane values are divided.
@@ -872,7 +934,11 @@ module raster #(
                         vd_num[1] <= {cmd_w0[5:2], 20'd0};
                         vd_rem[2] <= 0;
                         vd_num[2] <= 24'd1 << 20;
-                        for (k = 0; k < 3; k = k + 1)
+                        // 1 << 30 is 31 bits: its top seven, 64, go into the
+                        // remainder, below z as z is at least 128.
+                        vd_rem[3] <= 22'd64;
+                        vd_num[3] <= 24'd0;
+                        for (k = 0; k < 4; k = k + 1)
                             vd_q[k] <= 0;
                         vd_bit <= 4'd11;
                         state <= S_VDIV;
@@ -887,7 +953,7 @@ module raster #(
                     end
                 end
             S_VDIV: begin
-                for (k = 0; k < 3; k = k + 1) begin
+                for (k = 0; k < 4; k = k + 1) begin
                     if ({vd_rem[k], vd_num[k][23:22]} >= {2'd0, vd_den3}) begin
                         vd_rem[k] <= {vd_rem[k], vd_num[k][23:22]} - {2'd0, vd_den3};
                         vd_q[k] <= {vd_q[k][21:0], 2'd3};
@@ -912,7 +978,7 @@ module raster #(
                 vst_we <= 1'b1;
                 vst_waddr <= vt_slot;
                 vst_wdata <= {vt_x, vt_y, 8'd0, vt_tile, vd_q[0][23:0],
-                              vd_q[1][23:0], vd_q[2][13:0]};
+                              vd_q[1][23:0], vd_q[2][13:0], vd_q[3][23:0], 12'd0};
                 state <= S_IDLE;
             end
             S_VRD: begin
@@ -926,24 +992,27 @@ module raster #(
                     default: ;
                 endcase
                 if (vr_step == 3'd2 || vr_step == 3'd3) begin
-                    cap_x[vr_step - 3'd2] <= vst_q[107:92];
-                    cap_y[vr_step - 3'd2] <= vst_q[91:76];
-                    cap_c[vr_step - 3'd2] <= vst_q[75:68];
-                    cap_u[vr_step - 3'd2] <= vst_q[61:38];
-                    cap_v[vr_step - 3'd2] <= vst_q[37:14];
-                    cap_r[vr_step - 3'd2] <= vst_q[13:0];
+                    cap_x[vr_step - 3'd2] <= vst_q[143:128];
+                    cap_y[vr_step - 3'd2] <= vst_q[127:112];
+                    cap_c[vr_step - 3'd2] <= vst_q[111:104];
+                    cap_u[vr_step - 3'd2] <= vst_q[97:74];
+                    cap_v[vr_step - 3'd2] <= vst_q[73:50];
+                    cap_r[vr_step - 3'd2] <= vst_q[49:36];
+                    cap_d[vr_step - 3'd2] <= vst_q[35:12];
                     if (vr_step == 3'd2)
-                        cap_tile <= vst_q[67:62];
+                        cap_tile <= vst_q[103:98];
                 end
                 if (vr_step == 3'd4) begin
-                    vx[0] <= cap_x[0]; vx[1] <= cap_x[1]; vx[2] <= vst_q[107:92];
-                    vy[0] <= cap_y[0]; vy[1] <= cap_y[1]; vy[2] <= vst_q[91:76];
-                    c0_e <= cap_c[0]; c1_e <= cap_c[1]; c2_e <= vst_q[75:68];
-                    pu[0] <= cap_u[0]; pu[1] <= cap_u[1]; pu[2] <= vst_q[61:38];
-                    pv[0] <= cap_v[0]; pv[1] <= cap_v[1]; pv[2] <= vst_q[37:14];
-                    pr[0] <= cap_r[0]; pr[1] <= cap_r[1]; pr[2] <= vst_q[13:0];
+                    vx[0] <= cap_x[0]; vx[1] <= cap_x[1]; vx[2] <= vst_q[143:128];
+                    vy[0] <= cap_y[0]; vy[1] <= cap_y[1]; vy[2] <= vst_q[127:112];
+                    c0_e <= cap_c[0]; c1_e <= cap_c[1]; c2_e <= vst_q[111:104];
+                    pu[0] <= cap_u[0]; pu[1] <= cap_u[1]; pu[2] <= vst_q[97:74];
+                    pv[0] <= cap_v[0]; pv[1] <= cap_v[1]; pv[2] <= vst_q[73:50];
+                    pr[0] <= cap_r[0]; pr[1] <= cap_r[1]; pr[2] <= vst_q[49:36];
+                    pd[0] <= cap_d[0]; pd[1] <= cap_d[1]; pd[2] <= vst_q[35:12];
                     tex_tile <= cap_tile;
                     tex_on <= tex_setup;
+                    zplane <= 1'b1;
                     tris <= tris + 1'b1;
                     hand_kind <= H_TRI;
                     state <= S_BOX;
@@ -957,32 +1026,36 @@ module raster #(
                 ta2[1] <= $signed({24'd0, pv[2]}) - $signed({24'd0, pv[0]});
                 ta1[2] <= $signed({34'd0, pr[1]}) - $signed({34'd0, pr[0]});
                 ta2[2] <= $signed({34'd0, pr[2]}) - $signed({34'd0, pr[0]});
-                for (k = 0; k < 12; k = k + 1)
+                ta1[3] <= $signed({24'd0, pd[1]}) - $signed({24'd0, pd[0]});
+                ta2[3] <= $signed({24'd0, pd[2]}) - $signed({24'd0, pd[0]});
+                for (k = 0; k < 16; k = k + 1)
                     macc[k] <= 0;
                 dv_den <= s_abs;
                 state <= S_TPMUL;
-                digit <= 8;
+                // The products start at the highest digit the edges need.
+                digit <= tp_top;
+                mul_top <= tp_top;
                 tp_triple <= 1'b1;
             end
             S_TPMUL: begin
                 if (tp_triple) begin
                     // Three times each difference, which the digit wants.
-                    for (k = 0; k < 3; k = k + 1) begin
+                    for (k = 0; k < 4; k = k + 1) begin
                         ta1x3[k] <= ta1[k] + (ta1[k] <<< 1);
                         ta2x3[k] <= ta2[k] + (ta2[k] <<< 1);
                     end
                     dv_den3 <= {2'd0, dv_den} + {1'd0, dv_den, 1'b0};
                     tp_triple <= 1'b0;
                 end else begin
-                    for (k = 0; k < 3; k = k + 1) begin
+                    for (k = 0; k < 4; k = k + 1) begin
                         macc[4 * k] <= (macc[4 * k] <<< 2) +
-                            radix4w({dy[2][16], dy[2]}, digit, ta1[k], ta1x3[k]);
+                            radix4w({dy[2][16], dy[2]}, digit, ta1[k], ta1x3[k], mul_top);
                         macc[4 * k + 1] <= (macc[4 * k + 1] <<< 2) +
-                            radix4w({dy[0][16], dy[0]}, digit, ta2[k], ta2x3[k]);
+                            radix4w({dy[0][16], dy[0]}, digit, ta2[k], ta2x3[k], mul_top);
                         macc[4 * k + 2] <= (macc[4 * k + 2] <<< 2) +
-                            radix4w({dx[0][16], dx[0]}, digit, ta2[k], ta2x3[k]);
+                            radix4w({dx[0][16], dx[0]}, digit, ta2[k], ta2x3[k], mul_top);
                         macc[4 * k + 3] <= (macc[4 * k + 3] <<< 2) +
-                            radix4w({dx[2][16], dx[2]}, digit, ta1[k], ta1x3[k]);
+                            radix4w({dx[2][16], dx[2]}, digit, ta1[k], ta1x3[k], mul_top);
                     end
                     if (digit == 0) state <= S_TPN;
                     digit <= digit - 1'b1;
@@ -991,23 +1064,36 @@ module raster #(
             S_TPN: begin
                 // det = -S, so the quotient is negative when the numerator's
                 // sign and S's agree.
-                for (k = 0; k < 3; k = k + 1) begin
+                for (k = 0; k < 4; k = k + 1) begin
                     dv_num[2 * k] <= tp_nx[k] < 0 ? -tp_nx[k] : tp_nx[k];
                     dv_neg[2 * k] <= (tp_nx[k] < 0) == (s_reg < 0);
                     dv_num[2 * k + 1] <= tp_ny[k] < 0 ? -tp_ny[k] : tp_ny[k];
                     dv_neg[2 * k + 1] <= (tp_ny[k] < 0) == (s_reg < 0);
                 end
-                for (k = 0; k < 6; k = k + 1) begin
+                for (k = 0; k < 8; k = k + 1) begin
                     dv_rem[k] <= 0; dv_q[k] <= 0;
                 end
                 det_zero <= s_reg == 0;
-                dv_bit <= 6'd20;
+                state <= S_TPSH;
+            end
+            S_TPSH: begin
+                // How many radix-4 steps the largest numerator needs: its top
+                // bit, rounded up to a pair. A numerator's leading zeros,
+                // brought down into a remainder of zero, add only zeros to the
+                // quotient, so skipping them is exact.
+                dv_steps <= dv_any == 0 ? 5'd1 : (msb42(dv_any) >> 1) + 1'b1;
+                state <= S_TPSH2;
+            end
+            S_TPSH2: begin
+                for (k = 0; k < 8; k = k + 1)
+                    dv_num[k] <= dv_num[k] << (6'd42 - {dv_steps, 1'b0});
+                dv_bit <= dv_steps - 1'b1;
                 state <= S_TPDIV;
             end
             S_TPDIV: begin
                 // Two quotient bits a clock against det, 2 det and 3 det, the
                 // 42 numerator bits in 21 steps; the quotient keeps its low 32.
-                for (k = 0; k < 6; k = k + 1) begin
+                for (k = 0; k < 8; k = k + 1) begin
                     if ({dv_rem[k], dv_num[k][41:40]} >= {1'b0, dv_den3}) begin
                         dv_rem[k] <= {dv_rem[k], dv_num[k][41:40]} - {1'b0, dv_den3};
                         dv_q[k] <= {dv_q[k][29:0], 2'd3};
@@ -1030,25 +1116,25 @@ module raster #(
             end
             S_TPSIGN: begin
                 // A triangle of no area keeps the first corner's value and
-                // no steps, which is tex_plane's own rule for it.
-                for (k = 0; k < 6; k = k + 1)
+                // no steps, which is tex_plane's own rule for it. Three times
+                // each gradient is the origin products' digit 3.
+                for (k = 0; k < 8; k = k + 1) begin
                     tg[k] <= det_zero ? 32'd0 : dv_neg[k] ? -dv_q[k] : dv_q[k];
-                state <= S_TPG3;
-            end
-            S_TPG3: begin
-                for (k = 0; k < 6; k = k + 1) begin
-                    tg3[k] <= tg[k] + (tg[k] << 1);
+                    tg3[k] <= det_zero ? 32'd0 :
+                              dv_neg[k] ? -(dv_q[k] + (dv_q[k] << 1))
+                                        : dv_q[k] + (dv_q[k] << 1);
                     oacc[k] <= 0;
                 end
-                digit <= 8;
+                digit <= org_top;
+                mul_top <= org_top;
                 state <= S_TPORG;
             end
             S_TPORG: begin
-                for (k = 0; k < 3; k = k + 1) begin
+                for (k = 0; k < 4; k = k + 1) begin
                     oacc[2 * k] <= (oacc[2 * k] << 2) +
-                        radix4n(ox[0], digit, tg[2 * k], tg3[2 * k]);
+                        radix4n(ox[0], digit, tg[2 * k], tg3[2 * k], mul_top);
                     oacc[2 * k + 1] <= (oacc[2 * k + 1] << 2) +
-                        radix4n(oy[0], digit, tg[2 * k + 1], tg3[2 * k + 1]);
+                        radix4n(oy[0], digit, tg[2 * k + 1], tg3[2 * k + 1], mul_top);
                 end
                 if (digit == 0) state <= S_TPFIN;
                 digit <= digit - 1'b1;
@@ -1060,6 +1146,8 @@ module raster #(
                 tex_bs <= tg[2] << 4; tex_bj <= tg[3] << 4;
                 tex_c <= {18'd0, pr[0]} + oacc[4] + oacc[5];
                 tex_cs <= tg[4] << 4; tex_cj <= tg[5] << 4;
+                zd0 <= {8'd0, pd[0]} + oacc[6] + oacc[7];
+                zd_s <= tg[6] << 4; zd_j <= tg[7] << 4;
                 state <= S_HAND;
             end
             S_BOX: begin
@@ -1145,9 +1233,10 @@ module raster #(
                             acc_x[2] - acc_y[2]) <<< 1) +
                           (acc_x[0] - acc_y[0] + acc_x[1] - acc_y[1] +
                            acc_x[2] - acc_y[2]);
-                // A TEXV triangle works its planes out next; everything else
-                // is ready for the fill.
-                state <= tex_on && tex_setup ? S_TP0 : S_HAND;
+                // A stored triangle works its planes out next -- the depth
+                // plane, and TEXV's u, v and 1/z; everything else is ready for
+                // the fill.
+                state <= zplane ? S_TP0 : S_HAND;
             end
             S_HAND:
                 // Held until the fill is free; fill_start is the same
@@ -1164,15 +1253,16 @@ module raster #(
     always @(posedge clk or negedge resetn) begin
         if (!resetn) begin
             fstate <= F_IDLE; we <= 0; pixels <= 0; we1_r <= 0;
-            phase <= 0; last_p <= 0;
+            phase <= 0; last_p <= 0; zwe <= 0; zw1_r <= 0;
         end else begin
             we <= 0;
+            zwe <= 0;
             case (fstate)
             F_IDLE:
                 if (fill_start) begin
                     // The hand-over: everything the fill reads, copied from
                     // setup in the one clock both agree it happens.
-                    phase <= 0; last_p <= 0; we1_r <= 0;
+                    phase <= 0; last_p <= 0; we1_r <= 0; zw1_r <= 0;
                     if (hand_kind == H_ROWS) begin
                         faddr <= addr; ffill_end <= fill_end; fcolour <= colour;
                         fstate <= F_ROWS;
@@ -1200,6 +1290,8 @@ module raster #(
                         ftex_c <= tex_c; ftex_crow <= tex_c;
                         ftex_as <= tex_as; ftex_bs <= tex_bs; ftex_cs <= tex_cs;
                         ftex_aj <= tex_aj; ftex_bj <= tex_bj; ftex_cj <= tex_cj;
+                        fzmode <= zplane;
+                        fd <= zd0; fd_row <= zd0; fd_s <= zd_s; fd_j <= zd_j;
                         fstate <= F_SCAN;
                     end
                 end
@@ -1243,6 +1335,7 @@ module raster #(
             end
             F_ROWS: begin
                 we <= 1; waddr <= faddr; wdata <= fcolour;
+                zwe <= 1; zwaddr <= faddr; zwdata <= 0;
                 faddr <= faddr + 1'b1;
                 if (faddr + 1'b1 == ffill_end) fstate <= F_IDLE;
             end
@@ -1256,6 +1349,7 @@ module raster #(
                 // cycle, and it is written once, in the first phase.
                 if (phase && we1_r && !ftex_on) begin
                     we <= 1; waddr <= a1_r; wdata <= lut_q[7:0];
+                    zwe <= zw1_r; zwaddr <= a1_r; zwdata <= zd1_r;
                 end
                 if (!phase) begin
                     aw_r <= aw;
@@ -1268,8 +1362,7 @@ module raster #(
                     tn_a <= ftex_a;
                     tn_b <= ftex_b;
                     tn_c <= ftex_c;
-                    if (covered && !ftex_on)
-                        pixels <= pixels + 1'b1;
+                    d18_p <= depth18(fd);
                     if (fi == fi1) begin
                         if (fj == fj1)
                             last_p <= 1;
@@ -1287,6 +1380,8 @@ module raster #(
                             ftex_a <= ftex_arow + ftex_aj;
                             ftex_b <= ftex_brow + ftex_bj;
                             ftex_c <= ftex_crow + ftex_cj;
+                            fd_row <= fd_row + fd_j;
+                            fd <= fd_row + fd_j;
                         end
                     end else begin
                         fi <= fi + 1'b1; faddr <= faddr + 1'b1;
@@ -1295,13 +1390,14 @@ module raster #(
                         ftex_a <= ftex_a + ftex_as;
                         ftex_b <= ftex_b + ftex_bs;
                         ftex_c <= ftex_c + ftex_cs;
+                        fd <= fd + fd_s;
                     end
                 end else begin
                     if (ftex_on) begin
                         // The texel this pixel names: the two numerators
                         // divided by the interpolated reciprocal of depth,
                         // ten quotient bits each.
-                        if (covered_r) begin
+                        if (covered_r && zpass) begin
                             tex_rem <= tn_a >= 0 ? tn_a : -tn_a;
                             tex_q <= 0;
                             tex_bit <= 4'd9;
@@ -1311,8 +1407,12 @@ module raster #(
                             fstate <= F_IDLE;
                     end else begin
                         lut_addr <= mixed;
-                        we1_r <= covered_r;
+                        we1_r <= covered_r && zpass;
+                        zw1_r <= covered_r && zpass && fzmode;
+                        zd1_r <= d18_p;
                         a1_r <= addr_r;
+                        if (covered_r && zpass)
+                            pixels <= pixels + 1'b1;
                         if (last_p) begin
                             fstate <= F_DRAIN;
                             drain <= 2'd2;
@@ -1327,6 +1427,7 @@ module raster #(
                 // arrive, the second writes it.
                 if (drain <= 1 && we1_r) begin
                     we <= 1; waddr <= a1_r; wdata <= lut_q[7:0];
+                    zwe <= zw1_r; zwaddr <= a1_r; zwdata <= zd1_r;
                 end
                 if (drain <= 1) begin
                     we1_r <= 0;
@@ -1379,6 +1480,8 @@ module raster #(
                     we <= (tile_q[7:0] != TEX_KEY);
                     waddr <= addr_r;
                     wdata <= ART_FIRST_W + tile_q[7:0];
+                    zwe <= (tile_q[7:0] != TEX_KEY) && fzmode;
+                    zwaddr <= addr_r; zwdata <= d18_p;
                     if (tile_q[7:0] != TEX_KEY)
                         pixels <= pixels + 1'b1;
                     tex_w <= 2'd0;
@@ -1392,6 +1495,11 @@ module raster #(
             default: fstate <= F_IDLE;
             endcase
         end
+    end
+
+    always @(posedge clk) begin
+        if (zwe) zbuf[zwaddr] <= zwdata;
+        zq <= zbuf[faddr];
     end
 
     // ---- Frame buffers: one write port (the engine, into the target),

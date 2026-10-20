@@ -106,6 +106,7 @@ struct tc_vertex {
 	uint32_t slot;
 	int32_t x, y;              /* Q4 screen corner */
 	uint32_t colour;           /* palette entry, shaded */
+	uint32_t depth;            /* shaded: (1 << 30) / z, below 2^24 */
 	int textured;
 	uint32_t tile;             /* textured: the tile, its u and v, and z */
 	uint32_t u, v;
@@ -169,7 +170,19 @@ struct tc_soft {
 	uint32_t triangles, pixels;
 	const uint16_t *pal5;
 	const uint8_t *lut;
+	uint32_t *zbuf;            /* TC_WIDTH * TC_HEIGHT depths, rows apart by TC_WIDTH */
 };
+
+/* The depth buffer. A vertex the store holds carries D = (1 << 30) / z, which
+ * is linear on the screen as 1/z is, so a triangle of stored vertices carries
+ * a plane of D worked out by tex_plane's arithmetic, and a pixel it covers is
+ * written only when its D >> TC_DEPTH_SHIFT, held to 18 bits, is no less than
+ * the buffer's: nearer wins, and a tie goes to the later triangle, which is
+ * the painter's order the walk already draws in. A run of rows writes depth 0
+ * as it fills, which is what clears the buffer each frame; a triangle sent
+ * whole, a card and a transparent texel test nothing and write no depth. */
+#define TC_DEPTH_SHIFT 6
+#define TC_DEPTH_MAX   0x3ffff
 void tc_soft_rows(void *soft, uint32_t first, uint32_t end, uint8_t colour);
 void tc_soft_triangle(void *soft, const int32_t *x, const int32_t *y,
 		      uint32_t colours);
@@ -199,9 +212,9 @@ void tc_soft_card(void *soft, const struct tc_card *c);
  * and dividing, with the same truncation and the same clamp on the texel. */
 void tc_soft_tex(void *soft, const struct tc_tex *t);
 /* The vertex store and its triangles, as fpga/raster.sv's VTX, VTXT, TRIV and
- * TEXV commands draw them: a stored triangle is filled exactly as the same
- * triangle sent whole would be, and a textured one with the planes tex_plane
- * gives, so the store moves no pixel. */
+ * TEXV commands draw them: a stored triangle is filled as the same triangle
+ * sent whole would be, a textured one with the planes tex_plane gives, and
+ * both tested against the depth buffer. */
 void tc_soft_vertex(void *soft, const struct tc_vertex *v);
 void tc_soft_tri(void *soft, uint32_t a, uint32_t b, uint32_t c, int textured);
 

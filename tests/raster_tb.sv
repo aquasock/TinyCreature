@@ -126,7 +126,7 @@ module raster_tb;
                     // it as a fill, not a triangle, so it is skipped here.
                     rest = 4;
                 end else if (rest == 0 && w[31:28] == 4'd5) begin
-                    rest = 1;          // a shaded vertex: its corner word
+                    rest = 2;          // a shaded vertex: its corner and depth
                 end else if (rest == 0 && w[31:28] == 4'd6) begin
                     rest = 2;          // a textured vertex: corner, u and z
                 end else if (rest == 0 && w[31]) begin

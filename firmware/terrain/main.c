@@ -341,17 +341,18 @@ static void fabric_tex(void *ctx, const struct tc_tex *t)
 		RASTER_FIFO = (uint32_t)n[k];
 }
 
-// A vertex into the fabric's store, which fpga/raster.sv reads as VTX, two
-// words, or VTXT, three: the opcode and the ten-bit slot with the palette
-// entry, or with the tile and v; the Q4 screen corner; and for a textured one u
-// and the depth, from which the store works the corner's plane values out
-// itself.
+// A vertex into the fabric's store, which fpga/raster.sv reads as VTX or VTXT,
+// three words each: the opcode and the ten-bit slot with the palette entry, or
+// with the tile and v; the Q4 screen corner; and the shaded vertex's depth,
+// (1 << 30) / z, or the textured one's u and z, from which the store works the
+// corner's plane values and its depth out itself.
 static void fabric_vertex(void *ctx, const struct tc_vertex *v)
 {
 	(void)ctx;
 	if (!v->textured) {
 		RASTER_FIFO = 5u << 28 | v->slot << 18 | v->colour;
 		RASTER_FIFO = (uint32_t)(uint16_t)v->y << 16 | (uint16_t)v->x;
+		RASTER_FIFO = v->depth;
 		return;
 	}
 	RASTER_FIFO = 6u << 28 | v->slot << 18 | v->tile << 12 | v->v << 2;
@@ -455,6 +456,12 @@ int main(void)
 
 	struct tc_soft soft = {.stride = TN_VIDEO_FB_STRIDE,
 			       .pal5 = shade.pal5, .lut = shade.lut};
+	if (!FABRIC) {
+		/* The software path keeps its own depth buffer, as the fabric does. */
+		soft.zbuf = malloc(TC_WIDTH * TC_HEIGHT * sizeof(uint32_t));
+		if (!soft.zbuf)
+			fail("MEMORY");
+	}
 	/* The frame's phases, this frame's and the run's, and the cells the walk
 	 * drew: where the phase fields of the report come from. */
 	uint64_t phase[TC_PHASE_COUNT] = {0};

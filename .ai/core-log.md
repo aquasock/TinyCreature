@@ -2477,3 +2477,39 @@ The depth buffer is next, as approved: one 320 by 180 buffer of 18-bit depth in 
 - User Test: PASS
 
 ---
+
+## 75 COMMIT Unreleased 2026-10-19T20:34:16-07:00
+
+#### Coming From:
+
+Unreleased 6112725
+
+#### Purpose:
+
+Add the approved depth buffer to the fabric and its twin so that plants and terrain occlude by depth, recorded at the user's request as a handoff before the core places.
+
+#### Outcome:
+
+The depth buffer is implemented and exact in simulation, and its core does not place. Each stored vertex carries D = (1 << 30) / z, the reciprocal `project_xy` already takes, and a stored triangle carries a plane of D worked out by `tex_plane`'s arithmetic; a covered pixel is written, with its depth, only when D >> `TC_DEPTH_SHIFT` 6, held to 18 bits, is no less than the buffer's, so nearer wins and a tie goes to the later triangle; `ROWS` writes depth 0 and so clears it each frame; `TRI`, `TEX`, `CARD` and transparent texels test and write nothing. In the twin, `firmware/terrain/terrain.c`'s vertex record grew to 12 bytes to hold D, `tc_soft` gained a `zbuf` and depth-tested fills, and `tc_soft_tri` builds the plane, while `host.c` and `main.c` send a shaded vertex's D as a third `VTX` word, which is 20,000 more words a Celtic frame until a walker generates the terrain in the fabric. In `fpga/raster.sv` the vertex store widened to 144 bits, `VTXT` divides D out of z in a fourth radix-4 lane, setup computes a fourth plane for every `TRIV` and `TEXV`, and the fill reads a 57,600 by 18-bit buffer at each pixel's first phase, compares at its second, writes depth beside colour, and skips a failing textured pixel's divide. The Celtic baseline now draws at CRC `44f4ef06` with `PIXELS=35388` against `73f24771` and 35,569, and a pixel classification of six frames showed the changes are mostly plant pixels behind terrain, some plant against plant, and a few to 28 of terrain against terrain where depth and the walk's order disagree; with `TC_NO_STORE=1` the twin still draws `73f24771`, and the recorded drag and pattern sessions draw `7743529e` and `ca10d107`. `tests/raster_tb.sv` passed word for word on Celtic frames 0, 75, 150, 300, 450 and 599, Land 1 terrain alone, Land 1 with stored textured cards, column cards and whole triangles, and AddressSanitizer and UndefinedBehaviorSanitizer were clean. Plane setup on every terrain triangle first took a Celtic frame from 0.885 to 2.12 million fabric cycles; starting the plane and origin products at the highest radix-4 digit their multipliers need, running only the divide steps the largest numerator needs after a priority-encode and shift, and folding the sign and triple steps together brought it to 1.35 million for frame 0 and 1.29 million for frame 75, still exact. The eight-seed sweep then failed on every seed, seven of them at placement with nextpnr unable to legalise a flip-flop -- in the boot ROM, the CPU's EXTS read-back, a RAM lane, and the raster's `cmd_p` and `acc_x` -- and seed 8 stopped by the user while placing; utilisation was 33,521 LUT4, 8,156 ALU, 16,171 DFF of which 13,833 are `DFFRE` and 1,534 `DFFCE`, and 223 of 340 BSRAM against entry 74's 163. Reading the cell library corrected the agent's first diagnosis: `DFFRE` is a synchronous reset with enable, which yosys extracts from every register this design sets to zero in some state, so each register group carries its own reset and enable nets and fragments the slices whose flip-flops must share them, worst beside the block RAMs. The user approved fixing that cause, keeping datapath registers free of reset and enable patterns, together with a hook in this project's TinyNES patch to pass nextpnr a larger `--placer-heap-cell-placement-timeout`; neither is started. `build/tang32/` still holds entry 74's seed 3 core, which the board runs, and nothing was deployed. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The firmware committed here sends three-word `VTX` commands that only the depth core understands, so until that core places a board build must come from `6112725`'s firmware, which matches the entry 74 core the board runs. The approved fix is first: restructure `fpga/raster.sv` so the datapath registers -- the plane lanes, dividers, edge accumulators, fill copies and planes -- are not zeroed through state-dependent assignments that yosys turns into synchronous resets, for instance by loading their first value directly or moving them into plain clocked blocks, and confirm in the synthesis log that `DFFRE` falls from 13,833 to a few hundred; add a `TINY_NES_NEXTPNR_ARGS`-style hook to `patches/tinynes-tang32.patch`'s copy of `build_ae350_soc.sh` and pass `--placer-heap-cell-placement-timeout 50000`; then one eight-seed sweep, and stop and report if it fails. `synth_gowin`'s `-nodffe` and `-strict-gw5a-dffs` options were found and not tried. Once a core places, the gate needs the user's eyes on the plant bases, since CRC `44f4ef06` is a new picture, and after that comes the terrain walker with the land in block RAM, for which overlapping a triangle's plane setup with the next triangle's front end is the measured next cut in fabric time.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/host.c
+- firmware/terrain/main.c
+- firmware/terrain/terrain.c
+- firmware/terrain/terrain.h
+- fpga/raster.sv
+- tests/raster_tb.sv
+
+#### Status:
+
+- Build: FAIL
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---
