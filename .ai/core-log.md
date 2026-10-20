@@ -2702,3 +2702,39 @@ The walker's front end comes next: the block cull and the far-to-near cell order
 - User Test: N/A
 
 ---
+
+
+## 82 COMMIT Unreleased 2026-10-20T00:20:22-07:00
+
+#### Coming From:
+
+Unreleased 1254c57
+
+#### Purpose:
+
+Trace the CPU's terrain cell walk and reproduce it exactly in a model, so the fabric front end has a reference for its order, flags and slot keys.
+
+#### Outcome:
+
+`terrain_host` now writes a cell trace when `TC_CELL_TRACE` names a file, for the frame `TC_CELL_TRACE_FRAME` (zero by default): a `T` line with the grid, block grid and camera cell, `B` lines with the block-shown bitset, and one `C` line per drawn cell with `gx`, `gz`, the walk front and the four vertex-store slot keys. The trace is compiled only for the host build (`-DTC_TRACE=1` in the Makefile's host rule), and the board terrain ELF still compiles without it. `tools/land_walk.py` is new: it reads the same TCL2 and the trace, reproduces terrain.c's `farther` interleave, the block bitset and the `flags & 6` filter, and compares every drawn cell and slot key. Land 1 matched at 21,223 cells and Celtic at 26,542, and `tools/test_tang32_raster.sh` runs the model after the host on every raster regression. The frames were unchanged: `293e6ccf` and `5c2808f5` for Land 1, `4bb0a03f` and `9013c700` for Celtic, with the land store still reading back exactly. No place-and-route or deployment ran. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The fabric front end is next: read the packed land flags, take the block-shown bitset and camera cell in registers, run the same `farther` interleave, and push each drawn cell's slot keys to a FIFO the testbench drains against this model. The vertex transform and projection follow, then the near-plane clip and triangle assembly.
+
+#### Files Modified:
+
+- firmware/terrain/Makefile
+- firmware/terrain/host.c
+- firmware/terrain/terrain.c
+- firmware/terrain/terrain.h
+- tools/land_walk.py
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

@@ -47,7 +47,9 @@ python3 -I "$root/tools/pack_land.py" "$land" "$out/land.hex"
 # The defaults retain the two established views: frame 0 sees the whole
 # island; frame 75 is close in, with triangles cut at the near plane. The
 # overrides let a new primitive be checked at other points around the orbit.
-"$out/host/terrain_host" "$land" 600 "$out/f" "$frame0" "$frame1"
+TC_CELL_TRACE="$out/cells.txt" TC_CELL_TRACE_FRAME=0 \
+    "$out/host/terrain_host" "$land" 600 "$out/f" "$frame0" "$frame1"
+python3 -I "$root/tools/land_walk.py" "$land" "$out/cells.txt"
 # What the fabric's checksum must produce, from the same bytes: the standard
 # CRC-32 terrain_host uses, per frame and chained across both.
 crcs=$(python3 -I - "$out/$dump0.fb" "$out/$dump1.fb" <<'PY'

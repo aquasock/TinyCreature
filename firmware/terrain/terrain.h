@@ -283,6 +283,10 @@ struct tc_shade tc_init(const struct tc_land *land, void *work);
 #define TC_MOUSE_RIGHT  0x02u
 
 /* Send frame number frame of frames, one orbit of the island, to target. */
+/* Record one frame's drawn terrain cells and slot keys for the walker's
+ * model; file is a FILE *, and no file means no trace. */
+void tc_trace_set(void *file, uint32_t frame);
+
 void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 	     struct tc_stats *stats);
 

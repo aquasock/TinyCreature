@@ -286,6 +286,17 @@ int main(int argc, char **argv)
 					.ctx = &soft, .card = card, .tex = tex,
 					.vertex = store ? vertex : NULL,
 					.tri = store ? tri : NULL};
+	const char *trace_path = getenv("TC_CELL_TRACE");
+	FILE *cell_trace = NULL;
+	if (trace_path && *trace_path) {
+		cell_trace = fopen(trace_path, "w");
+		if (!cell_trace) {
+			perror(trace_path);
+			return 1;
+		}
+		const char *trace_frame = getenv("TC_CELL_TRACE_FRAME");
+		tc_trace_set(cell_trace, trace_frame ? (uint32_t)strtoul(trace_frame, NULL, 0) : 0);
+	}
 	for (uint32_t i = 0; i < frames; i++) {
 		int chosen = 0;
 		char path[4096];
@@ -350,5 +361,7 @@ int main(int argc, char **argv)
 		printf(" PIN=%ld,%ld\n", (long)pin_x, (long)pin_z);
 	else
 		printf(" PIN=none\n");
+	if (cell_trace)
+		fclose(cell_trace);
 	return 0;
 }

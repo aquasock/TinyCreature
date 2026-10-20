@@ -270,7 +270,7 @@ $(BUILD)/host/terrain_host: terrain.c host.c terrain.h $(SPRITE_H) \
                            $(if $(filter 1,$(PLANTS)),$(PLANT_H)) \
                            $(if $(filter 1,$(TILES)),$(TILES_H)) $(MAKEFILE_LIST)
 	@mkdir -p $(dir $@)
-	$(HOST_CC) -O2 -std=gnu11 -Wall -Wextra -Werror $(COMMON_CPPFLAGS) -o $@ terrain.c host.c
+	$(HOST_CC) -O2 -std=gnu11 -Wall -Wextra -Werror -DTC_TRACE=1 $(COMMON_CPPFLAGS) -o $@ terrain.c host.c
 
 .PHONY: host
 
