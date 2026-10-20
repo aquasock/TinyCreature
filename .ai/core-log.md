@@ -2513,3 +2513,35 @@ The firmware committed here sends three-word `VTX` commands that only the depth 
 - User Test: NOT RUN
 
 ---
+
+## 76 COMMIT Unreleased 2026-10-19T20:58:03-07:00
+
+#### Coming From:
+
+Unreleased 31baf70
+
+#### Purpose:
+
+Reduce the depth core's placement-hostile enabled flip-flop banks, add the approved nextpnr argument hook and run one eight-seed placement sweep.
+
+#### Outcome:
+
+`fpga/raster.sv` now updates the plane, origin and edge radix accumulators in plain clocked blocks while their out-of-state values are irrelevant, and derives the eight signed gradients and their triples as wires from the completed divider instead of storing 512 bits; the existing shared procedural loop variable was also made local to each loop, removing its multiple-driver warning. The Land 1 frame 0 and frame 75 simulation remained pixel-exact against `terrain_host`, with frame CRCs `293e6ccf` and `5c2808f5`, and synthesis reduced `DFFRE` from 13,833 to 12,081, raster `DFFRE` from 8,064 to 6,312, increased plain `DFF` from 706 to 1,946 and reduced the complete mapped design from 54,151 to 54,043 cells. The TinyNES patch now accepts `TINY_NES_NEXTPNR_ARGS` and the sweep wrapper supplied the approved `--placer-heap-cell-placement-timeout 50000`, but all eight seeds failed legal placement before routing at 10,001 attempts per cell, so deployment and user testing did not run. The failure exposed that this nextpnr option takes a divisor `N` and permits `max(10000, total_cells^2 / N)` attempts, rather than taking an attempt count; `50000` therefore forced the 10,000 minimum instead of enlarging it. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+Stop at this failed sweep as approved and obtain approval for a new cycle that corrects the wrapper's timeout value, preferably by retaining nextpnr's divisor default of 8 or deliberately using 0 for no timeout, then reruns the simulation and one eight-seed sweep; if a seed places, deploy it and have the user judge the plant-base depth changes, while another placement failure should return to reducing enabled datapath groups or test `synth_gowin -nodffe` rather than trying ad hoc seeds.
+
+#### Files Modified:
+
+- fpga/raster.sv
+- patches/tinynes-tang32.patch
+- tools/build_tang32.sh
+
+#### Status:
+
+- Build: FAIL
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---

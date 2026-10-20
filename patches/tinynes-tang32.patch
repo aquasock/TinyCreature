@@ -1577,7 +1577,7 @@ diff --git a/tools/build_ae350_soc.sh b/tools/build_ae350_soc.sh
 index 3c594f2..fea61c7 100755
 --- a/tools/build_ae350_soc.sh
 +++ b/tools/build_ae350_soc.sh
-@@ -33,6 +33,12 @@ family=GW5AST-138C
+@@ -33,6 +33,19 @@ family=GW5AST-138C
  # 75 and 74.25, with the fewest pixel-clock pins off the global network (2)
  # and the shortest pixel-clock route (482 pips) of any seed.
  seed="${TINY_NES_SEED:-11}"
@@ -1587,10 +1587,17 @@ index 3c594f2..fea61c7 100755
 +# after synthesis) and routes each seed from that netlist (TINY_NES_NETLIST).
 +stage="${TINY_NES_STAGE:-all}"
 +netlist="${TINY_NES_NETLIST:-}"
++# Extra placer/router arguments belong to the caller. Keep them as an array
++# so an unset hook adds no empty argument and a multi-word option is split
++# exactly once here rather than by each call site.
++nextpnr_args=()
++if [[ -n "${TINY_NES_NEXTPNR_ARGS:-}" ]]; then
++    read -r -a nextpnr_args <<<"$TINY_NES_NEXTPNR_ARGS"
++fi
  
  [[ -f "$suite/environment" ]] || { echo "missing open toolchain: $suite" >&2; exit 2; }
  # shellcheck disable=SC1090
-@@ -50,19 +56,25 @@ export NPNR_GOWIN_CLK_FIRST="${NPNR_GOWIN_CLK_FIRST:-bus_clk}"
+@@ -50,22 +63,29 @@ export NPNR_GOWIN_CLK_FIRST="${NPNR_GOWIN_CLK_FIRST:-bus_clk}"
  }
  mkdir -p "$out"
  
@@ -1619,7 +1626,11 @@ index 3c594f2..fea61c7 100755
  
  echo "nextpnr placement and routing"
  "$nextpnr" \
-@@ -111,7 +123,9 @@ print(f"Pixel Fmax {min(t['achieved'] for t in pixel):.2f} MHz")
++    "${nextpnr_args[@]}" \
+     --json "$out/ae350_soc.json" \
+     --write "$out/ae350_soc-routed.json" \
+     --device "$device" \
+@@ -111,7 +131,9 @@ print(f"Pixel Fmax {min(t['achieved'] for t in pixel):.2f} MHz")
  # open flow on this chip (core-log entry 14), so every block RAM in the video
  # unit must have both ports on one clock; its line buffers are flip-flops.
  cells = design["modules"]["top"]["cells"]
@@ -1630,7 +1641,7 @@ index 3c594f2..fea61c7 100755
                and any(p.startswith("CLKB") for p in c["connections"])}
  two_clock = sorted(n for n, c in video_rams.items()
                     if c["connections"]["CLKA"] != c["connections"]["CLKB"])
-@@ -121,18 +135,25 @@ print(f"Video block RAMs: {len(video_rams)}, each on one clock")
+@@ -121,18 +143,25 @@ print(f"Video block RAMs: {len(video_rams)}, each on one clock")
  # Only the 9-bit block RAM modes have been shown to read back correctly in
  # the video unit on this chip (core-log entry 14), so its stores, the desk
  # layer's included, must map to them.

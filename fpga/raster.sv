@@ -529,8 +529,8 @@ module raster #(
     reg det_zero = 0;
     reg [5:0] dv_bit = 0;
     reg tp_triple = 0;   // the multiplier's first clock makes the triples
-    reg [31:0] tg [0:7];
-    reg [31:0] tg3 [0:7];
+    wire [31:0] tg [0:7];
+    wire [31:0] tg3 [0:7];
     reg [31:0] oacc [0:7];
 
     // ---- A textured triangle's own state ----
@@ -801,6 +801,64 @@ module raster #(
         end
     endfunction
 
+    // These wide arithmetic banks deliberately have no clock enables. Their
+    // values outside the named arithmetic states are don't-cares; updating
+    // them continuously avoids a few very large, placement-hostile enable
+    // nets while the first active radix digit still loads the exact value.
+    integer mk;
+    always @(posedge clk) begin
+        for (mk = 0; mk < 4; mk = mk + 1) begin
+            macc[4 * mk] <= (digit == mul_top ? 48'sd0 :
+                (macc[4 * mk] <<< 2)) +
+                radix4w({dy[2][16], dy[2]}, digit, ta1[mk], ta1x3[mk], mul_top);
+            macc[4 * mk + 1] <= (digit == mul_top ? 48'sd0 :
+                (macc[4 * mk + 1] <<< 2)) +
+                radix4w({dy[0][16], dy[0]}, digit, ta2[mk], ta2x3[mk], mul_top);
+            macc[4 * mk + 2] <= (digit == mul_top ? 48'sd0 :
+                (macc[4 * mk + 2] <<< 2)) +
+                radix4w({dx[0][16], dx[0]}, digit, ta2[mk], ta2x3[mk], mul_top);
+            macc[4 * mk + 3] <= (digit == mul_top ? 48'sd0 :
+                (macc[4 * mk + 3] <<< 2)) +
+                radix4w({dx[2][16], dx[2]}, digit, ta1[mk], ta1x3[mk], mul_top);
+        end
+    end
+
+    genvar gg;
+    generate
+        for (gg = 0; gg < 8; gg = gg + 1) begin : tp_gradient
+            assign tg[gg] = (dv_neg[gg] ? -dv_q[gg] : dv_q[gg]) &
+                            {32{!det_zero}};
+            assign tg3[gg] = (dv_neg[gg] ?
+                              -(dv_q[gg] + (dv_q[gg] << 1)) :
+                               dv_q[gg] + (dv_q[gg] << 1)) &
+                             {32{!det_zero}};
+        end
+    endgenerate
+
+    integer oi;
+    always @(posedge clk) begin
+        for (oi = 0; oi < 4; oi = oi + 1) begin
+            oacc[2 * oi] <= (digit == mul_top ? 32'd0 :
+                (oacc[2 * oi] << 2)) +
+                radix4n(ox[0], digit, tg[2 * oi], tg3[2 * oi], mul_top);
+            oacc[2 * oi + 1] <= (digit == mul_top ? 32'd0 :
+                (oacc[2 * oi + 1] << 2)) +
+                radix4n(oy[0], digit, tg[2 * oi + 1], tg3[2 * oi + 1], mul_top);
+        end
+    end
+
+    integer ek;
+    always @(posedge clk) begin
+        for (ek = 0; ek < 3; ek = ek + 1) begin
+            acc_x[ek] <= (digit == mul_top ? 36'sd0 :
+                         (acc_x[ek] <<< 2)) +
+                         radix4(ox[ek], digit, dy[ek], dy3[ek], mul_top);
+            acc_y[ek] <= (digit == mul_top ? 36'sd0 :
+                         (acc_y[ek] <<< 2)) +
+                         radix4(oy[ek], digit, dx[ek], dx3[ek], mul_top);
+        end
+    end
+
     // The plane numerators of each of u, v and 1/z, from the four products:
     // nx = -(a1 dy[2] + a2 dy[0]) and ny = a2 dx[0] + a1 dx[2].
     wire signed [47:0] tp_nx [0:3];
@@ -849,7 +907,6 @@ module raster #(
     reg [3:0] mul_top = 8;
 
     wire covered = !fe[0][35] && !fe[1][35] && !fe[2][35];
-    integer k;
     // ---- Setup: commands in, a triangle, rows or card ready for the fill ----
     always @(posedge clk or negedge resetn) begin
         if (!resetn) begin
@@ -864,7 +921,7 @@ module raster #(
                     if (cmd_op == 4'd1 || cmd_op == 4'd4) begin
                         tex_setup <= 1'b0;
                         zplane <= 1'b0;
-                        for (k = 0; k < 3; k = k + 1) begin
+                        for (integer k = 0; k < 3; k = k + 1) begin
                             vx[k] <= cmd_x[k]; vy[k] <= cmd_y[k];
                         end
                         c0_e <= cmd_colour;
@@ -938,7 +995,7 @@ module raster #(
                         // remainder, below z as z is at least 128.
                         vd_rem[3] <= 22'd64;
                         vd_num[3] <= 24'd0;
-                        for (k = 0; k < 4; k = k + 1)
+                        for (integer k = 0; k < 4; k = k + 1)
                             vd_q[k] <= 0;
                         vd_bit <= 4'd11;
                         state <= S_VDIV;
@@ -953,7 +1010,7 @@ module raster #(
                     end
                 end
             S_VDIV: begin
-                for (k = 0; k < 4; k = k + 1) begin
+                for (integer k = 0; k < 4; k = k + 1) begin
                     if ({vd_rem[k], vd_num[k][23:22]} >= {2'd0, vd_den3}) begin
                         vd_rem[k] <= {vd_rem[k], vd_num[k][23:22]} - {2'd0, vd_den3};
                         vd_q[k] <= {vd_q[k][21:0], 2'd3};
@@ -1028,8 +1085,6 @@ module raster #(
                 ta2[2] <= $signed({34'd0, pr[2]}) - $signed({34'd0, pr[0]});
                 ta1[3] <= $signed({24'd0, pd[1]}) - $signed({24'd0, pd[0]});
                 ta2[3] <= $signed({24'd0, pd[2]}) - $signed({24'd0, pd[0]});
-                for (k = 0; k < 16; k = k + 1)
-                    macc[k] <= 0;
                 dv_den <= s_abs;
                 state <= S_TPMUL;
                 // The products start at the highest digit the edges need.
@@ -1040,23 +1095,13 @@ module raster #(
             S_TPMUL: begin
                 if (tp_triple) begin
                     // Three times each difference, which the digit wants.
-                    for (k = 0; k < 4; k = k + 1) begin
+                    for (integer k = 0; k < 4; k = k + 1) begin
                         ta1x3[k] <= ta1[k] + (ta1[k] <<< 1);
                         ta2x3[k] <= ta2[k] + (ta2[k] <<< 1);
                     end
                     dv_den3 <= {2'd0, dv_den} + {1'd0, dv_den, 1'b0};
                     tp_triple <= 1'b0;
                 end else begin
-                    for (k = 0; k < 4; k = k + 1) begin
-                        macc[4 * k] <= (macc[4 * k] <<< 2) +
-                            radix4w({dy[2][16], dy[2]}, digit, ta1[k], ta1x3[k], mul_top);
-                        macc[4 * k + 1] <= (macc[4 * k + 1] <<< 2) +
-                            radix4w({dy[0][16], dy[0]}, digit, ta2[k], ta2x3[k], mul_top);
-                        macc[4 * k + 2] <= (macc[4 * k + 2] <<< 2) +
-                            radix4w({dx[0][16], dx[0]}, digit, ta2[k], ta2x3[k], mul_top);
-                        macc[4 * k + 3] <= (macc[4 * k + 3] <<< 2) +
-                            radix4w({dx[2][16], dx[2]}, digit, ta1[k], ta1x3[k], mul_top);
-                    end
                     if (digit == 0) state <= S_TPN;
                     digit <= digit - 1'b1;
                 end
@@ -1064,13 +1109,13 @@ module raster #(
             S_TPN: begin
                 // det = -S, so the quotient is negative when the numerator's
                 // sign and S's agree.
-                for (k = 0; k < 4; k = k + 1) begin
+                for (integer k = 0; k < 4; k = k + 1) begin
                     dv_num[2 * k] <= tp_nx[k] < 0 ? -tp_nx[k] : tp_nx[k];
                     dv_neg[2 * k] <= (tp_nx[k] < 0) == (s_reg < 0);
                     dv_num[2 * k + 1] <= tp_ny[k] < 0 ? -tp_ny[k] : tp_ny[k];
                     dv_neg[2 * k + 1] <= (tp_ny[k] < 0) == (s_reg < 0);
                 end
-                for (k = 0; k < 8; k = k + 1) begin
+                for (integer k = 0; k < 8; k = k + 1) begin
                     dv_rem[k] <= 0; dv_q[k] <= 0;
                 end
                 det_zero <= s_reg == 0;
@@ -1085,7 +1130,7 @@ module raster #(
                 state <= S_TPSH2;
             end
             S_TPSH2: begin
-                for (k = 0; k < 8; k = k + 1)
+                for (integer k = 0; k < 8; k = k + 1)
                     dv_num[k] <= dv_num[k] << (6'd42 - {dv_steps, 1'b0});
                 dv_bit <= dv_steps - 1'b1;
                 state <= S_TPDIV;
@@ -1093,7 +1138,7 @@ module raster #(
             S_TPDIV: begin
                 // Two quotient bits a clock against det, 2 det and 3 det, the
                 // 42 numerator bits in 21 steps; the quotient keeps its low 32.
-                for (k = 0; k < 8; k = k + 1) begin
+                for (integer k = 0; k < 8; k = k + 1) begin
                     if ({dv_rem[k], dv_num[k][41:40]} >= {1'b0, dv_den3}) begin
                         dv_rem[k] <= {dv_rem[k], dv_num[k][41:40]} - {1'b0, dv_den3};
                         dv_q[k] <= {dv_q[k][29:0], 2'd3};
@@ -1116,26 +1161,14 @@ module raster #(
             end
             S_TPSIGN: begin
                 // A triangle of no area keeps the first corner's value and
-                // no steps, which is tex_plane's own rule for it. Three times
-                // each gradient is the origin products' digit 3.
-                for (k = 0; k < 8; k = k + 1) begin
-                    tg[k] <= det_zero ? 32'd0 : dv_neg[k] ? -dv_q[k] : dv_q[k];
-                    tg3[k] <= det_zero ? 32'd0 :
-                              dv_neg[k] ? -(dv_q[k] + (dv_q[k] << 1))
-                                        : dv_q[k] + (dv_q[k] << 1);
-                    oacc[k] <= 0;
-                end
+                // no steps, which is tex_plane's own rule for it. The
+                // gradient wires above also provide three times each value
+                // for the origin products' digit 3.
                 digit <= org_top;
                 mul_top <= org_top;
                 state <= S_TPORG;
             end
             S_TPORG: begin
-                for (k = 0; k < 4; k = k + 1) begin
-                    oacc[2 * k] <= (oacc[2 * k] << 2) +
-                        radix4n(ox[0], digit, tg[2 * k], tg3[2 * k], mul_top);
-                    oacc[2 * k + 1] <= (oacc[2 * k + 1] << 2) +
-                        radix4n(oy[0], digit, tg[2 * k + 1], tg3[2 * k + 1], mul_top);
-                end
                 if (digit == 0) state <= S_TPFIN;
                 digit <= digit - 1'b1;
             end
@@ -1184,7 +1217,7 @@ module raster #(
             end
             S_EDGE: begin
                 c1_c <= pal_q[15:0];
-                for (k = 0; k < 3; k = k + 1) begin
+                for (integer k = 0; k < 3; k = k + 1) begin
                     dx[k] <= vx[(k + 1) % 3] - vx[k];
                     dy[k] <= vy[(k + 1) % 3] - vy[k];
                     ox[k] <= $signed({5'd0, i0, 4'd8}) - vx[k];
@@ -1194,10 +1227,9 @@ module raster #(
             end
             S_TRIPLE: begin
                 c2_c <= pal_q[15:0];
-                for (k = 0; k < 3; k = k + 1) begin
+                for (integer k = 0; k < 3; k = k + 1) begin
                     dy3[k] <= dy[k] * 3;
                     dx3[k] <= dx[k] * 3;
-                    acc_x[k] <= 0; acc_y[k] <= 0;
                     step_x[k] <= dy[k] <<< 4;
                     step_y[k] <= -(dx[k] <<< 4);
                 end
@@ -1211,17 +1243,11 @@ module raster #(
                 state <= S_MUL;
             end
             S_MUL: begin
-                for (k = 0; k < 3; k = k + 1) begin
-                    acc_x[k] <= (acc_x[k] <<< 2) +
-                                radix4(ox[k], digit, dy[k], dy3[k], mul_top);
-                    acc_y[k] <= (acc_y[k] <<< 2) +
-                                radix4(oy[k], digit, dx[k], dx3[k], mul_top);
-                end
                 if (digit == 0) state <= S_FIN;
                 digit <= digit - 1'b1;
             end
             S_FIN: begin
-                for (k = 0; k < 3; k = k + 1)
+                for (integer k = 0; k < 3; k = k + 1)
                     e[k] <= acc_x[k] - acc_y[k];
                 // S and its multiples, the thresholds the weights are
                 // counted against, from the first pixel's edge functions.
@@ -1278,7 +1304,7 @@ module raster #(
                     end else begin
                         fi0 <= i0; fi1 <= i1; fi <= i0; fj1 <= j1; fj <= j0;
                         faddr <= addr; frow_addr <= addr;
-                        for (k = 0; k < 3; k = k + 1) begin
+                        for (integer k = 0; k < 3; k = k + 1) begin
                             fe[k] <= e[k]; fe_row[k] <= e[k];
                             fstep_x[k] <= step_x[k]; fstep_y[k] <= step_y[k];
                         end
@@ -1370,7 +1396,7 @@ module raster #(
                             fj <= fj + 1'b1; fi <= fi0;
                             frow_addr <= frow_addr + 16'd320;
                             faddr <= frow_addr + 16'd320;
-                            for (k = 0; k < 3; k = k + 1) begin
+                            for (integer k = 0; k < 3; k = k + 1) begin
                                 fe_row[k] <= fe_row[k] + fstep_y[k];
                                 fe[k] <= fe_row[k] + fstep_y[k];
                             end
@@ -1385,7 +1411,7 @@ module raster #(
                         end
                     end else begin
                         fi <= fi + 1'b1; faddr <= faddr + 1'b1;
-                        for (k = 0; k < 3; k = k + 1)
+                        for (integer k = 0; k < 3; k = k + 1)
                             fe[k] <= fe[k] + fstep_x[k];
                         ftex_a <= ftex_a + ftex_as;
                         ftex_b <= ftex_b + ftex_bs;
