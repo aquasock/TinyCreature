@@ -88,3 +88,33 @@ Issue each cell's triangle from the slots the feeder has filled: the near-plane 
 - User Test: N/A
 
 ---
+## 4 COMMIT Unreleased 2026-10-20T13:49:50-07:00
+
+#### Coming From:
+
+Unreleased a4c3b37
+
+#### Purpose:
+
+Fold the triangle decision into the walker's feeder and make its stores map to the block RAM modes the video unit requires, so the core builds, reaches the board and draws.
+
+#### Outcome:
+
+The separate assembler and its per-slot flag table are gone: the feeder now decides each cell's two triangles itself, reading the drawable bit out of the owner entry it already kept, so the aq queue, the flag store and one state machine came out and the block RAM count returned to the 293 the deployed core used. Two defects were found on the way, both by the sixteen-cell bench rather than the full simulation: the owner table's write address had been the read multiplexer, so results landed on whatever slot the state machine was looking at, and a cell's second triangle was skipped after the first was pushed. The build then failed on a rule rather than on timing: `land_v` and `land_f` are 32 bits wide and only the 9-, 18- and 36-bit block RAM modes read back correctly in this unit on this chip, so seed 7, which had routed and met both clocks at 75.80 MHz bus and 87.56 MHz pixel, was refused by the build's own check. Widening both stores to 36 bits, using 32, satisfied it and cost 285 `LUT4` while saving two block RAMs, the synthesis standing at 21,800 `LUT4`, 10,418 `ALU`, 18,487 `DFFRE` and 292 of 340 block RAMs. The new sweep lost seed 6 to illegal placement and closed seeds 2, 5, 3 and 4 at 61.12, 68.18, 67.21 and 71.38 MHz on the bus, every one of them short of the 75 MHz the core is clocked at; pix_clk passed on all four. The user directed that the best of them be deployed anyway to prove the design, so seed 4 was packed by hand with the project's Apicula fork, skipping the timing check deliberately, and loaded over two-wire. It ran the whole terrain test: `TinyCreature TERRAIN OK MODE=FABRIC LAND=96a94274 FRAMES=600 TRIS=20445 PIXELS=32701 DRAW=30877us MAX=36953us CRC=98c5c78e PHWALK=30821us FABRIC=12746us`, with the triangle count and land CRC matching the PC and the frame not matching it, 32,701 pixels against the host's 33,115, which the user judged to be the overclock rather than the new logic and asked to proceed on. The feeder and the assembly are idle on the board because the firmware never starts the walk, so nothing in this run exercised them; the slots were checked in simulation on Land 1, 84,892 corner visits over 21,223 cells matching the model, and the drawn-frame comparison never completed in simulation before the cycle turned to hardware. Seeds 1, 7 and 8 were still routing when the user stopped them. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md`, `.ai/core-reference.md` and `.ai/core-syntax.md` are unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+Give the firmware the walk: pack the land's vertices and flags for the fabric's store, upload them, write the block bitset, the camera cell, the grid size and the camera file, start the walk with its feed bit and wait for `feed_done` and an idle assembly, and stop the AE350 sending its own vertex and triangle commands for that frame. Then congestion and timing, since the design closes at 71.38 MHz against the 75 it runs at, and the near-plane and guard clip, which the assembly does not yet do.
+
+#### Files Modified:
+
+- fpga/raster.sv
+- tests/raster_tb.sv
+
+#### Status:
+
+- Build: FAIL
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

@@ -132,6 +132,11 @@ module raster #(
     reg w_fifo = 0;
     // A write waiting in its data phase goes in as soon as there is room.
     wire push = w_fifo && !fifo_full;
+    // The assembly's triangles join the same queue. A program using a fabric
+    // walk sends no commands of its own in that frame, which is what makes
+    // the one write port enough.
+    wire fifo_wr = push || (asm_push && !fifo_full);
+    wire [31:0] fifo_wd = asm_push ? asm_word : hwdata;
     // The command assembler takes the word at rd_ptr on the edge it moves
     // rd_ptr on; the word is in fifo_q, q_valid set, the cycle after.
     wire pop;
@@ -149,15 +154,16 @@ module raster #(
     endfunction
     // Words left in the command being written, this one included. A zero
     // count means this push starts one and reads its length from the opcode.
-    wire [3:0] wr_left = wr_rem == 0 ? op_len(hwdata[31:28]) : wr_rem;
+    wire [3:0] wr_left = asm_push ? 4'd1
+                       : wr_rem == 0 ? op_len(hwdata[31:28]) : wr_rem;
     wire wr_last = wr_left == 1;
     always @(posedge clk) begin
-        if (push) fifo[wr_ptr[8:0]] <= {wr_last, 3'd0, hwdata};
+        if (fifo_wr) fifo[wr_ptr[8:0]] <= {wr_last, 3'd0, fifo_wd};
         if (pop) fifo_q <= fifo[rd_ptr[8:0]];
     end
     always @(posedge clk or negedge resetn)
         if (!resetn) begin wr_ptr <= 0; wr_rem <= 0; end
-        else if (push) begin
+        else if (fifo_wr) begin
             wr_ptr <= wr_ptr + 1'b1;
             wr_rem <= wr_left - 1'b1;
         end
@@ -167,7 +173,8 @@ module raster #(
     reg w_land = 0, w_land_addr = 0, r_land = 0, r_land_wait = 0,
         r_land_wait2 = 0;
     // The walker's controls, the block bitset and its cell FIFO. The cell
-    // entries are {14'd0, front, gz[7:0], gx[8:0]}.
+    // entries are {11'd0, flags[2:0], front, gz[7:0], gx[8:0]}, the flags
+    // being the split, first-triangle and second-triangle bits.
     reg [15:0] wcx = 0, wcz = 0, wcells_x = 0, wcells_z = 0;
     reg [2:0] wshow_a = 0;
     reg [223:0] wshown = 0;
@@ -202,6 +209,11 @@ module raster #(
     // carries a tag and each caller takes only its own results. The feeder
     // has the earlier claim on a round.
     reg feed_req = 0, feed_en = 0, feed_done = 0, feed_start = 0;
+    // The walker's assembly declares its own triangles: a TRIV word the
+    // engine draws exactly as it draws one the program sent.
+    reg asm_push = 0;
+    reg [31:0] asm_word = 0;
+    reg asm_idle = 0;
     reg [15:0] f_gx = 0, f_gz = 0;
     reg [7:0] f_alt = 0;
     reg signed [15:0] xf_sx_r = 0, xf_sy_r = 0;
@@ -255,6 +267,7 @@ module raster #(
     wire [16:0] zab = zdb[16] ? -zdb : zdb;
     wire zpick_lo = zaa >= zab;
     wire [15:0] wcell_now = wrow_base + (xpick_lo ? wx_lo : wx_hi);
+    wire [2:0] wflags = (land_fraw >> (4 * wcell[2:0])) & 7;
     always @(posedge clk)
         wfifo_q <= wfifo[wfifo_rd[7:0]];
     reg [1:0] r_byte = 0;
@@ -441,8 +454,8 @@ module raster #(
                         7: hrdata <= crc_reg;
                         10: hrdata <= {16'd0, nz_latch};
                         15: hrdata <= busy_cycles;
-                        24: hrdata <= {27'd0, feed_done, wfull, wempty,
-                                       wdone, wbusy};
+                        24: hrdata <= {26'd0, asm_idle, feed_done, wfull,
+                                       wempty, wdone, wbusy};
                         26: hrdata <= {16'd0, wcount};
                         33: hrdata <= {31'd0, xf_ready};
                         34: hrdata <= {16'd0, xf_sx_r};
@@ -635,20 +648,24 @@ module raster #(
         tile_q <= tiles[tile_raddr];
     end
 
-    // ---- The walker's feeder: each cell's corners through the transform,
-    // into the slots the triangle assembly will name ----
+    // ---- The walker's feeder: cells to slots, and the cell's triangles ----
     // terrain.c's rule, corner for corner: a vertex's slot is the z front its
     // row was reached from, the row's parity and its column modulo 256, and
     // the owner table says which grid vertex each slot holds this walk, so a
     // corner a neighbouring cell has already sent is not transformed twice.
-    // The owner is taken when the corner is sent, as emit_stored() takes it,
-    // and only a corner in front of the near plane writes its slot, which is
-    // the only kind the CPU's store holds. The land store is addressed with
-    // the grid's own stride, cells_x + 1, because the packed vertices are the
-    // land's rows and not this unit's largest ones.
+    // The owner also carries what the unit said about that vertex -- whether
+    // it is in front of the near plane and inside the guard band -- which is
+    // the whole of what emit_stored() sends. Only such a corner writes its
+    // slot, and a cell's triangles are declared once its last result has
+    // landed, so the assembly can never name a slot that is still in the
+    // unit. The land store is addressed with the grid's own stride,
+    // cells_x + 1, because the packed vertices are the land's rows and not
+    // the 241 the store is sized at.
     localparam FD_IDLE = 0, FD_CLEAR = 1, FD_POP = 2, FD_NEXT = 3, FD_WAIT = 4,
-               FD_WORD = 5, FD_SEND = 6;
-    reg [2:0] fst = FD_IDLE;
+               FD_WORD = 5, FD_SEND = 6, FD_DONE = 7, FD_TRI = 8, FD_TRI2 = 9,
+               FD_PUSH = 10, FD_PUSH2 = 11;
+    reg [3:0] fst = FD_IDLE;
+    reg [2:0] f_flags = 0;
     reg [10:0] f_clr = 0;
     reg [15:0] f_stride = 1, f_vbase = 0;
     reg [8:0] f_cx = 0;
@@ -658,15 +675,18 @@ module raster #(
     reg [16:0] f_vi = 0, f_id = 0;
     reg [9:0] f_slot = 0;
     reg [7:0] f_colour = 0;
-    // The owner of each slot this walk, the grid vertex it holds plus one.
-    (* ram_style = "block" *) reg [16:0] owner [0:1023];
-    reg [16:0] owner_q = 0;
+    // The owner of each slot this walk: the grid vertex it holds, plus one so
+    // that none is nought, and whether that vertex is drawable.
+    (* ram_style = "block" *) reg [17:0] owner [0:1023];
+    reg [17:0] owner_q = 0;
     reg owner_we = 0;
-    reg [16:0] owner_wd = 0;
+    reg [9:0] owner_wa = 0;
+    reg [17:0] owner_wd = 0;
     // Results come back in the order they were sent, so a short queue holds
     // what each vertex still in the unit will write.
     reg [9:0] q_slot [0:3];
     reg [7:0] q_col [0:3];
+    reg [16:0] q_id [0:3];
     reg [1:0] q_wr = 0, q_rd = 0;
     reg [2:0] q_n = 0;
     wire q_full = q_n == 3'd4;
@@ -681,23 +701,55 @@ module raster #(
     // sum and not two assignments.
     wire q_pop = xf_done && xf_out_tag && q_n != 0;
     wire q_push = fst == FD_SEND && xf_in_ready;
+    wire a_guard = xf_sx <= 16'sd32000 && xf_sx >= -16'sd32000 &&
+                   xf_sy <= 16'sd32000 && xf_sy >= -16'sd32000;
+    wire f_draw_ok = xf_state == 2'd0 && a_guard;
+    // The four corners of the cell in hand, as slots.
+    function automatic [9:0] cslot(input [1:0] k);
+        case (k)
+            2'd0: cslot = {f_front, f_z[0], f_cx[7:0]};
+            2'd1: cslot = {f_front, f_z[0], f_cx[7:0] + 8'd1};
+            2'd2: cslot = {f_front, ~f_z[0], f_cx[7:0]};
+            default: cslot = {f_front, ~f_z[0], f_cx[7:0] + 8'd1};
+        endcase
+    endfunction
     wire [9:0] owner_ra = fst == FD_NEXT ? f_slot_n
                         : (fst == FD_WAIT || fst == FD_SEND) ? f_slot
+                        : fst == FD_TRI ? cslot(f_t)
                         : f_clr[9:0];
+    reg [1:0] f_t = 0;
+    reg [3:0] f_ok = 0;
+    reg [1:0] f_tri = 0;
+    // The corners of each triangle, in the order the CPU hands them over.
+    reg [1:0] t0, t1, t2;
+    always @(*) begin
+        if (f_flags[0]) begin
+            // Split: bl, tl, tr, then bl, tr, br.
+            if (f_tri == 2'd0) begin t0 = 2'd2; t1 = 2'd0; t2 = 2'd1; end
+            else begin t0 = 2'd2; t1 = 2'd1; t2 = 2'd3; end
+        end else begin
+            // Not split: tl, tr, br, then tl, br, bl.
+            if (f_tri == 2'd0) begin t0 = 2'd0; t1 = 2'd1; t2 = 2'd3; end
+            else begin t0 = 2'd0; t1 = 2'd3; t2 = 2'd2; end
+        end
+    end
+    wire f_tri_draw = f_flags[1 + f_tri] && f_ok[t0] && f_ok[t1] && f_ok[t2];
     always @(posedge clk) begin
         owner_q <= owner[owner_ra];
-        if (owner_we) owner[owner_ra] <= owner_wd;
+        if (owner_we) owner[owner_wa] <= owner_wd;
     end
     always @(posedge clk or negedge resetn) begin
         if (!resetn) begin
             fst <= FD_IDLE;
-            f_clr <= 0; owner_we <= 0; fw_we <= 0;
+            f_clr <= 0; owner_we <= 0; fw_we <= 0; asm_push <= 0;
             q_wr <= 0; q_rd <= 0; q_n <= 0;
             f_stride <= 1; f_cx <= 0; f_z <= 0; f_k <= 0; f_front <= 0;
             f_vi <= 0; f_slot <= 0; f_colour <= 0; f_vbase <= 0; f_id <= 0;
-            f_pop <= 0;
+            f_pop <= 0; f_flags <= 0; f_t <= 0; f_ok <= 0; f_tri <= 0;
+            asm_word <= 0; asm_idle <= 0;
         end else begin
             fw_we <= 0;
+            asm_push <= 0;
             // A result comes back in the order it was sent, so the queue's
             // head is the vertex it belongs to.
             q_n <= q_n + (q_push ? 3'd1 : 3'd0) - (q_pop ? 3'd1 : 3'd0);
@@ -714,6 +766,7 @@ module raster #(
                 FD_IDLE: begin
                     feed_req <= 0;
                     owner_we <= 0;
+                    asm_idle <= 1;
                     // The program's start is one clock wide; the feeder holds
                     // it until the walk it belongs to is over.
                     if (feed_start) feed_en <= 1;
@@ -721,13 +774,14 @@ module raster #(
                         f_stride <= wcells_x + 16'd1;
                         f_clr <= 0;
                         feed_done <= 0;
+                        asm_idle <= 0;
                         fst <= FD_CLEAR;
                     end
                 end
                 FD_CLEAR: begin
                     // The owners start clear, so the first corner of every
                     // slot in the walk is sent.
-                    owner_we <= 1; owner_wd <= 0;
+                    owner_we <= 1; owner_wd <= 0; owner_wa <= f_clr[9:0];
                     if (f_clr == 11'd1023) begin
                         owner_we <= 0; fst <= FD_POP;
                     end else
@@ -739,6 +793,7 @@ module raster #(
                         f_cx <= wfifo_q[8:0];
                         f_z <= wfifo_q[16:9];
                         f_front <= wfifo_q[17];
+                        f_flags <= wfifo_q[20:18];
                         f_vbase <= wfifo_q[16:9] * f_stride;
                         f_pop <= 1;
                         f_k <= 0;
@@ -751,7 +806,6 @@ module raster #(
                     end
                 end
                 FD_NEXT: begin
-                    // The pointer move the pop asked for has happened.
                     f_pop <= 0;
                     f_vi <= f_vi_n;
                     f_slot <= f_slot_n;
@@ -759,8 +813,8 @@ module raster #(
                     fst <= FD_WAIT;
                 end
                 FD_WAIT: begin
-                    if (owner_q == f_id) begin
-                        if (next_corner) fst <= FD_POP;
+                    if (owner_q[16:0] == f_id) begin
+                        if (next_corner) fst <= FD_DONE;
                         else begin f_k <= f_k + 1'b1; fst <= FD_NEXT; end
                     end else if (q_full) begin
                         // The unit takes one a round; until a result lands
@@ -779,17 +833,70 @@ module raster #(
                 FD_SEND: begin
                     if (xf_in_ready) begin
                         feed_req <= 0;
-                        owner_we <= 1; owner_wd <= f_id;
+                        owner_we <= 1; owner_wa <= f_slot;
+                        owner_wd <= {1'b0, f_id};
                         q_slot[q_wr] <= f_slot;
                         q_col[q_wr] <= f_colour;
+                        q_id[q_wr] <= f_id;
                         q_wr <= q_wr + 1'b1;
-                        if (next_corner) fst <= FD_POP;
+                        if (next_corner) fst <= FD_DONE;
                         else begin f_k <= f_k + 1'b1; fst <= FD_NEXT; end
                     end else
                         owner_we <= 0;
                 end
+                FD_DONE: begin
+                    // The assembly must not name a slot the unit has not
+                    // written yet, so the cell waits for its last result.
+                    feed_req <= 0;
+                    owner_we <= 0;
+                    if (q_n == 0) begin
+                        f_t <= 0;
+                        f_ok <= 0;
+                        fst <= FD_TRI;
+                    end
+                end
+                FD_TRI: begin
+                    // One corner's owner at a time: its drawable bit is what a
+                    // triangle needs. The store answers a clock later.
+                    owner_we <= 0;
+                    fst <= FD_TRI2;
+                end
+                FD_TRI2: begin
+                    f_ok[f_t] <= owner_q[17];
+                    if (f_t == 2'd3) begin
+                        f_tri <= 0;
+                        fst <= FD_PUSH;
+                    end else begin
+                        f_t <= f_t + 1'b1;
+                        fst <= FD_TRI;
+                    end
+                end
+                FD_PUSH: begin
+                    // One triangle a clock at most: the queue takes one word
+                    // a clock. The second is decided in FD_PUSH2.
+                    if (f_tri_draw) begin
+                        asm_word <= {2'b11, cslot(t0), cslot(t1), cslot(t2)};
+                        asm_push <= 1;
+                    end
+                    fst <= FD_PUSH2;
+                end
+                FD_PUSH2: begin
+                    if (f_tri == 2'd1)
+                        fst <= FD_POP;
+                    else begin
+                        f_tri <= 2'd1;
+                        fst <= FD_PUSH;
+                    end
+                end
                 default: fst <= FD_IDLE;
             endcase
+            // A result writes its slot's owner last, so a send landing in the
+            // same clock cannot take the drawable bit back off it.
+            if (q_pop) begin
+                owner_we <= 1;
+                owner_wa <= q_slot[q_rd];
+                owner_wd <= {f_draw_ok, q_id[q_rd]};
+            end
         end
     end
 
@@ -808,8 +915,12 @@ module raster #(
     // One 32-bit word a write, so the memory has a single write port: two
     // vertex words a word, or eight cells' nibbles. The odd last vertex's
     // high half is zero.
-    (* ram_style = "block" *) reg [31:0] land_v [0:LAND_VERTEX_WORDS - 1];
-    (* ram_style = "block" *) reg [31:0] land_f [0:LAND_FLAG_WORDS - 1];
+    // Thirty-six bits a word, four of them unused: only the 9-, 18- and
+    // 36-bit block RAM modes have been shown to read back correctly in this
+    // unit on this chip, so a 32-bit word would map to a mode the build
+    // refuses (TinyNES's video block RAM rule).
+    (* ram_style = "block" *) reg [35:0] land_v [0:LAND_VERTEX_WORDS - 1];
+    (* ram_style = "block" *) reg [35:0] land_f [0:LAND_FLAG_WORDS - 1];
     // No initial value on these pointers: the block-RAM mapper refuses a read
     // address register with one, and the first LAND_ADDR write sets them.
     reg [16:0] land_waddr, land_raddr;
@@ -833,7 +944,7 @@ module raster #(
     reg [31:0] land_vq = 0;          // the store's own output register
     always @(posedge clk) begin
         land_ra <= land_vra;
-        land_vq <= land_v[land_ra];
+        land_vq <= land_v[land_ra][31:0];
     end
     reg land_rmode = 0;
     reg [1:0] land_rsel = 0;
@@ -848,10 +959,10 @@ module raster #(
         end
         if (w_land) begin
             if (land_waddr[16]) begin
-                land_f[land_waddr[15:2]] <= hwdata;
+                land_f[land_waddr[15:2]] <= {4'd0, hwdata};
                 land_waddr <= land_waddr + 17'd4;
             end else begin
-                land_v[land_waddr[15:1]] <= hwdata;
+                land_v[land_waddr[15:1]] <= {4'd0, hwdata};
                 land_waddr <= land_waddr + 17'd2;
             end
         end
@@ -862,7 +973,7 @@ module raster #(
         end
         // The walker's feeder asks for a vertex while it walks and the bus
         // asks while the program inspects the store; they never run at once.
-        land_fraw <= land_f[land_f_ra];
+        land_fraw <= land_f[land_f_ra][31:0];
     end
 
     // ---- The walker: terrain.c's far-to-near cell order ----
@@ -909,7 +1020,7 @@ module raster #(
                      else if (((land_fraw >> (4 * wcell[2:0])) & 7) & 6) begin
                          if (!wfull) begin
                              wfifo[wfifo_wr[7:0]] <=
-                                 {14'd0, wfront, wgz[7:0], wgx[8:0]};
+                                 {11'd0, wflags, wfront, wgz[7:0], wgx[8:0]};
                              wfifo_wr <= wfifo_wr + 1'b1;
                              wcount <= wcount + 1'b1;
                              wstate <= W_X;

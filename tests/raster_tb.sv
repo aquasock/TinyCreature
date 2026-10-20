@@ -62,6 +62,8 @@ module raster_tb;
         .sx(eng_sx), .sy(eng_sy), .depth(eng_depth), .state(eng_state));
 
     integer errors = 0;
+    integer tck = 0;
+    always @(posedge clk) tck = tck + 1;
 
     // One AHB transfer: the address phase on the edge after hready is
     // seen high, the data phase until hready is seen high again.
@@ -146,6 +148,83 @@ module raster_tb;
                                  tile_bytes[a + 1], tile_bytes[a + 0]});
             end
             $display("tiles loaded: %0d tiles of 32 by 32", TILE_COUNT);
+        end
+    endtask
+
+    reg [31:0] fab [0:14399];
+
+    // Wait for the engine to finish what it has.
+    task automatic idle(input [8*256-1:0] why);
+        integer g; reg [31:0] st;
+        begin
+            g = 0;
+            read(15'h0008, st);
+            while (st[0] && g < 2000000) begin
+                read(15'h0008, st);
+                g = g + 1;
+            end
+            if (st[0]) begin
+                $display("FAIL: engine busy after %0s", why);
+                errors = errors + 1;
+            end
+        end
+    endtask
+
+    // The program's own frame with its flat triangles left out: the store
+    // path, which is the one the assembly takes.
+    task automatic push_store(input [8*256-1:0] path, input integer slot);
+        integer f, words; reg [31:0] w;
+        begin
+            f = $fopen(path, "r");
+            if (f == 0) begin
+                $display("FAIL: cannot open %0s", path);
+                $finish;
+            end
+            words = 0;
+            while ($fscanf(f, "%h\n", w) == 1) begin
+                if (w[31:28] == 4'd1) begin
+                    // A flat triangle and its three coordinates.
+                    $fscanf(f, "%h\n", w);
+                    $fscanf(f, "%h\n", w);
+                    $fscanf(f, "%h\n", w);
+                end else
+                    write(15'h0000, w);
+                words = words + 1;
+                if (words % 20000 == 0) $display("  pushed %0d words", words);
+            end
+            $fclose(f);
+            $display("  pushed %0d words in all", words);
+        end
+    endtask
+
+    // The frame the assembly drew in buffer 0 against the store path's frame
+    // in buffer 1, word for word.
+    task automatic compare_buffers;
+        integer i, bad;
+        reg [31:0] b;
+        begin
+            bad = 0;
+            write(15'h0004, 32'h0);
+            for (i = 0; i < 14400; i = i + 1) begin
+                write(15'h0020, i * 4);
+                read(15'h0024, fab[i]);
+            end
+            write(15'h0004, 32'h2);
+            for (i = 0; i < 14400; i = i + 1) begin
+                write(15'h0020, i * 4);
+                read(15'h0024, b);
+                if (b !== fab[i]) begin
+                    if (bad < 4)
+                        $display("FAIL: draw %0d (pixel %0d,%0d): assembly %h, store path %h",
+                                 i, (i * 4) % 320, (i * 4) / 320, fab[i], b);
+                    bad = bad + 1;
+                end
+            end
+            if (bad) begin
+                $display("FAIL: draw: %0d of 14400 words differ", bad);
+                errors = errors + 1;
+            end else
+                $display("draw: the assembly's frame matches the store path");
         end
     endtask
 
@@ -293,7 +372,8 @@ module raster_tb;
     // the same trace, corner for corner, and requires the store to agree with
     // the model position for position.
     task automatic check_slots(input [8*256-1:0] walk_path,
-                               input [8*256-1:0] vert_path);
+                               input [8*256-1:0] vert_path,
+                               input [8*256-1:0] cmd_path);
         integer f, fv, i, n, bad, guard, k;
         integer tx, tz, tbx, tbz, tcx, tcz;
         integer gx, gz, front, s0, s1, s2, s3;
@@ -351,17 +431,24 @@ module raster_tb;
                     $fclose(f);
                     // Start the walk with the feeder behind it, and wait for
                     // its last result to land.
+                    // Buffer 0 is cleared the way a frame's own ROWS clears
+                    // it; the walk then draws into it.
+                    write(15'h0004, 32'h0);
+                    write(15'h0000, (32'h2 << 28) | (32'd180 << 16));
+                    idle("the clear");
+                    vw = tck;
                     write(15'h005c, 32'h3);
                     guard = 0;
                     read(15'h0060, st);
-                    while (!st[4] && guard < 2000000) begin
+                    while (!(st[4] && st[5]) && guard < 4000000) begin
                         read(15'h0060, st);
                         guard = guard + 1;
                     end
-                    if (!st[4]) begin
+                    if (!(st[4] && st[5])) begin
                         $display("FAIL: slot walk did not finish");
                         errors = errors + 1;
-                    end
+                    end else
+                        $display("walk and assembly: %0d clocks", tck - vw);
                     // Replay the walk's own rule: each corner the slot has
                     // not held this walk is sent, and stores its position if
                     // it is in front of the near plane.
@@ -441,9 +528,17 @@ module raster_tb;
                     if (bad) begin
                         $display("FAIL: slots: %0d of 1024 wrong", bad);
                         errors = errors + 1;
-                    end else
+                    end else begin
                         $display("slots: %0d corners over %0d cells match the model",
                                  n * 4, n);
+                        // The triangles the assembly declared, against the
+                        // ones terrain.c's store path sends for the same
+                        // frame: the same slots, the same pixels.
+                        write(15'h0004, 32'h2);
+                        push_store(cmd_path, 1);
+                        idle("the store path");
+                        compare_buffers;
+                    end
                 end
             end
         end
@@ -857,7 +952,7 @@ module raster_tb;
         if (!$value$plusargs("vert=%s", vert_path))
             $display("NOTE: no +vert=, transform model not checked");
         else begin
-            check_slots(walk_path, vert_path);
+            check_slots(walk_path, vert_path, cmd0);
             check_vert(vert_path);
         end
         read(15'h10, tris0);
