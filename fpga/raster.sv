@@ -1940,11 +1940,49 @@ module raster #(
                    : (crc_scanning ? crc_addr : cpu_raddr);
 endmodule
 
+// ---- A sequential signed multiplier: radix-4, one digit a clock ----
+// The transform's products are 32-bit, too wide for combinational LUT
+// multiplies at 75 MHz. This takes two's-complement magnitudes and applies
+// the sign at the end; the low 32 bits are the C's int32 product and the full
+// 64 are the screen product.
+module mulseq(
+    input wire clk, input wire resetn,
+    input wire start,
+    input wire signed [31:0] a, b,
+    output reg done,
+    output reg signed [63:0] p
+);
+    reg [4:0] step = 0;
+    reg busy = 0;
+    reg sign = 0;
+    reg [31:0] ua = 0, ub = 0;
+    reg [63:0] acc = 0;
+    wire [1:0] digit = ub[2 * step +: 2];
+    wire [63:0] term = ({32'd0, ua} << (2 * step)) * digit;
+    wire [63:0] sum = acc + term;
+    always @(posedge clk or negedge resetn) begin
+        if (!resetn) begin
+            busy <= 0; done <= 0; p <= 0;
+        end else if (start) begin
+            busy <= 1; done <= 0; step <= 5'd15; acc <= 0;
+            sign <= a[31] ^ b[31];
+            ua <= a[31] ? -a : a;
+            ub <= b[31] ? -b : b;
+        end else if (busy) begin
+            acc <= sum;
+            if (step == 0) begin
+                p <= sign ? -sum : sum;
+                done <= 1; busy <= 0;
+            end else
+                step <= step - 1'b1;
+        end
+    end
+endmodule
+
 // ---- The transform unit: terrain.c's to_camera() and project_xy() ----
-// The camera rotation is eight small signed products, so it is combinational;
-// the reciprocal is a radix-4 long division, two quotient digits a clock, and
-// the screen product is the 64-bit one the C takes. This unit is checked
-// against tests/vert_model.sv and not yet instantiated by the raster.
+// The camera products and the screen products run one at a time through the
+// sequential multiplier; the reciprocal is the radix-4 long division. The
+// arithmetic is the model's, checked vertex for vertex.
 module transform(
     input wire clk, input wire resetn,
     input wire signed [31:0] cam_x, cam_y, cam_z,
@@ -1957,28 +1995,23 @@ module transform(
     output reg [1:0] state,
     output reg done
 );
-    localparam T_IDLE = 0, T_CAM = 1, T_DIV = 2, T_DONE = 3;
-    reg [1:0] tstate = T_IDLE;
-    reg signed [31:0] tx = 0, ty = 0, tz = 0;
+    localparam T_IDLE = 0, T_LOAD = 1, T_START = 2, T_WAIT = 3, T_DIV = 4;
+    reg [2:0] tstate = T_IDLE;
+    reg [3:0] prod = 0;
+    reg signed [63:0] prodv [0:9];
+    reg signed [31:0] tdx = 0, tdy = 0, tdz = 0;
+    reg signed [31:0] trz = 0, tx = 0, ty = 0, tz = 0;
     reg tfront = 0;
+    reg mul_start = 0;
+    reg signed [31:0] mul_a = 0, mul_b = 0;
+    wire mul_done;
+    wire signed [63:0] mul_p;
+    mulseq mu(.clk(clk), .resetn(resetn), .start(mul_start),
+              .a(mul_a), .b(mul_b), .done(mul_done), .p(mul_p));
+
     reg [31:0] tq = 0, trem = 0;
     reg [4:0] tstep = 0;
     reg signed [31:0] tinv = 0;
-
-    // The camera rotation, exactly as terrain.c does it.
-    wire signed [31:0] wx = $signed({16'd0, gx}) * 32'sd160;
-    wire signed [31:0] wy = ($signed({24'd0, alt}) * 32'sd2744) >>> 8;
-    wire signed [31:0] wz = $signed({16'd0, gz}) * 32'sd160;
-    wire signed [31:0] dx = wx - cam_x;
-    wire signed [31:0] dy = wy - cam_y;
-    wire signed [31:0] dz = wz - cam_z;
-    wire signed [31:0] rz = (dx * sin_yaw + dz * cos_yaw) >>> 14;
-    wire signed [31:0] cx = (dx * cos_yaw - dz * sin_yaw) >>> 14;
-    wire signed [31:0] cy = (dy * cos_pitch + rz * sin_pitch) >>> 14;
-    wire signed [31:0] cz = (rz * cos_pitch - dy * sin_pitch) >>> 14;
-
-    // The radix-4 division: the next two numerator bits, then the largest
-    // digit that fits, two quotient digits a clock.
     wire [31:0] shift = (trem << 2) | ((32'd1 << 30) >> (2 * tstep)) & 3;
     wire [31:0] den2 = tz << 1;
     wire [31:0] den3 = tz + den2;
@@ -1989,19 +2022,36 @@ module transform(
                                     digit == 2'd1 ? tz : 32'd0);
     wire [31:0] q_next = tq | ((32'd0 + digit) << (2 * tstep));
 
-    // The screen point, with the 64-bit product the C takes.
-    wire signed [63:0] xinv = {{32{tx[31]}}, tx} * {{32{tinv[31]}}, tinv};
-    wire signed [63:0] yinv = {{32{ty[31]}}, ty} * {{32{tinv[31]}}, tinv};
-    wire signed [31:0] xoff = (xinv >>> 18);
-    wire signed [31:0] yoff = (yinv >>> 18);
+    reg signed [15:0] sxc = 0, syc = 0;
+    reg [1:0] stnext = 0;
+    // At the ninth product's completion prodv[9] is still the old value;
+    // the final screen takes that product from the multiplier itself.
+    wire signed [63:0] yprod = prod == 4'd9 ? mul_p : prodv[9];
+    wire signed [31:0] xoff = prodv[8] >>> 18;
+    wire signed [31:0] yoff = yprod >>> 18;
     wire signed [31:0] sxr = 32'sd2560 + xoff;
     wire signed [31:0] syr = 32'sd1440 - yoff;
     wire wide = sxr > 32'sd32767 || sxr < -32'sd32768 ||
                 syr > 32'sd32767 || syr < -32'sd32768;
-    wire signed [15:0] sxc = sxr > 32'sd32767 ? 16'sd32767 :
-                             sxr < -32'sd32768 ? -16'sd32768 : sxr[15:0];
-    wire signed [15:0] syc = syr > 32'sd32767 ? 16'sd32767 :
-                             syr < -32'sd32768 ? -16'sd32768 : syr[15:0];
+
+    wire signed [31:0] wx = $signed({16'd0, gx}) * 32'sd160;
+    wire signed [31:0] wy = ($signed({24'd0, alt}) * 32'sd2744) >>> 8;
+    wire signed [31:0] wz = $signed({16'd0, gz}) * 32'sd160;
+
+    always @(*) begin
+        case (prod)
+            4'd0: begin mul_a = tdx; mul_b = sin_yaw; end
+            4'd1: begin mul_a = tdz; mul_b = cos_yaw; end
+            4'd2: begin mul_a = tdx; mul_b = cos_yaw; end
+            4'd3: begin mul_a = tdz; mul_b = sin_yaw; end
+            4'd4: begin mul_a = tdy; mul_b = cos_pitch; end
+            4'd5: begin mul_a = trz; mul_b = sin_pitch; end
+            4'd6: begin mul_a = trz; mul_b = cos_pitch; end
+            4'd7: begin mul_a = tdy; mul_b = sin_pitch; end
+            4'd8: begin mul_a = tx; mul_b = tinv; end
+            default: begin mul_a = ty; mul_b = tinv; end
+        endcase
+    end
 
     always @(posedge clk or negedge resetn) begin
         if (!resetn) begin
@@ -2011,36 +2061,63 @@ module transform(
             T_IDLE:
                 if (go) begin
                     done <= 0;
-                    tx <= cx; ty <= cy; tz <= cz;
-                    tfront <= cz >= 32'sd128;
-                    if (cz < 32'sd128) begin
-                        sx <= 0; sy <= 0; depth <= 0; state <= 2'd1;
-                        done <= 1;
-                    end else
-                        tstate <= T_CAM;
+                    tdx <= wx - cam_x; tdy <= wy - cam_y; tdz <= wz - cam_z;
+                    // The near test uses camera-space z, which needs the
+                    // rotation; the products run first and the test is made
+                    // after the seventh.
+                    prod <= 0; tstate <= T_LOAD;
                 end
-            T_CAM: begin
-                tq <= 0; trem <= 0; tstep <= 5'd15;
-                tstate <= T_DIV;
+            T_LOAD: begin
+                mul_start <= 1; tstate <= T_START;
+            end
+            T_START: begin
+                // The multiplier's done is cleared by this start; checking it
+                // in this cycle would take the old product.
+                mul_start <= 0; tstate <= T_WAIT;
+            end
+            T_WAIT: begin
+                if (mul_done) begin
+                    prodv[prod] <= mul_p;
+                    case (prod)
+                        4'd1: trz <= ($signed(prodv[0][31:0]) + $signed(mul_p[31:0])) >>> 14;
+                        4'd3: tx <= ($signed(prodv[2][31:0]) - $signed(mul_p[31:0])) >>> 14;
+                        4'd5: ty <= ($signed(prodv[4][31:0]) + $signed(mul_p[31:0])) >>> 14;
+                        4'd7: tz <= ($signed(prodv[6][31:0]) - $signed(mul_p[31:0])) >>> 14;
+                        default: ;
+                    endcase
+                    if (prod == 4'd7) begin
+                        if ((($signed(prodv[6][31:0]) - $signed(mul_p[31:0])) >>> 14) < 32'sd128) begin
+                            sx <= 0; sy <= 0; depth <= 0; state <= 2'd1;
+                            done <= 1; tstate <= T_IDLE;
+                        end else begin
+                            tq <= 0; trem <= 0; tstep <= 5'd15;
+                            tstate <= T_DIV;
+                        end
+                    end else if (prod == 4'd9) begin
+                        sx <= sxc; sy <= syc; depth <= tinv;
+                        state <= stnext; done <= 1; tstate <= T_IDLE;
+                    end else begin
+                        prod <= prod + 1'b1; tstate <= T_LOAD;
+                    end
+                end
             end
             T_DIV: begin
-                trem <= rem_next;
-                tq <= q_next;
+                trem <= rem_next; tq <= q_next;
                 if (tstep == 0) begin
-                    tinv <= q_next;
-                    tstate <= T_DONE;
+                    tinv <= q_next; prod <= 4'd8; tstate <= T_LOAD;
                 end else
                     tstep <= tstep - 1'b1;
             end
-            T_DONE: begin
-                sx <= sxc;
-                sy <= syc;
-                depth <= tinv;
-                state <= wide ? 2'd2 : 2'd0;
-                done <= 1;
-                tstate <= T_IDLE;
-            end
             default: tstate <= T_IDLE;
         endcase
+    end
+
+    // The final screen values, from the last two products.
+    always @(*) begin
+        sxc = sxr > 32'sd32767 ? 16'sd32767 :
+              sxr < -32'sd32768 ? -16'sd32768 : sxr[15:0];
+        syc = syr > 32'sd32767 ? 16'sd32767 :
+              syr < -32'sd32768 ? -16'sd32768 : syr[15:0];
+        stnext = wide ? 2'd2 : 2'd0;
     end
 endmodule

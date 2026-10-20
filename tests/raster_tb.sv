@@ -321,7 +321,7 @@ module raster_tb;
                         @(posedge clk);
                         #1 eng_go = 0;
                         guard = 0;
-                        while (!eng_done && guard < 200) begin
+                        while (!eng_done && guard < 800) begin
                             @(posedge clk);
                             guard = guard + 1;
                         end
@@ -371,7 +371,7 @@ module raster_tb;
                                 write(15'h0080, 32'h1);
                                 read(15'h0084, q);
                                 guard = 0;
-                                while (!q[0] && guard < 300) begin
+                                while (!q[0] && guard < 800) begin
                                     read(15'h0084, q);
                                     guard = guard + 1;
                                 end

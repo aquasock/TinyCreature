@@ -2869,3 +2869,34 @@ Replace the combinational multiplies and the divider's wide compares with the ra
 - User Test: N/A
 
 ---
+
+## 87 COMMIT Unreleased 2026-10-20T01:53:00-07:00
+
+#### Coming From:
+
+Unreleased d747a78
+
+#### Purpose:
+
+Replace the transform's combinational 32-bit products with a sequential radix-4 multiplier, keep the arithmetic bit-exact, and measure what the timing-shaped unit costs.
+
+#### Outcome:
+
+`fpga/raster.sv` gains `mulseq`, a signed radix-4 multiplier that takes the two's-complement magnitudes, accumulates sixteen two-bit digits a clock and applies the sign at the end, returning the full 64-bit product. The transform now sequences its ten products through it: the four yaw products and their sums, the four pitch products, the reciprocal's sixteen-step division, and the two 64-bit screen products, with the near test made after the seventh. Three defects were caught by the trace before the unit matched: the multiplier's `done` was still high from the previous product when the next wait checked it, so a start state now clears it first; the 32-bit slices of the stored products were unsigned, so the sums are cast to signed; and the ninth product was read from its register before the register had been written, so the final screen takes it from the multiplier. Land 1 and Celtic both matched all 256 vertices again, and the frames were unchanged at `293e6ccf` and `5c2808f5` and at `4bb0a03f` and `9013c700`. Synthesis is 20,633 `LUT4` against 31,847 with the combinational products, 9,121 `ALU`, 18,056 `DFFRE`, 1,767 `DFFCE` and the same 293 of 340 block RAMs; the arithmetic is one 64-bit add, a shift and a two-bit digit a clock, so its paths are timing-shaped, though no place-and-route ran. The cost is throughput: one vertex takes about 208 clocks, which is 150 ms for the 54,225 unique grid vertices or 295 ms for four corners of each of the 26,542 drawn cells, so this unit proves the arithmetic but would not make a usable frame. No deployment ran. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+Pipeline and parallelise the products and the reciprocal: four to eight multiplier lanes with the four yaw and four pitch products issued together, and several divide lanes or the TEXV setup's existing lanes shared, targeting one vertex every eight to sixteen clocks. That is the step that turns the arithmetic into a frame; after it come the walker's cell FIFO and land vertex reads, the slot keys and de-duplication, the near-plane clip, and the triangle assembly, and only then a core build and sweep.
+
+#### Files Modified:
+
+- fpga/raster.sv
+- tests/raster_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---
