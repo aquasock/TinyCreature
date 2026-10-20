@@ -94,6 +94,10 @@ static struct vertex *vertices;
 static FILE *trace_file;
 static uint32_t trace_frame;
 static int trace_now;
+static FILE *vtrace_file;
+static uint32_t vtrace_frame;
+static int vtrace_now;
+static uint32_t vtrace_cells;
 #endif
 /* The palette in five bits a channel and the table back to an entry,
  * tc_init's own, in the working memory beside the vertices. */
@@ -1269,6 +1273,19 @@ static void draw_cell(uint32_t gx, uint32_t gz)
 	if (trace_now)
 		fprintf(trace_file, "C %u %u %u %u %u %u %u\n", gx, gz,
 			walk_front, stl, str, sbl, sbr);
+	if (vtrace_now && vtrace_cells < 64u) {
+		const struct vertex *vv[4] = {tl, tr, bl, br};
+		const uint32_t vx[4] = {gx, gx + 1u, gx, gx + 1u};
+		const uint32_t vz[4] = {gz, gz, gz + 1u, gz + 1u};
+		for (int q = 0; q < 4; q++)
+			fprintf(vtrace_file, "V %u %u %u %d %d %lu %u\n",
+				vx[q], vz[q],
+				land->altitude[vz[q] * verts_x + vx[q]],
+				(int)vv[q]->sx, (int)vv[q]->sy,
+				(unsigned long)vv[q]->depth,
+				(unsigned)(vv[q]->stamp & 3u));
+		vtrace_cells++;
+	}
 #endif
 	const struct vertex *t[2][3];
 	uint32_t c[2][3], s[2][3];
@@ -2633,6 +2650,12 @@ void tc_trace_set(void *file, uint32_t frame)
 	trace_file = (FILE *)file;
 	trace_frame = frame;
 }
+
+void tc_vertex_trace_set(void *file, uint32_t frame)
+{
+	vtrace_file = (FILE *)file;
+	vtrace_frame = frame;
+}
 #endif
 
 void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
@@ -2642,6 +2665,7 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 	counts = stats;
 #ifdef TC_TRACE
 	trace_now = trace_file != NULL && frame == trace_frame;
+	vtrace_now = vtrace_file != NULL && frame == vtrace_frame;
 #endif
 	stats->triangles = 0;
 	stats->cells = 0;
@@ -2724,6 +2748,15 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 		phase_at = t;
 	}
 	int32_t cx = floor_div(cam_x, CELL), cz = floor_div(cam_z, CELL);
+#ifdef TC_TRACE
+	if (vtrace_now) {
+		fprintf(vtrace_file, "K %ld %ld %ld %ld %ld %ld %ld\n",
+			(long)cam_x, (long)cam_y, (long)cam_z,
+			(long)sin_yaw, (long)cos_yaw,
+			(long)sin_pitch, (long)cos_pitch);
+		vtrace_cells = 0;
+	}
+#endif
 #ifdef TC_TRACE
 	if (trace_now) {
 		fprintf(trace_file, "T %u %u %u %u %ld %ld\n",

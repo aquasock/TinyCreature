@@ -297,6 +297,17 @@ int main(int argc, char **argv)
 		const char *trace_frame = getenv("TC_CELL_TRACE_FRAME");
 		tc_trace_set(cell_trace, trace_frame ? (uint32_t)strtoul(trace_frame, NULL, 0) : 0);
 	}
+	const char *vtrace_path = getenv("TC_VERTEX_TRACE");
+	FILE *vert_trace = NULL;
+	if (vtrace_path && *vtrace_path) {
+		vert_trace = fopen(vtrace_path, "w");
+		if (!vert_trace) {
+			perror(vtrace_path);
+			return 1;
+		}
+		const char *vf = getenv("TC_VERTEX_TRACE_FRAME");
+		tc_vertex_trace_set(vert_trace, vf ? (uint32_t)strtoul(vf, NULL, 0) : 0);
+	}
 	for (uint32_t i = 0; i < frames; i++) {
 		int chosen = 0;
 		char path[4096];
@@ -363,5 +374,7 @@ int main(int argc, char **argv)
 		printf(" PIN=none\n");
 	if (cell_trace)
 		fclose(cell_trace);
+	if (vert_trace)
+		fclose(vert_trace);
 	return 0;
 }

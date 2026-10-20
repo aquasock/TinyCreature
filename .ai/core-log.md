@@ -2771,3 +2771,39 @@ The vertex transform and projection come next: `to_camera` and `project_xy` in t
 - User Test: N/A
 
 ---
+
+
+## 84 COMMIT Unreleased 2026-10-20T00:51:50-07:00
+
+#### Coming From:
+
+Unreleased 50c8c55
+
+#### Purpose:
+
+Trace the CPU's camera and its first drawn corners, and model `to_camera` and `project_xy` exactly in Verilog, so the fabric transform engine has a reference.
+
+#### Outcome:
+
+`terrain_host` now writes a vertex trace when `TC_VERTEX_TRACE` names a file, for the frame `TC_VERTEX_TRACE_FRAME`: one `K` line with the camera (eye, yaw sine and cosine, pitch sine and cosine), and, for the first 64 drawn cells, four `V` lines with each corner's `gx`, `gz`, altitude, screen `sx` and `sy`, depth and vertex state. The trace is compiled only for the host build, under the same `TC_TRACE` guard as the cell trace. `tests/vert_model.sv` is new: a combinational model of the CPU's integer transform, the 32-bit yaw and pitch products, the `(1 << 30) / z` reciprocal, the 64-bit `x * inv` product whose shift is cast back to 32 bits, the `2560` and `1440` screen origins and the int16 clamp and state a wide or behind vertex gets. `tests/raster_tb.sv` reads the trace's camera into the model and compares all 256 vertices; Land 1 and Celtic both matched, and the frames were unchanged at `293e6ccf` and `5c2808f5` and at `4bb0a03f` and `9013c700`. The model is a simulation reference, not synthesised into the core: no raster RTL was added this cycle, and no place-and-route or deployment ran. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` is unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The hardware transform engine comes next: a sequential radix-4 multiplier and divider that reproduce this model for the walker's cells, then the walker's cell stream feeding it, the slot keys, the near-plane clip and the triangle assembly. The model's 256 vertices are the reference each stage is checked against; the arithmetic's cycle count is what decides whether it can beat the CPU's 10.2 ms `VERT` phase.
+
+#### Files Modified:
+
+- firmware/terrain/host.c
+- firmware/terrain/terrain.c
+- firmware/terrain/terrain.h
+- tests/raster_tb.sv
+- tests/vert_model.sv
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

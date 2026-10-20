@@ -26,6 +26,21 @@ module raster_tb;
         .show(show), .vstart(vstart), .vaddr(vaddr), .vvalid(vvalid),
         .vindex(vindex), .vdata(vdata), .vdone(vdone));
 
+    // The transform model: terrain.c's to_camera() and project_xy().
+    reg signed [31:0] vm_cam_x = 0, vm_cam_y = 0, vm_cam_z = 0;
+    reg signed [31:0] vm_sin_yaw = 0, vm_cos_yaw = 0;
+    reg signed [31:0] vm_sin_pitch = 0, vm_cos_pitch = 0;
+    reg [15:0] vm_gx = 0, vm_gz = 0;
+    reg [7:0] vm_alt = 0;
+    wire signed [15:0] vm_sx, vm_sy;
+    wire [31:0] vm_depth;
+    wire [1:0] vm_state;
+    vert_model vm(.cam_x(vm_cam_x), .cam_y(vm_cam_y), .cam_z(vm_cam_z),
+        .sin_yaw(vm_sin_yaw), .cos_yaw(vm_cos_yaw),
+        .sin_pitch(vm_sin_pitch), .cos_pitch(vm_cos_pitch),
+        .gx(vm_gx), .gz(vm_gz), .alt(vm_alt),
+        .sx(vm_sx), .sy(vm_sy), .depth(vm_depth), .state(vm_state));
+
     integer errors = 0;
 
     // One AHB transfer: the address phase on the edge after hready is
@@ -86,6 +101,7 @@ module raster_tb;
     integer wx_t [0:39999], wz_t [0:39999], wf_t [0:39999];
     integer walk_n;
     reg [8*256-1:0] walk_path;
+    reg [8*256-1:0] vert_path;
 
     // The shading's tables, which the program hands the fabric once: the 256
     // palette entries in five bits a channel, and the 32768-entry table from
@@ -246,6 +262,51 @@ module raster_tb;
                         errors = errors + 1;
                     end else
                         $display("walk: %0d cells match the model", walk_n);
+                end
+            end
+        end
+    endtask
+
+    // The transform model against the CPU's vertex trace: the K line is the
+    // frame's camera, and each V line is a corner's grid position, altitude
+    // and the CPU's screen position, depth and state.
+    task automatic check_vert(input [8*256-1:0] path);
+        integer f, gx, gz, alt, esx, esy, edepth, estate, n, bad;
+        begin
+            f = $fopen(path, "r");
+            if (f == 0) begin
+                $display("FAIL: cannot open %0s", path);
+                errors = errors + 1;
+            end else begin
+                if ($fscanf(f, "K %d %d %d %d %d %d %d\n",
+                            vm_cam_x, vm_cam_y, vm_cam_z,
+                            vm_sin_yaw, vm_cos_yaw,
+                            vm_sin_pitch, vm_cos_pitch) != 7) begin
+                    $display("FAIL: vertex trace camera");
+                    errors = errors + 1;
+                end else begin
+                    n = 0; bad = 0;
+                    while ($fscanf(f, "V %d %d %d %d %d %d %d\n",
+                                   gx, gz, alt, esx, esy, edepth, estate) == 7) begin
+                        vm_gx = gx; vm_gz = gz; vm_alt = alt;
+                        #1;
+                        if ($signed(vm_sx) !== $signed(esx[15:0]) ||
+                            $signed(vm_sy) !== $signed(esy[15:0]) ||
+                            vm_depth !== edepth || vm_state !== estate) begin
+                            if (bad < 4)
+                                $display("FAIL: vert %0d: %0d,%0d alt %0d grid %0d %0d %0d %0d, model %0d %0d %0d %0d",
+                                         n, gx, gz, alt, esx, esy, edepth, estate,
+                                         $signed(vm_sx), $signed(vm_sy), vm_depth, vm_state);
+                            bad = bad + 1;
+                        end
+                        n = n + 1;
+                    end
+                    $fclose(f);
+                    if (bad) begin
+                        $display("FAIL: transform: %0d of %0d vertices wrong", bad, n);
+                        errors = errors + 1;
+                    end else
+                        $display("vertices: %0d match the CPU trace", n);
                 end
             end
         end
@@ -457,6 +518,10 @@ module raster_tb;
             $display("NOTE: no +walk=, walker not checked");
         else
             check_walk(walk_path);
+        if (!$value$plusargs("vert=%s", vert_path))
+            $display("NOTE: no +vert=, transform model not checked");
+        else
+            check_vert(vert_path);
         read(15'h10, tris0);
         write(15'h04, 32'h0);          // draw into buffer 0
         push(cmd0, 0);

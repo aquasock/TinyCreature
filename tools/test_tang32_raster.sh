@@ -48,6 +48,7 @@ python3 -I "$root/tools/pack_land.py" "$land" "$out/land.hex"
 # island; frame 75 is close in, with triangles cut at the near plane. The
 # overrides let a new primitive be checked at other points around the orbit.
 TC_CELL_TRACE="$out/cells.txt" TC_CELL_TRACE_FRAME=0 \
+    TC_VERTEX_TRACE="$out/verts.txt" TC_VERTEX_TRACE_FRAME=0 \
     "$out/host/terrain_host" "$land" 600 "$out/f" "$frame0" "$frame1"
 python3 -I "$root/tools/land_walk.py" "$land" "$out/cells.txt"
 # What the fabric's checksum must produce, from the same bytes: the standard
@@ -63,12 +64,12 @@ PY
 )
 read -r crc0 crc01 nz0 nz1 <<<"$crcs"
 iverilog -g2012 -s raster_tb -o "$out/raster_tb" \
-    "$root/tests/raster_tb.sv" "$root/fpga/raster.sv"
+    "$root/tests/raster_tb.sv" "$root/tests/vert_model.sv" "$root/fpga/raster.sv"
 vvp -n "$out/raster_tb" +cmd0="$out/$dump0.cmd" +cmd1="$out/$dump1.cmd" \
     +fb0="$out/$dump0.fb" +fb1="$out/$dump1.fb" +crc0="$crc0" +crc01="$crc01" \
     +pal="$out/fpal.hex" +lut="$out/flut.hex" +tiles="$out/ftiles.hex" \
     +nz0="$nz0" +nz1="$nz1" +dump="$out/wrong.txt" \
     +framedump="$out/$dump0.sim.fb" +land="$out/land.hex" \
-    +walk="$out/cells.txt" \
+    +walk="$out/cells.txt" +vert="$out/verts.txt" \
     | tee "$out/raster_tb.log"
 grep -q '^PASS raster_tb' "$out/raster_tb.log"
