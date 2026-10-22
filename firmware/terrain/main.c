@@ -367,7 +367,9 @@ static void fabric_walk(void *ctx, const uint8_t *shown, uint32_t bx,
 		uint32_t bits = 0;
 		for (uint32_t k = 0; k < 32u; k++) {
 			uint32_t b = w * 32u + k;
-			if (b < bx * bz && shown[b])
+			/* 1 is a block the fabric walks: 2 is one the program
+			 * draws itself, 0 culled and 0xff no land at all. */
+			if (b < bx * bz && shown[b] == 1)
 				bits |= 1u << k;
 		}
 		RASTER_WALK_BLK_I = w;

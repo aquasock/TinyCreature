@@ -246,3 +246,33 @@ The near plane and guard band, where the user sees the ocean through the land at
 - User Test: PASS
 
 ---
+## 9 COMMIT Unreleased 2026-10-21T20:53:04-07:00
+
+#### Coming From:
+
+Unreleased 15d16d3
+
+#### Purpose:
+
+Draw the land next to the camera correctly in fabric-walk frames, where the user saw the ocean through the ground at full zoom, and leave the project in a state the next agent can pick up.
+
+#### Outcome:
+
+The ground nearest the camera reaches behind the near plane or past the guard band, which the fabric's store cannot carry and which its own near clip handles without a guard band and has never been checked against the CPU, so the work went to the CPU instead without a core change. `cull_blocks()` in `firmware/terrain/terrain.c` now marks a shown block 2 when any corner of its bounding box is behind the near plane or projects past `GUARD` less a 64-unit margin, which bounds every vertex inside it since camera-space z is linear and x / z and y / z are linear-fractional over the box; a fabric walk is given only the blocks marked 1, `fabric_walk()` in `firmware/terrain/main.c` now setting a block's bit only for 1 where it had set it for any non-zero value, including blocks with no land, and `draw_beyond_blocks()` draws the 2s through `draw_cell()` and `submit_slow()` after the fabric's walk, far to near over only the rows and columns they span, while the CPU's own walk draws 1s and 2s alike. The host is unchanged, `TRIS=20445 PIXELS=33115 CRC=5afe81aa` on the orbit and `TRIS=7924 PIXELS=53820 CRC=3e011caa` through `tools/tang_input.py zoom`, and a scratch build counting the blocks found none marked 2 in any of the orbit's 600 frames, so the fabric's orbit walk is what it was, and at most 2 against 12 to 22 shown from frame 200 of the zoom on. It ran on entry 8's seed 3 core, `ae350_soc.bin` SHA-256 `b59a78eb8fe16a34f3484105e60f6b7f2e1618f293d30a1c0c9c2f2358de29a0`, with `build/feel/terrain.elf` SHA-256 `7fe1e3ab43270139ed062fbdb914db747c2042a5dca68670c8561d24bd8ed110` built by `tools/run_tang32_feel.sh` with `FABRIC_WALK=1 HANDOVER=1` and the Celtic land `Data/Landscape/Tribal/2Celticgodland.lnd`, loaded over two-wire, and the user flew it to full zoom and reported it perfect. The board's two-wire port drops off USB after some runs and the BL616 console refuses a load while a handed-over program still runs, so a reboot of the Tang has come before most loads, and `tools/tang_power.py` still finds no USBRelay8 to do it. Because no block whose corners reach behind the plane or past the guard band now reaches the fabric, its near clip, 837 `LUT4`, should no longer run. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md`, `.ai/core-reference.md` and `.ai/core-syntax.md` are unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The user asked for a steady frame rate over a higher one, so `TC_BLANKS_PER_FRAME` stays 3, twenty frames a second, until the worst frame sits well inside the 33.3 ms two blanks allow; the work that gets there is the feeder's 144 clocks a cell, which pipelining would bring under the fill, and the back-face cull, which would stop sending the triangles the fill rejects and let the board's TRIS and CRC be compared with the host's again. Smaller open items are the fabric's now unused near clip, which could come out once the guard margin is confirmed on the board to keep every such triangle from the fabric, the creature sprite that fabric-walk frames do not draw, `tools/run_tang32_feel.sh` passing `FABRIC_WALK` and `HANDOVER=1` itself instead of from the environment, the 744-pixel shortfall on the orbit, the bench's vvp segfault in its own buffer read-back, and core-reference records for the SPINE27 bridge holding the picture for 600 frames in entry 7 and for the two tool behaviours entry 7 found. The archived entry 51 `BAD TINYCREATURE PIXELS` and the art queue stay open.
+
+#### Files Modified:
+
+- firmware/terrain/main.c
+- firmware/terrain/terrain.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

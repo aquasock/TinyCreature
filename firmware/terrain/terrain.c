@@ -1218,6 +1218,28 @@ static int outside(int32_t x, int32_t y, int32_t z)
 	       ((int64_t)y * 128 > z45) << 3 | ((int64_t)y * 128 < -z45) << 4;
 }
 
+/* A corner the fabric's vertex store could not carry exactly: behind the
+ * near plane, or projecting past the guard band, which is where terrain.c's
+ * submit() hands a triangle to submit_slow(). The margin covers the
+ * projection's rounding. */
+static int beyond_store(int32_t x, int32_t y, int32_t z)
+{
+	if (z < NEAR)
+		return 1;
+	const int64_t x12 = (int64_t)x * 4096, y12 = (int64_t)y * 4096;
+	const int64_t g = GUARD - 64;
+	return x12 > (g - TC_WIDTH * 8) * (int64_t)z ||
+	       -x12 > (g + TC_WIDTH * 8) * (int64_t)z ||
+	       -y12 > (g - TC_HEIGHT * 8) * (int64_t)z ||
+	       y12 > (g + TC_HEIGHT * 8) * (int64_t)z;
+}
+
+/* A block is culled (0) when all its corners are outside one plane of the
+ * view, and shown otherwise: 1, or 2 when one of its corners is beyond what
+ * the fabric's store carries. Camera-space z is linear and x / z and y / z
+ * are linear-fractional over the block's box, so its corners bound every
+ * vertex inside it, and a block of 1s has none that submit() would send to
+ * submit_slow(). A fabric walk is given the 1s and the program draws the 2s. */
 static void cull_blocks(void)
 {
 	for (uint32_t bz = 0; bz < blocks_z; bz++)
@@ -1225,16 +1247,17 @@ static void cull_blocks(void)
 			uint32_t b = bz * blocks_x + bx;
 			if (block_shown[b] == 0xff)
 				continue;
-			int all = 0x1f;
-			for (int k = 0; k < 8 && all; k++) {
+			int all = 0x1f, beyond = 0;
+			for (int k = 0; k < 8; k++) {
 				int32_t x, y, z;
 				to_camera((int32_t)(bx + (k & 1)) * BLOCK * CELL,
 					  height(k & 2 ? block_high[b] : block_low[b]),
 					  (int32_t)(bz + (k >> 2 & 1)) * BLOCK * CELL,
 					  &x, &y, &z);
 				all &= outside(x, y, z);
+				beyond |= beyond_store(x, y, z);
 			}
-			block_shown[b] = all ? 0 : 1;
+			block_shown[b] = all ? 0 : beyond ? 2 : 1;
 		}
 }
 
@@ -2658,6 +2681,45 @@ void tc_vertex_trace_set(void *file, uint32_t frame)
 }
 #endif
 
+/* The blocks a fabric walk is not given, those marked 2 by cull_blocks(),
+ * drawn by the program after it: their triangles reach behind the near plane
+ * or past the guard band, which submit_slow() clips and the fabric's store
+ * cannot. They are the land nearest the camera, so drawn after the fabric's
+ * they keep the walk's far-to-near order. The walk covers only the rows and
+ * columns those blocks span, about the camera cell cx, cz. */
+static void draw_beyond_blocks(int32_t cx, int32_t cz)
+{
+	uint32_t bx0 = blocks_x, bx1 = 0, bz0 = blocks_z, bz1 = 0;
+	for (uint32_t bz = 0; bz < blocks_z; bz++)
+		for (uint32_t bx = 0; bx < blocks_x; bx++)
+			if (block_shown[bz * blocks_x + bx] == 2) {
+				if (bx < bx0) bx0 = bx;
+				if (bx > bx1) bx1 = bx;
+				if (bz < bz0) bz0 = bz;
+				if (bz > bz1) bz1 = bz;
+			}
+	if (bx0 > bx1)
+		return;
+	int32_t z_lo = (int32_t)(bz0 * BLOCK);
+	int32_t z_hi = (int32_t)(bz1 * BLOCK + BLOCK - 1);
+	if (z_hi > (int32_t)land->cells_z - 1)
+		z_hi = (int32_t)land->cells_z - 1;
+	memset(slot_owner, 0, sizeof slot_owner);
+	while (z_lo <= z_hi) {
+		uint32_t gz = farther(&z_lo, &z_hi, cz);
+		walk_front = (int32_t)gz < cz ? 0u : 1u;
+		int32_t x_lo = (int32_t)(bx0 * BLOCK);
+		int32_t x_hi = (int32_t)(bx1 * BLOCK + BLOCK - 1);
+		if (x_hi > (int32_t)land->cells_x - 1)
+			x_hi = (int32_t)land->cells_x - 1;
+		while (x_lo <= x_hi) {
+			uint32_t gx = farther(&x_lo, &x_hi, cx);
+			if (block_shown[gz / BLOCK * blocks_x + gx / BLOCK] == 2)
+				draw_cell(gx, gz);
+		}
+	}
+}
+
 /* What lies over the land, drawn after it whichever walk drew it: the pin,
  * the cursor and the camera readout. */
 static void draw_overlays(void)
@@ -2829,6 +2891,7 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 		out->walk(out->ctx, block_shown, blocks_x, blocks_z,
 			  land->cells_x, land->cells_z, cam,
 			  (uint32_t)cx, (uint32_t)cz);
+		draw_beyond_blocks(cx, cz);
 		if (timed) {
 			uint64_t t = out->now();
 			out->phase[TC_PHASE_WALK] = (uint32_t)(t - w0);
@@ -2848,7 +2911,8 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 		int32_t x_lo = 0, x_hi = land->cells_x - 1;
 		while (x_lo <= x_hi) {
 			uint32_t gx = farther(&x_lo, &x_hi, cx);
-			if (block_shown[gz / BLOCK * blocks_x + gx / BLOCK] == 1) {
+			const uint8_t shown = block_shown[gz / BLOCK * blocks_x + gx / BLOCK];
+			if (shown == 1 || shown == 2) {
 				draw_cell(gx, gz);
 				/* The sprite is drawn as the walk reaches the cell
 				 * it stands on, so the nearer land, which the walk
