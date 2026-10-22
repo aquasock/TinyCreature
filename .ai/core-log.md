@@ -180,3 +180,37 @@ Check the clip against the CPU before trusting it: the full-land testbench shoul
 - User Test: NOT RUN
 
 ---
+## 7 COMMIT Unreleased 2026-10-21T19:24:11-07:00
+
+#### Coming From:
+
+Unreleased c2e4553
+
+#### Purpose:
+
+Make the fabric walk run the whole orbit on the board in a core that meets the bus clock, by shrinking the near clip, giving the assembly back-pressure and clearing the defects that hung the walk in simulation and on hardware.
+
+#### Outcome:
+
+The near clip's crossing arithmetic is now `nearcut`, one `mullane` and a radix-4 divider returning the 32-bit quotient a crossing can have, checked by the new `tests/nearcut_tb.sv` against C's `(int64)a * b / d` over 26,663 cases with three deliberate mutations each failing it; the clip cost 837 `LUT4` where entry 6's two single-clock 32-by-32 multiplies and 64-bit divider cost 3,485, and its divider's done is now a one-clock pulse, since the old level done let `CK_DIVX` take the previous quotient. The assembly's triangle and the clip's fan words now wait for room in the command queue instead of being lost against a full one. Entry 6's clip drove `feed_req`, `f_gx`, `f_gz`, `f_alt` and `ck_t` from a second always block, which Yosys reported as multiple conflicting drivers and which the first core of this cycle on the board, seed 4 packed by hand, showed as a program that never left the colour screen; the clip now has its own transform request, and `tools/build_tang32.sh` refuses a synthesis that reports a multiply-driven register. Every walk simulation since entry 6 had also stalled in the bench alone, because `cslot()` and `tri_k()` read module signals rather than arguments, which iverilog does not re-evaluate, so the bench saw stale slots and a bogus clip whose unknown corners hung the fill; both now take their inputs as arguments, and the clip also gained the second clock the land store needs before its word is read and an exit when no corner is in front of the plane, where it had looped forever. A scratch build of the host counted no triangle entering `submit_slow()` anywhere in the 600-frame orbit, so the clip does not run on the orbit and entries 5 and 6 were wrong to attribute the board's missing pixels to it. With these fixes `tools/test_tang32_raster.sh` now takes `TINYCREATURE_TRACE_FRAME`, dumps the walk's frame and counts clip entries and queue holds, and the walk drew the terrain of frames 0, 52, 75 and 150 exactly as the host did, every differing pixel lying under the host's overlay quads, with no clip and no hold at any of them; vvp still segfaults in the bench's own buffer read-back after the store path is pushed, so the frames were compared offline and the script exits non-zero. Seed 3 of the next sweep, 74.11 MHz against 75, ran 52 frames on the board and then stopped, and the walk timeout `firmware/terrain/main.c` now has reported its fill busy with the walker having pushed 20,767 cells against the 20,640 the frame has: its failing path ran from the walker's flag store through the queue level into the feeder, so the assembly now tests a registered nearly-full flag instead. The next sweep's critical path was the walker's row multiply, so the walker keeps running row and block-row bases for both ends, built once a walk by `W_INIT`, and hands the feeder its vertex row in a 37-bit cell FIFO; that FIFO had been flip-flops since entry 5 because it was written inside a reset block, and written from its own block it is a block RAM, the feeder waiting a clock before taking a cell from an empty FIFO. Synthesis is 18,523 `LUT4`, 11,179 `ALU`, 13,969 `DFFRE` and 294 of 340 block RAMs against entry 6's 25,285, 11,003, 19,233 and 292. The last sweep closed seed 2 at 75.34 MHz bus and 84.79 MHz pixel and refused it only for the unmeasured SPINE27 pixel-clock bridge, seed 6 reached 74.44 MHz with the measured bridges, seeds 1, 4, 5, 7 and 8 reached 67.99, 72.17, 73.81, 72.79 and 64.02 MHz, and seed 3 was stopped, so no seed was clean. At the user's direction seed 2 was packed by hand with the bridge check not applied, `ae350_soc.bin` SHA-256 `64827186a0f766afea99b6abbe1b857689196c17c82883ecb67dcd1255ba6598` and `ae350_soc.fs` SHA-256 `926c1ab790b9fff585d1bc6543256c6167199a005d770a3638e1ada3666d3f76`, with `terrain.elf` built with `FABRIC_WALK=1`, SHA-256 `4d7f9e7496fcc90a30c2724ba91d17bc0f12cdfef2076f8749a8c5edec285a83`, and loaded over two-wire; it ran the whole orbit, `TinyCreature TERRAIN OK MODE=FABRIC LAND=96a94274 FRAMES=600 TRIS=36096 PIXELS=32371 DRAW=26593us MAX=31011us STALLS=0 VBLMIN=3 VBLMAX=3 PERIOD=49996us CRC=2fd83d22 PHWALK=26548us FABRIC=16493us`, the picture holding through SPINE27 for all 600 frames, and the user accepted it and directed the commit. The triangle count and CRC differ from the host's because the fabric does not cull, the last frame is 744 pixels short of the host's 33,115 for a reason not yet found, and the shown rate is the twenty frames a second `TC_BLANKS_PER_FRAME` of 3 holds it to. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md`, `.ai/core-reference.md` and `.ai/core-syntax.md` are unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The worst frame is 31.0 ms against the 33.3 ms two blanks allow, so `TC_BLANKS_PER_FRAME` of 2 can be tried for thirty frames a second, with VBLMAX showing any frame that spills; the lasting gain is the feeder's 144 clocks a cell, which pipelining would bring under the fill, and the back-face cull, which would stop sending the triangles the fill rejects. The 744-pixel shortfall against the host, the bench's vvp segfault, the near clip's check against the CPU on a recorded close-in flight, the SPINE27 observation and the two tool behaviours this cycle found, a memory written in a reset block becoming registers and iverilog not re-evaluating a function's module signals, which are candidates for `.ai/core-reference.md`, the archived entry 51 `BAD TINYCREATURE PIXELS` and the art queue stay open.
+
+#### Files Modified:
+
+- firmware/terrain/main.c
+- fpga/raster.sv
+- tests/nearcut_tb.sv
+- tests/raster_tb.sv
+- tools/build_tang32.sh
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: FAIL
+- Deployment: PASS
+- User Test: PASS
+
+---

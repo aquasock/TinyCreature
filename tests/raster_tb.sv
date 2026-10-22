@@ -66,6 +66,15 @@ module raster_tb;
     integer errors = 0;
     integer tck = 0;
     always @(posedge clk) tck = tck + 1;
+    // Watched inside the unit: the clocks the assembly holds a word for room
+    // in the command queue, and the triangles that reach the near clip's fan.
+    integer asm_holds = 0, clip_cuts = 0;
+    always @(posedge clk) begin
+        if (dut.asm_full && ((dut.fst == dut.FD_PUSH && dut.f_tri_draw) ||
+                              dut.ck == dut.CK_WORD0))
+            asm_holds = asm_holds + 1;
+        if (dut.ck == dut.CK_FAN) clip_cuts = clip_cuts + 1;
+    end
 
     // One AHB transfer: the address phase on the edge after hready is
     // seen high, the data phase until hready is seen high again.
@@ -386,6 +395,8 @@ module raster_tb;
         integer dx2, dz2, dk2;
         reg [0:1023] has;
         reg [31:0] w, q, st;
+        integer fd;
+        reg [8*256-1:0] dump_name;
         begin
             f = $fopen(walk_path, "r");
             if (f == 0) begin
@@ -451,6 +462,23 @@ module raster_tb;
                         errors = errors + 1;
                     end else
                         $display("walk and assembly: %0d clocks", tck - vw);
+                    // The assembly's words queue for the fill, which is
+                    // still drawing them when the walk reports done.
+                    idle("the walk's triangles");
+                    $display("walk: %0d triangles at the near clip, %0d clocks held for queue room",
+                             clip_cuts, asm_holds);
+                    // The frame the walk drew, word for word, so two builds
+                    // of the unit can be compared on the same walk.
+                    if ($value$plusargs("walkdump=%s", dump_name)) begin
+                        fd = $fopen(dump_name, "w");
+                        for (i = 0; i < 14400; i = i + 1) begin
+                            write(15'h0020, i * 4);
+                            read(15'h0024, q);
+                            $fdisplay(fd, "%h", q);
+                        end
+                        $fclose(fd);
+                        $display("walk frame written to %0s", dump_name);
+                    end
                     // Replay the walk's own rule: each corner the slot has
                     // not held this walk is sent, and stores its position if
                     // it is in front of the near plane.
@@ -862,7 +890,7 @@ module raster_tb;
         end
     endtask
 
-    reg [8*256-1:0] cmd0, cmd1, fb0, fb1, pal_path, lut_path, tiles_path;
+    reg [8*256-1:0] cmd0, cmd1, walk_cmd, fb0, fb1, pal_path, lut_path, tiles_path;
     reg [31:0] q, tris0, pixels0, stalls;
 
     // The fabric's frame checksum, against the C the firmware and
@@ -954,7 +982,11 @@ module raster_tb;
         if (!$value$plusargs("vert=%s", vert_path))
             $display("NOTE: no +vert=, transform model not checked");
         else begin
-            check_slots(walk_path, vert_path, cmd0);
+            // The walk is checked against the commands of the frame its
+            // traces came from, which is frame 0's unless told otherwise.
+            if (!$value$plusargs("walkcmd=%s", walk_cmd))
+                walk_cmd = cmd0;
+            check_slots(walk_path, vert_path, walk_cmd);
             check_vert(vert_path);
         end
         read(15'h10, tris0);

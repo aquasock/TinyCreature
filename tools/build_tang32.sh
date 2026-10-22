@@ -33,6 +33,13 @@ TINY_NES_STAGE=synth TINY_NES_BUILD_DIR="$out/seeds/synth" "$build_soc" \
         tail -40 "$out/seeds/synth.out" >&2
         exit 1
     }
+# A register driven from two always blocks simulates as whichever wrote last
+# but has no defined value in the fabric, and Yosys only warns about it.
+if grep -q 'multiple conflicting drivers' "$out/seeds/synth/synth.log"; then
+    grep 'multiple conflicting drivers' "$out/seeds/synth/synth.log" | head -8 >&2
+    echo "Synthesis found registers with more than one driver" >&2
+    exit 1
+fi
 echo "Placing and routing seeds ${seeds[*]}"
 for seed in "${seeds[@]}"; do
     (

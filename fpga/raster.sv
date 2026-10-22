@@ -128,6 +128,12 @@ module raster #(
     reg [3:0] wr_rem = 0;
     wire [9:0] level = wr_ptr - rd_ptr;
     wire fifo_full = level[9];
+    // The assembly's own test for room, a clock old: four words or fewer
+    // free. The queue takes one word a clock, so a flag that was clear one
+    // clock ago still leaves room now, and the level's carry chain stays off
+    // the feeder's paths, where it was the core's critical path.
+    reg asm_full = 0;
+    always @(posedge clk) asm_full <= level >= 10'd508;
     wire fifo_empty = level == 0;
     reg w_fifo = 0;
     // A write waiting in its data phase goes in as soon as there is room.
@@ -135,7 +141,7 @@ module raster #(
     // The assembly's triangles join the same queue. A program using a fabric
     // walk sends no commands of its own in that frame, which is what makes
     // the one write port enough.
-    wire fifo_wr = push || (asm_push && !fifo_full);
+    wire fifo_wr = push || asm_push;
     wire [31:0] fifo_wd = asm_push ? asm_word : hwdata;
     // The command assembler takes the word at rd_ptr on the edge it moves
     // rd_ptr on; the word is in fifo_q, q_valid set, the cycle after.
@@ -183,15 +189,26 @@ module raster #(
     reg walk_go = 0, w_walk = 0;
     reg [2:0] walk_wreg = 0;
     reg r_wfifo = 0, r_wfifo_wait = 0, f_pop = 0;
-    reg [31:0] wfifo_q = 0;
+    reg [36:0] wfifo_q = 0;
+    reg wavail = 0;          // the FIFO was non-empty a clock ago too
     reg [8:0] wfifo_wr = 0, wfifo_rd = 0;
-    (* ram_style = "block" *) reg [31:0] wfifo [0:255];
+    // A cell's entry: the land's vertex row it starts on, z * (cells_x + 1),
+    // then its flags, front, gz and gx. The walker has the row's cell base
+    // already, so the feeder is handed the vertex row and needs no multiply.
+    (* ram_style = "block" *) reg [36:0] wfifo [0:255];
     reg [2:0] wstate = 0;
     reg [15:0] wz_lo = 0, wz_hi = 0, wx_lo = 0, wx_hi = 0;
     reg [15:0] wgz = 0, wgx = 0, wrow_base = 0, wcount = 0, wcell = 0;
     reg [9:0] wblock = 0;
+    // The two ends' row bases, z * cells_x, and their block rows,
+    // (z >> 4) * (cells_x >> 4), kept as the ends move a row at a time: the
+    // multiplies they replace were the core's critical path. W_INIT adds the
+    // far end's up once a walk.
+    reg [15:0] wbase_lo = 0, wbase_hi = 0, wi = 0, wvrow = 0;
+    reg [9:0] wblk_lo = 0, wblk_hi = 0, wblk_row = 0;
     reg wfront = 0;
-    localparam W_IDLE = 0, W_Z = 1, W_X = 2, W_FLAG = 3, W_DONE = 4;
+    localparam W_IDLE = 0, W_Z = 1, W_X = 2, W_FLAG = 3, W_DONE = 4,
+               W_INIT = 5;
     // The transform's camera file and its request/result registers. The
     // camera is CAM_A then CAM_D, one 32-bit value a write.
     reg [31:0] cam_reg [0:7];
@@ -211,6 +228,12 @@ module raster #(
     // carries a tag and each caller takes only its own results. The feeder
     // has the earlier claim on a round.
     reg feed_req = 0, feed_en = 0, feed_done = 0, feed_start = 0;
+    // The near clip re-runs a triangle's corners through the transform while
+    // the feeder waits for it, with a request of its own: one register has
+    // one always block driving it.
+    reg ck_req = 0;
+    reg [15:0] ck_gx = 0, ck_gz = 0;
+    reg [7:0] ck_alt = 0;
     // The walker's assembly declares its own triangles: a TRIV word the
     // engine draws exactly as it draws one the program sent.
     wire asm_push;
@@ -231,16 +254,17 @@ module raster #(
     // The unit takes a vertex when it says it is ready, so the start write
     // is held until then; the pipeline is four rounds deep and takes one a
     // round, so a start waits at most one round.
-    wire xf_go = xf_start && xf_in_ready && !feed_req;
+    wire xf_go = xf_start && xf_in_ready && !feed_req && !ck_req;
     wire xf_out_tag;
     transform xf(.clk(clk), .resetn(resetn),
         .cam_x(cam_reg[0]), .cam_y(cam_reg[1]), .cam_z(cam_reg[2]),
         .sin_yaw(cam_reg[3]), .cos_yaw(cam_reg[4]),
         .sin_pitch(cam_reg[5]), .cos_pitch(cam_reg[6]),
-        .in_valid(feed_req || xf_start), .in_ready(xf_in_ready),
-        .in_tag(feed_req),
-        .in_gx(feed_req ? f_gx : xf_gx), .in_gz(feed_req ? f_gz : xf_gz),
-        .in_alt(feed_req ? f_alt : xf_alt),
+        .in_valid(feed_req || ck_req || xf_start), .in_ready(xf_in_ready),
+        .in_tag(feed_req || ck_req),
+        .in_gx(ck_req ? ck_gx : feed_req ? f_gx : xf_gx),
+        .in_gz(ck_req ? ck_gz : feed_req ? f_gz : xf_gz),
+        .in_alt(ck_req ? ck_alt : feed_req ? f_alt : xf_alt),
         .out_valid(xf_done), .out_tag(xf_out_tag),
         .out_gx(xf_out_gx), .out_gz(xf_out_gz), .out_alt(xf_out_alt),
         .sx(xf_sx), .sy(xf_sy), .depth(xf_depth), .state(xf_state),
@@ -403,7 +427,7 @@ module raster #(
                 wfifo_rd <= wfifo_rd + 1'b1;
                 r_wfifo <= 0; r_wfifo_wait <= 1;
             end else if (r_wfifo_wait) begin
-                hrdata <= wfifo_q; hready <= 1; r_wfifo_wait <= 0;
+                hrdata <= {11'd0, wfifo_q[20:0]}; hready <= 1; r_wfifo_wait <= 0;
             end else if (feed_start) begin
                 feed_start <= 0;
             end else if (w_slot) begin
@@ -708,18 +732,22 @@ module raster #(
     wire a_guard = xf_sx <= 16'sd32000 && xf_sx >= -16'sd32000 &&
                    xf_sy <= 16'sd32000 && xf_sy >= -16'sd32000;
     wire f_draw_ok = xf_state == 2'd0 && a_guard;
-    // The four corners of the cell in hand, as slots.
-    function automatic [9:0] cslot(input [1:0] k);
+    // The four corners of the cell in hand, as slots. The cell's fields are
+    // the function's arguments: a simulator re-evaluates a continuous
+    // assignment only when a function's arguments change, so a function that
+    // read them from the module would hold a stale slot.
+    function automatic [9:0] cslot_of(input [1:0] k, input front, input z0,
+                                      input [7:0] cx);
         case (k)
-            2'd0: cslot = {f_front, f_z[0], f_cx[7:0]};
-            2'd1: cslot = {f_front, f_z[0], f_cx[7:0] + 8'd1};
-            2'd2: cslot = {f_front, ~f_z[0], f_cx[7:0]};
-            default: cslot = {f_front, ~f_z[0], f_cx[7:0] + 8'd1};
+            2'd0: cslot_of = {front, z0, cx};
+            2'd1: cslot_of = {front, z0, cx + 8'd1};
+            2'd2: cslot_of = {front, ~z0, cx};
+            default: cslot_of = {front, ~z0, cx + 8'd1};
         endcase
     endfunction
     wire [9:0] owner_ra = fst == FD_NEXT ? f_slot_n
                         : (fst == FD_WAIT || fst == FD_SEND) ? f_slot
-                        : fst == FD_TRI ? cslot(f_t)
+                        : fst == FD_TRI ? cslot_of(f_t, f_front, f_z[0], f_cx[7:0])
                         : f_clr[9:0];
     reg [1:0] f_t = 0;
     reg [3:0] f_ok = 0;
@@ -738,8 +766,14 @@ module raster #(
         end
     end
     wire f_tri_draw = f_flags[1 + f_tri] && f_ok[t0] && f_ok[t1] && f_ok[t2];
-    wire [31:0] triv_word = {2'b11, cslot(t0), cslot(t1), cslot(t2)};
-    wire triv_push = fst == FD_PUSH && f_tri_draw;
+    wire [31:0] triv_word = {2'b11,
+        cslot_of(t0, f_front, f_z[0], f_cx[7:0]),
+        cslot_of(t1, f_front, f_z[0], f_cx[7:0]),
+        cslot_of(t2, f_front, f_z[0], f_cx[7:0])};
+    // A triangle waits in FD_PUSH while the command queue is full: the fill
+    // is the slower side whenever its triangles are large, and a word offered
+    // to a full queue is lost.
+    wire triv_push = fst == FD_PUSH && f_tri_draw && !asm_full;
     assign asm_push = triv_push || ck_push;
     assign asm_word = triv_push ? triv_word : fan_word;
     always @(posedge clk) begin
@@ -754,7 +788,7 @@ module raster #(
             f_stride <= 1; f_cx <= 0; f_z <= 0; f_k <= 0; f_front <= 0;
             f_vi <= 0; f_slot <= 0; f_colour <= 0; f_vbase <= 0; f_id <= 0;
             f_pop <= 0; f_flags <= 0; f_t <= 0; f_ok <= 0; f_tri <= 0;
-            asm_idle <= 0; ck_go <= 0;
+            asm_idle <= 0; ck_go <= 0; ck_t <= 0;
         end else begin
             fw_we <= 0;
             // A result comes back in the order it was sent, so the queue's
@@ -796,16 +830,16 @@ module raster #(
                 end
                 FD_POP: begin
                     feed_req <= 0; owner_we <= 0;
-                    if (!wempty) begin
+                    if (!wempty && wavail) begin
                         f_cx <= wfifo_q[8:0];
                         f_z <= wfifo_q[16:9];
                         f_front <= wfifo_q[17];
                         f_flags <= wfifo_q[20:18];
-                        f_vbase <= wfifo_q[16:9] * f_stride;
+                        f_vbase <= wfifo_q[36:21];
                         f_pop <= 1;
                         f_k <= 0;
                         fst <= FD_NEXT;
-                    end else if (wdone && q_n == 0) begin
+                    end else if (wempty && wdone && q_n == 0) begin
                         // The walk is over and its results have landed.
                         feed_done <= 1;
                         feed_en <= 0;
@@ -881,7 +915,10 @@ module raster #(
                 FD_PUSH: begin
                     // One triangle a clock at most: the queue takes one word
                     // a clock. The second is decided in FD_PUSH2.
-                    if (f_tri_draw || !f_flags[1 + f_tri])
+                    if (f_tri_draw) begin
+                        if (!asm_full)
+                            fst <= FD_PUSH2;
+                    end else if (!f_flags[1 + f_tri])
                         fst <= FD_PUSH2;
                     else begin
                         // The store cannot carry it: cut it at the near plane.
@@ -927,11 +964,11 @@ module raster #(
     // this path's one difference from the CPU's picture.
     localparam CK_IDLE = 0, CK_LAND = 1, CK_WORD = 2, CK_ACC = 3, CK_WAIT = 4,
                CK_EDGE = 5, CK_DIVX = 6, CK_DIVY = 7, CK_FAN = 8,
-               CK_WORD0 = 9, CK_STEP = 10;
+               CK_WORD0 = 9, CK_STEP = 10, CK_LAND2 = 11;
     reg [3:0] ck = CK_IDLE;
     reg ck_busy = 0, ck_go = 0;
     reg [7:0] ck_tri_seen = 0;   // diagnostic: clipped triangles, free-running
-    wire ck_push = ck == CK_WORD0;
+    wire ck_push = ck == CK_WORD0 && !asm_full;
     reg [1:0] ck_t = 0, ck_i = 0, ck_fk = 0;
     reg [1:0] ck_fw = 0;
     reg signed [31:0] ck_x0 = 0, ck_y0 = 0;
@@ -942,13 +979,12 @@ module raster #(
     reg signed [15:0] p_x [0:3], p_y [0:3];
     reg [7:0] p_c [0:3];
     reg [2:0] p_n = 0;
-    reg signed [63:0] ck_num = 0;
-    reg signed [31:0] ck_den = 0;
+    reg signed [31:0] ck_a = 0, ck_b = 0, ck_den = 0;
     reg ck_start = 0;
     wire ck_done;
-    wire signed [63:0] ck_q;
-    sdiv64 ckd(.clk(clk), .resetn(resetn), .start(ck_start),
-               .n(ck_num), .d(ck_den), .q(ck_q), .done(ck_done));
+    wire signed [31:0] ck_q;
+    nearcut ckd(.clk(clk), .resetn(resetn), .start(ck_start),
+                .a(ck_a), .b(ck_b), .d(ck_den), .q(ck_q), .done(ck_done));
     // The triangle's corners in the CPU's order, and one of them by index.
     reg [1:0] k0, k1, k2;
     always @(*) begin
@@ -960,14 +996,7 @@ module raster #(
             else begin k0 = 2'd0; k1 = 2'd3; k2 = 2'd2; end
         end
     end
-    function automatic [1:0] tri_k(input [1:0] which);
-        case (which)
-            2'd0: tri_k = k0;
-            2'd1: tri_k = k1;
-            default: tri_k = k2;
-        endcase
-    endfunction
-    wire [1:0] ck_k = tri_k(ck_i);
+    wire [1:0] ck_k = ck_i == 2'd0 ? k0 : ck_i == 2'd1 ? k1 : k2;
     wire [1:0] ck_j = ck_i == 2'd2 ? 2'd0 : ck_i + 2'd1;
     wire ck_front_i = cst[ck_i] != 2'd1;
     wire ck_front_j = cst[ck_j] != 2'd1;
@@ -989,7 +1018,7 @@ module raster #(
     always @(posedge clk or negedge resetn) begin
         if (!resetn) begin
             ck <= CK_IDLE; ck_busy <= 0; ck_start <= 0; p_n <= 0;
-            ck_t <= 0; ck_i <= 0; ck_fk <= 0; ck_fw <= 0;
+            ck_req <= 0; ck_i <= 0; ck_fk <= 0; ck_fw <= 0;
             ck_x0 <= 0; ck_y0 <= 0;
         end else begin
             ck_start <= 0;
@@ -1002,17 +1031,20 @@ module raster #(
                         ck <= CK_LAND;
                     end
                 end
-                CK_LAND: ck <= CK_WORD;
+                // The store registers the address on one edge and the word
+                // on the next, as the feeder's NEXT and WAIT allow it.
+                CK_LAND: ck <= CK_LAND2;
+                CK_LAND2: ck <= CK_WORD;
                 CK_WORD: begin
                     ccol[ck_i] <= ck_li[0] ? land_vq[31:24] : land_vq[15:8];
-                    f_alt <= ck_li[0] ? land_vq[23:16] : land_vq[7:0];
-                    f_gx <= ck_lx; f_gz <= ck_lz;
-                    feed_req <= 1;
+                    ck_alt <= ck_li[0] ? land_vq[23:16] : land_vq[7:0];
+                    ck_gx <= ck_lx; ck_gz <= ck_lz;
+                    ck_req <= 1;
                     ck <= CK_ACC;
                 end
                 CK_ACC: begin
                     if (xf_in_ready) begin
-                        feed_req <= 0;
+                        ck_req <= 0;
                         ck <= CK_WAIT;
                     end
                 end
@@ -1039,7 +1071,7 @@ module raster #(
                         p_n <= p_n + 1'b1;
                     end
                     if (ck_front_i != ck_front_j) begin
-                        ck_num <= ck_dx * ck_near;
+                        ck_a <= ck_dx; ck_b <= ck_near;
                         ck_den <= ck_span;
                         ck_start <= 1;
                         ck <= CK_DIVX;
@@ -1050,8 +1082,8 @@ module raster #(
                 end
                 CK_DIVX: begin
                     if (ck_done) begin
-                        ck_x0 <= cx3[ck_i] + ck_q[31:0];
-                        ck_num <= ck_dy * ck_near;
+                        ck_x0 <= cx3[ck_i] + ck_q;
+                        ck_a <= ck_dy; ck_b <= ck_near;
                         ck_den <= ck_span;
                         ck_start <= 1;
                         ck <= CK_DIVY;
@@ -1059,9 +1091,9 @@ module raster #(
                 end
                 CK_DIVY: begin
                     if (ck_done) begin
-                        ck_y0 <= cy3[ck_i] + ck_q[31:0];
+                        ck_y0 <= cy3[ck_i] + ck_q;
                         p_x[p_n[1:0]] <= 16'((ck_x0 << 5) + 32'sd2560);
-                        p_y[p_n[1:0]] <= 16'(32'sd1440 - ((cy3[ck_i] + ck_q[31:0]) << 5));
+                        p_y[p_n[1:0]] <= 16'(32'sd1440 - ((cy3[ck_i] + ck_q) << 5));
                         p_c[p_n[1:0]] <= ccol[ck_i];
                         p_n <= p_n + 1'b1;
                         if (ck_i == 2'd2)
@@ -1074,13 +1106,22 @@ module raster #(
                 end
                 CK_FAN: begin
                     ck_tri_seen <= ck_tri_seen + 1'b1;
-                    // Two fan triangles for a quad, one for a triangle.
+                    // Two fan triangles for a quad, one for a triangle, and
+                    // none when every corner is behind the plane: terrain.c
+                    // returns then, and the fan count below would wrap.
                     ck_fk <= 2'd1;
                     ck_fw <= 2'd0;
-                    ck <= p_n < 3 ? CK_STEP : CK_WORD0;
+                    if (p_n < 3) begin
+                        ck_busy <= 0;
+                        ck <= CK_IDLE;
+                    end else
+                        ck <= CK_WORD0;
                 end
                 CK_WORD0: begin
-                    if (ck_fw == 2'd3) begin
+                    // A fan word waits, like a triangle, for room in the queue.
+                    if (asm_full)
+                        ;
+                    else if (ck_fw == 2'd3) begin
                         ck_fw <= 2'd0;
                         ck <= CK_STEP;
                     end else
@@ -1190,21 +1231,52 @@ module raster #(
     wire wfull = wlevel[8];
     wire wbusy = wstate != W_IDLE && wstate != W_DONE;
     wire wdone = wstate == W_DONE;
+    // The FIFO is written from a block of its own with no reset, which is
+    // what lets it be a block RAM: written inside the walker's reset block it
+    // was 256 entries of flip-flops and their read multiplexer.
+    wire wfifo_we = !walk_go && wstate == W_FLAG && wshown[wblock] &&
+                    (((land_fraw >> (4 * wcell[2:0])) & 7) & 6) != 0 && !wfull;
+    always @(posedge clk)
+        if (wfifo_we)
+            wfifo[wfifo_wr[7:0]] <= {wvrow, wflags, wfront, wgz[7:0], wgx[8:0]};
+    // A cell pushed into an empty FIFO is in wfifo_q a clock after the level
+    // says so, so the feeder takes one only once the level was non-zero the
+    // clock before as well.
+    always @(posedge clk) wavail <= !wempty;
     always @(posedge clk or negedge resetn) begin
         if (!resetn) begin
             wstate <= W_IDLE; wfifo_wr <= 0; wcount <= 0;
         end else if (walk_go) begin
-            wstate <= W_Z; wfifo_wr <= 0; wcount <= 0;
+            wstate <= W_INIT; wfifo_wr <= 0; wcount <= 0;
             wz_lo <= 0; wz_hi <= wcells_z - 1'b1;
+            wbase_lo <= 0; wbase_hi <= 0; wblk_lo <= 0; wblk_hi <= 0;
+            wi <= 0;
         end else case (wstate)
+            W_INIT: if (wi == wz_hi)
+                        wstate <= W_Z;
+                    else begin
+                        // Row wi to wi + 1: a row's cells further, and a
+                        // block row further each time wi leaves a block.
+                        wbase_hi <= wbase_hi + wcells_x;
+                        if (wi[3:0] == 4'hf) wblk_hi <= wblk_hi + wcells_x[13:4];
+                        wi <= wi + 1'b1;
+                    end
             W_Z: if (wz_lo > wz_hi)
                      wstate <= W_DONE;
                  else begin
                      wgz <= zpick_lo ? wz_lo : wz_hi;
-                     if (zpick_lo) wz_lo <= wz_lo + 1'b1;
-                     else wz_hi <= wz_hi - 1'b1;
+                     wrow_base <= zpick_lo ? wbase_lo : wbase_hi;
+                     wblk_row <= zpick_lo ? wblk_lo : wblk_hi;
+                     if (zpick_lo) begin
+                         wz_lo <= wz_lo + 1'b1;
+                         wbase_lo <= wbase_lo + wcells_x;
+                         if (wz_lo[3:0] == 4'hf) wblk_lo <= wblk_lo + wcells_x[13:4];
+                     end else begin
+                         wz_hi <= wz_hi - 1'b1;
+                         wbase_hi <= wbase_hi - wcells_x;
+                         if (wz_hi[3:0] == 4'h0) wblk_hi <= wblk_hi - wcells_x[13:4];
+                     end
                      wfront <= (zpick_lo ? wz_lo : wz_hi) < wcz ? 1'b0 : 1'b1;
-                     wrow_base <= (zpick_lo ? wz_lo : wz_hi) * wcells_x;
                      wx_lo <= 0; wx_hi <= wcells_x - 1'b1;
                      wstate <= W_X;
                  end
@@ -1215,16 +1287,14 @@ module raster #(
                      if (xpick_lo) wx_lo <= wx_lo + 1'b1;
                      else wx_hi <= wx_hi - 1'b1;
                      wcell <= wcell_now;
-                     wblock <= ((wgz >> 4) * (wcells_x >> 4)) +
-                               ((xpick_lo ? wx_lo : wx_hi) >> 4);
+                     wblock <= wblk_row + 10'((xpick_lo ? wx_lo : wx_hi) >> 4);
+                     wvrow <= wrow_base + wgz;
                      wstate <= W_FLAG;
                  end
             W_FLAG: if (!wshown[wblock])
                          wstate <= W_X;
                      else if (((land_fraw >> (4 * wcell[2:0])) & 7) & 6) begin
                          if (!wfull) begin
-                             wfifo[wfifo_wr[7:0]] <=
-                                 {11'd0, wflags, wfront, wgz[7:0], wgx[8:0]};
                              wfifo_wr <= wfifo_wr + 1'b1;
                              wcount <= wcount + 1'b1;
                              wstate <= W_X;
@@ -2695,47 +2765,73 @@ module transform(
     end
 endmodule
 
-// ---- A signed divide, truncating toward zero as C's does ----
-// The near clip interpolates a crossing as (x[j] - x[i]) * num / den, and C
-// truncates that quotient toward zero, so the magnitudes are divided and the
-// sign put back afterwards. Radix 4, two quotient bits a clock: thirty-two
-// clocks for a 64-bit numerator.
-module sdiv64(
+// ---- The near clip's crossing: a * b / d, truncating toward zero ----
+// The near clip interpolates a crossing as (x[j] - x[i]) * num / den with a
+// 64-bit product, and C truncates that quotient toward zero, so the product's
+// magnitude is divided by the divisor's and the sign put back afterwards. One
+// multiplier lane makes the product in sixteen clocks, and the divide is
+// radix 4, two quotient bits a clock, sixteen clocks for the 32-bit quotient.
+// A crossing's |num| is at most |den|, so the quotient is no larger than
+// |a|: the product's high word is below the divisor and is the divide's
+// starting remainder, and only the low word's bits are shifted in.
+module nearcut(
     input wire clk, input wire resetn,
     input wire start,
-    input wire signed [63:0] n,
-    input wire signed [31:0] d,
-    output reg signed [63:0] q,
+    input wire signed [31:0] a, b, d,
+    output reg signed [31:0] q,
     output reg done
 );
-    reg busy = 0;
-    reg [63:0] num = 0, den = 0, quo = 0, rem = 0;
-    reg [5:0] step = 0;
-    reg neg = 0;
-    wire [63:0] digit_in = {rem[61:0], num[2 * step +: 2]};
-    wire [63:0] den2 = den << 1;
-    wire [63:0] den3 = den2 + den;
+    localparam IDLE = 0, MUL = 1, DIV = 2;
+    reg [1:0] st = IDLE;
+    reg [3:0] step = 0;
+    wire signed [63:0] p;
+    mullane m(.clk(clk), .resetn(resetn), .load(start), .a(a), .b(b), .p(p));
+    reg [31:0] den = 0, lo = 0, rem = 0, quo = 0;
+    reg dneg = 0, neg = 0;
+    wire [63:0] pm = p[63] ? -p : p;
+    wire [33:0] digit_in = {rem, lo[31:30]};
+    wire [33:0] den1 = {2'd0, den};
+    wire [33:0] den2 = {1'b0, den, 1'b0};
+    wire [33:0] den3 = den1 + den2;
     wire [1:0] digit = digit_in >= den3 ? 2'd3 : digit_in >= den2 ? 2'd2 :
-                       digit_in >= den ? 2'd1 : 2'd0;
-    wire [63:0] rem_n = digit_in - (digit == 2'd3 ? den3 :
+                       digit_in >= den1 ? 2'd1 : 2'd0;
+    wire [33:0] rem_n = digit_in - (digit == 2'd3 ? den3 :
                                     digit == 2'd2 ? den2 :
-                                    digit == 2'd1 ? den : 64'd0);
-    wire [63:0] quo_n = quo | ({62'd0, digit} << (2 * step));
+                                    digit == 2'd1 ? den1 : 34'd0);
+    wire [31:0] quo_n = {quo[29:0], digit};
     always @(posedge clk or negedge resetn) begin
         if (!resetn) begin
-            busy <= 0; done <= 0; q <= 0;
+            st <= IDLE; step <= 0; done <= 0; q <= 0;
         end else if (start) begin
-            busy <= 1; done <= 0; step <= 6'd31; quo <= 0; rem <= 0;
-            num <= n[63] ? -n : n;
-            den <= {{32{1'b0}}, d[31] ? -d : d};
-            neg <= n[63] ^ d[31];
-        end else if (busy) begin
-            rem <= rem_n; quo <= quo_n;
-            if (step == 6'd0) begin
-                busy <= 0; done <= 1;
-                q <= neg ? -quo_n : quo_n;
-            end else
-                step <= step - 1'b1;
-        end
+            st <= MUL; step <= 0; done <= 0;
+            den <= d[31] ? -d : d;
+            dneg <= d[31];
+        end else if (done) begin
+            // One clock: a caller that starts the next crossing straight
+            // away must not see this one's done as the next one's.
+            done <= 0;
+        end else case (st)
+            MUL: begin
+                // Fifteen clocks after the load the last digit is in, and
+                // the product holds until the next load.
+                step <= step + 1'b1;
+                if (step == 4'd15) begin
+                    rem <= pm[63:32]; lo <= pm[31:0]; quo <= 0;
+                    neg <= p[63] ^ dneg;
+                    step <= 0;
+                    st <= DIV;
+                end
+            end
+            DIV: begin
+                rem <= rem_n[31:0]; lo <= lo << 2; quo <= quo_n;
+                step <= step + 1'b1;
+                if (step == 4'd15) begin
+                    done <= 1;
+                    q <= neg ? -quo_n : quo_n;
+                    st <= IDLE;
+                end
+            end
+            default: ;
+        endcase
     end
 endmodule

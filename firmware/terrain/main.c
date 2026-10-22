@@ -90,6 +90,7 @@
 #define RASTER_WALK_BLK_D TN_REG(0x18058)
 #define RASTER_WALK_GO TN_REG(0x1805c)
 #define RASTER_WALK_ST TN_REG(0x18060)
+#define RASTER_WALK_N  TN_REG(0x18068)
 #define RASTER_CAM_A   TN_REG(0x1806c)
 #define RASTER_CAM_D   TN_REG(0x18070)
 #ifndef TC_FABRIC_WALK
@@ -336,6 +337,16 @@ static void fabric_land_upload(const struct tc_land *land)
 		;
 }
 
+static void walk_hung(uint32_t walk, const char *at)
+{
+	printf("BAD TINYCREATURE WALK %s WALKS=%u ST=%02x STATUS=%x CELLS=%u "
+	       "TRIS=%u PIXELS=%u STALLS=%u\n", at, (unsigned)walk,
+	       (unsigned)RASTER_WALK_ST, (unsigned)RASTER_STATUS,
+	       (unsigned)RASTER_WALK_N, (unsigned)RASTER_TRIS,
+	       (unsigned)RASTER_PIXELS, (unsigned)RASTER_STALLS);
+	exit(1);
+}
+
 /* One frame's walk in the fabric: the camera file, the camera cell, the grid
  * and the blocks the cull kept, then the start. The unit reports when its
  * assembly has gone idle after the walk, which is when the frame is done. */
@@ -364,11 +375,18 @@ static void fabric_walk(void *ctx, const uint8_t *shown, uint32_t bx,
 	}
 	RASTER_WALK_GO = 3u;
 	/* The walk clears its done bit when it takes the start, so the frame is
-	 * over when that bit is back with the assembly idle. */
+	 * over when that bit is back with the assembly idle. A walk is a few tens
+	 * of milliseconds; one still running after two seconds has hung, and the
+	 * unit's state is reported rather than the board left frozen. */
+	static uint32_t walks;
+	uint64_t t0 = tn_cycles64();
 	while (RASTER_WALK_ST & 0x10u)
-		;
+		if (tn_cycles64() - t0 > 2ull * TN_CORE_HZ)
+			walk_hung(walks, "START");
 	while ((RASTER_WALK_ST & 0x30u) != 0x30u)
-		;
+		if (tn_cycles64() - t0 > 2ull * TN_CORE_HZ)
+			walk_hung(walks, "DONE");
+	walks++;
 }
 #endif
 

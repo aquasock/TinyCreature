@@ -50,8 +50,16 @@ python3 -I "$root/tools/pack_land.py" "$land" "$out/land.hex"
 # The defaults retain the two established views: frame 0 sees the whole
 # island; frame 75 is close in, with triangles cut at the near plane. The
 # overrides let a new primitive be checked at other points around the orbit.
-TC_CELL_TRACE="$out/cells.txt" TC_CELL_TRACE_FRAME=0 \
-    TC_VERTEX_TRACE="$out/verts.txt" TC_VERTEX_TRACE_FRAME=0 \
+# TINYCREATURE_TRACE_FRAME moves the walk's traces, and so the fabric's own
+# walk, off frame 0: frame 75's walk is the one that reaches the near clip.
+trace_frame="${TINYCREATURE_TRACE_FRAME:-0}"
+printf -v trace_dump 'f%04d' "$trace_frame"
+if [[ $trace_frame != "$frame0" && $trace_frame != "$frame1" ]]; then
+    echo "TINYCREATURE_TRACE_FRAME must be frame $frame0 or $frame1" >&2
+    exit 1
+fi
+TC_CELL_TRACE="$out/cells.txt" TC_CELL_TRACE_FRAME="$trace_frame" \
+    TC_VERTEX_TRACE="$out/verts.txt" TC_VERTEX_TRACE_FRAME="$trace_frame" \
     "$out/host/terrain_host" "$land" 600 "$out/f" "$frame0" "$frame1"
 python3 -I "$root/tools/land_walk.py" "$land" "$out/cells.txt"
 # What the fabric's checksum must produce, from the same bytes: the standard
@@ -66,6 +74,11 @@ print("0x%08x 0x%08x %d %d" % (zlib.crc32(a), zlib.crc32(a + b),
 PY
 )
 read -r crc0 crc01 nz0 nz1 <<<"$crcs"
+# The near clip's crossing arithmetic against C's on its own, first.
+iverilog -g2012 -s nearcut_tb -o "$out/nearcut_tb" \
+    "$root/tests/nearcut_tb.sv" "$raster"
+vvp -n "$out/nearcut_tb" | tee "$out/nearcut_tb.log"
+grep -q '^PASS nearcut_tb' "$out/nearcut_tb.log"
 iverilog -g2012 -s raster_tb -o "$out/raster_tb" \
     "$root/tests/raster_tb.sv" "$root/tests/vert_model.sv" "$raster"
 vvp -n "$out/raster_tb" +cmd0="$out/$dump0.cmd" +cmd1="$out/$dump1.cmd" \
@@ -73,6 +86,7 @@ vvp -n "$out/raster_tb" +cmd0="$out/$dump0.cmd" +cmd1="$out/$dump1.cmd" \
     +pal="$out/fpal.hex" +lut="$out/flut.hex" +tiles="$out/ftiles.hex" \
     +nz0="$nz0" +nz1="$nz1" +dump="$out/wrong.txt" \
     +framedump="$out/$dump0.sim.fb" +land="$out/land.hex" \
-    +walk="$out/cells.txt" +vert="$out/verts.txt" \
+    +walk="$out/cells.txt" +vert="$out/verts.txt" +walkdump="$out/walk.fb" \
+    +walkcmd="$out/$trace_dump.cmd" \
     | tee "$out/raster_tb.log"
 grep -q '^PASS raster_tb' "$out/raster_tb.log"
