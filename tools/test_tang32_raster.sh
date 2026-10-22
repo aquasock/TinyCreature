@@ -51,14 +51,17 @@ python3 -I "$root/tools/pack_land.py" "$land" "$out/land.hex"
 # island; frame 75 is close in, with triangles cut at the near plane. The
 # overrides let a new primitive be checked at other points around the orbit.
 # TINYCREATURE_TRACE_FRAME moves the walk's traces, and so the fabric's own
-# walk, off frame 0: frame 75's walk is the one that reaches the near clip.
+# walk, off frame 0 to the other frame drawn.
 trace_frame="${TINYCREATURE_TRACE_FRAME:-0}"
 printf -v trace_dump 'f%04d' "$trace_frame"
 if [[ $trace_frame != "$frame0" && $trace_frame != "$frame1" ]]; then
     echo "TINYCREATURE_TRACE_FRAME must be frame $frame0 or $frame1" >&2
     exit 1
 fi
-TC_CELL_TRACE="$out/cells.txt" TC_CELL_TRACE_FRAME="$trace_frame" \
+# TINYCREATURE_INPUT replays a recorded mouse sequence into the host, so the
+# frames and traces are of a camera the orbit never reaches.
+TC_INPUT="${TINYCREATURE_INPUT:-}" \
+    TC_CELL_TRACE="$out/cells.txt" TC_CELL_TRACE_FRAME="$trace_frame" \
     TC_VERTEX_TRACE="$out/verts.txt" TC_VERTEX_TRACE_FRAME="$trace_frame" \
     "$out/host/terrain_host" "$land" 600 "$out/f" "$frame0" "$frame1"
 python3 -I "$root/tools/land_walk.py" "$land" "$out/cells.txt"

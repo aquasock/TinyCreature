@@ -237,6 +237,10 @@ module raster #(
     // The walker's assembly declares its own triangles: a TRIV word the
     // engine draws exactly as it draws one the program sent.
     wire asm_push;
+    // Every command the queue held has been taken and no slot read is under
+    // way: the feeder's writes into the vertex store bypass the queue, so a
+    // row starts only once the triangles already queued have read theirs.
+    wire slots_read;
     wire [31:0] asm_word;
     reg asm_idle = 0;
     reg [15:0] f_gx = 0, f_gz = 0;
@@ -694,6 +698,12 @@ module raster #(
                FD_PUSH = 10, FD_PUSH2 = 11, FD_CLIP = 12;
     reg [3:0] fst = FD_IDLE;
     reg [2:0] f_flags = 0;
+    // The row of the cell in hand, {front, gz}, and whether one has been
+    // taken this walk. A new row's corners reuse the slots of the rows two
+    // vertex rows back on its front, whose triangles may still be queued.
+    reg [8:0] f_lastrow = 0;
+    reg f_rowv = 0;
+    wire f_newrow = !f_rowv || {wfifo_q[17], wfifo_q[16:9]} != f_lastrow;
     reg [10:0] f_clr = 0;
     reg [15:0] f_stride = 1, f_vbase = 0;
     reg [8:0] f_cx = 0;
@@ -814,6 +824,7 @@ module raster #(
                     if (feed_en || feed_start) begin
                         f_stride <= wcells_x + 16'd1;
                         f_clr <= 0;
+                        f_rowv <= 0;
                         feed_done <= 0;
                         asm_idle <= 0;
                         fst <= FD_CLEAR;
@@ -830,7 +841,9 @@ module raster #(
                 end
                 FD_POP: begin
                     feed_req <= 0; owner_we <= 0;
-                    if (!wempty && wavail) begin
+                    if (!wempty && wavail && (!f_newrow || slots_read)) begin
+                        f_lastrow <= {wfifo_q[17], wfifo_q[16:9]};
+                        f_rowv <= 1;
                         f_cx <= wfifo_q[8:0];
                         f_z <= wfifo_q[16:9];
                         f_front <= wfifo_q[17];
@@ -1518,6 +1531,8 @@ module raster #(
     reg [15:0] hc_du = 0, hc_dv = 0, hc_u0 = 0, hc_v0 = 0, hc_addr = 0;
     reg [7:0] hc_tile = 0;
     assign take = cmd_full && state == S_IDLE;
+    assign slots_read = fifo_empty && !q_valid && got == 0 && !cmd_full &&
+                        state != S_VRD;
     assign busy = !fifo_empty || pop || q_valid || cmd_full || got != 0 ||
                   state != S_IDLE || fstate != F_IDLE || w_fifo || asm_we;
 

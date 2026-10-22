@@ -10,11 +10,15 @@ frames however the link was paced. The board applies a report at the frame
 it names, so nothing depends on when the bytes arrive.
 
     tang_input.py pattern <out> <frames> [step]
+    tang_input.py zoom <out> <frames>
     tang_input.py append <land.tcl> <input.bin> <out>
 
 `pattern` writes a sequence that turns the camera with the middle button,
 slides it with the left one, and rolls the wheel, which is every way the
-camera is moved.
+camera is moved. `zoom` rolls the wheel in one detent a frame and nothing
+else, which brings the eye down to the land: on Land 1 the near plane starts
+cutting the land's triangles at frame 202, and the frames before it draw the
+largest triangles the camera makes, the views the fill falls behind on.
 """
 import struct
 import sys
@@ -43,6 +47,14 @@ def pattern(frames, step):
     return bytes(out)
 
 
+def zoom(frames):
+    """The wheel rolled in a detent a frame, the camera otherwise left alone."""
+    out = bytearray()
+    for frame in range(frames):
+        out += struct.pack(REPORT, frame & 0xFF, (frame >> 8) & 0xFF, 0, 0, 0, 1)
+    return bytes(out)
+
+
 def reports(path):
     with open(path, "rb") as f:
         data = f.read()
@@ -62,6 +74,13 @@ def main(argv):
         with open(argv[2], "wb") as f:
             f.write(data)
         print(f"{argv[2]}: {frames} reports, {len(data)} bytes, step {step}")
+        return 0
+    if what == "zoom" and len(argv) == 4:
+        frames = int(argv[3], 0)
+        data = zoom(frames)
+        with open(argv[2], "wb") as f:
+            f.write(data)
+        print(f"{argv[2]}: {frames} reports, {len(data)} bytes")
         return 0
     if what == "append" and len(argv) == 5:
         with open(argv[2], "rb") as f:

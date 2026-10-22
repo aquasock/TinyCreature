@@ -214,3 +214,35 @@ The worst frame is 31.0 ms against the 33.3 ms two blanks allow, so `TC_BLANKS_P
 - User Test: PASS
 
 ---
+## 8 COMMIT Unreleased 2026-10-21T20:32:57-07:00
+
+#### Coming From:
+
+Unreleased 6d3e54a
+
+#### Purpose:
+
+Fix what the user found flying the Celtic land on the fabric walk, the missing target square and the triangles drawn with wrong corners when the camera is near the land, in a core that passes every build check.
+
+#### Outcome:
+
+The fabric walk's branch of `tc_draw()` returned before the pin, the cursor and the camera readout were drawn, which is why the green target square was missing; `firmware/terrain/terrain.c` now draws them in `draw_overlays()` after either walk, the host's orbit still drawing `TRIS=20445 PIXELS=33115 CRC=5afe81aa`, and the user confirmed the square was back. The scattered wrong triangles were the vertex store: the feeder writes a slot directly while the triangles naming its previous owner can still be queued, where a CPU-driven frame's vertex commands keep their order in the queue, so once the fill fell behind the walk reused slots before queued triangles had read them. `tools/tang_input.py zoom` now writes a wheel roll that brings the eye down to the land, the near plane starting to cut on Land 1 at frame 202, and `TINYCREATURE_INPUT` replays such a sequence through `tools/test_tang32_raster.sh`; on the core as it stood the walk's frames 180 and 199 differed from the host's in 7,661 and 8,467 pixels spread across the screen, with the queue held full for 73,779 and 124,398 clocks. The feeder now waits before taking the first cell of a new row until the queue is empty, the assembler holds nothing and no slot read is under way, so every queued triangle has read its corners before the row's writes begin; the frames then differ only in 982 and 1,763 pixels, all of them the creature sprite and the camera readout that the host draws and the bench's fabric frame does not, while orbit frames 0 and 75 still match apart from the overlay and their walks grew from 2,296,169 and 2,021,441 clocks to 2,307,059 and 2,023,565. The sweep closed seed 3 at 75.67 MHz bus and 90.00 MHz pixel on the measured clock bridges, the first seed to pass every check since the fabric walk went in, with seeds 1, 4, 5, 7 and 8 at 74.84, 71.90, 71.38, 72.72 and 71.48 MHz and seeds 2 and 6 stopped while routing; synthesis is 18,483 `LUT4` and 13,979 `DFFRE`, `ae350_soc.bin` SHA-256 `b59a78eb8fe16a34f3484105e60f6b7f2e1618f293d30a1c0c9c2f2358de29a0` and `ae350_soc.fs` SHA-256 `84f657594d1ad8e0d743fbb58cea230977c04fd3208f9171b1a49d685a679325`. It was loaded over two-wire by `tools/run_tang32_feel.sh` with `FABRIC_WALK=1 HANDOVER=1` and the Celtic land, `build/feel/terrain.elf` SHA-256 `1d64e436e3922b9be09d1af9c78e2c6c6e58e6150cef79a39eafa5254e0a1305`, and the user flew it and reported the random clipping gone. The feel script itself passes neither `FABRIC_WALK` nor the `HANDOVER=1` the Makefile says feel builds use, so both came from the environment. Close to the land the user still sees the ocean through the ground, which is the near plane and the missing guard band, and the fabric walk still draws no creature sprite, because the CPU's walk draws it as it reaches the sprite's cell. `.ai/core.md` was not touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md`, `.ai/core-reference.md` and `.ai/core-syntax.md` are unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The near plane and guard band, where the user sees the ocean through the land at full zoom: the zoom input's frames from 202 on, where the CPU cuts 19 to 74 triangles a frame and finds up to about 300 wholly behind the plane, are the test case, compared in the bench before any change; the leading option is to have the fabric skip the triangles it cannot carry and the CPU draw them through `submit_slow()`, which already clips both exactly, if the fill depth-tests the CPU's flat triangles so their order does not matter, against a guard clip in the fabric. The feel script should pass `FABRIC_WALK` and `HANDOVER=1` itself, the creature sprite needs drawing in fabric-walk frames, and entry 7's open items stand: the feeder's 144 clocks a cell before thirty frames a second, the back-face cull, the 744-pixel shortfall on the orbit, the bench's vvp segfault, the core-reference candidates, the archived entry 51 `BAD TINYCREATURE PIXELS` and the art queue.
+
+#### Files Modified:
+
+- firmware/terrain/terrain.c
+- fpga/raster.sv
+- tools/tang_input.py
+- tools/test_tang32_raster.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

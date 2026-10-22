@@ -2658,6 +2658,49 @@ void tc_vertex_trace_set(void *file, uint32_t frame)
 }
 #endif
 
+/* What lies over the land, drawn after it whichever walk drew it: the pin,
+ * the cursor and the camera readout. */
+static void draw_overlays(void)
+{
+	/* The pin, if this build was given one: one card standing where it was
+	 * asked to stand, on the ground of the cell it names. It is drawn wherever
+	 * the camera is, which is what makes it a thing in the world rather than
+	 * a thing on the screen. */
+	if (TC_PIN_SET) {
+		int32_t wx, wz;
+		pin_world(&wx, &wz);
+		card_at(wx, ground(wx, wz), wz, 0);
+	}
+
+	// The cursor goes last, so that it lies over everything else. Its middle
+	// is the mouse's position, and the sprite it draws is the frame's or the
+	// crosshair's depending on what is held.
+	if (cam_driven) {
+		unsigned which =
+			(cursor_buttons &
+			 (TC_MOUSE_LEFT | TC_MOUSE_MIDDLE | TC_MOUSE_RIGHT))
+				? 1u : 0u;
+		for (uint32_t i = 0; i < cursor_runs_used[which]; i++) {
+			const struct hand_run *run = &cursor_runs[which][i];
+			/* The sprite is drawn on whole framebuffer pixels. The fill keeps
+			 * a pixel whose centre lies on a triangle's edge, and the
+			 * midpoint is a half pixel, so a sprite placed at a whole-pixel
+			 * position has every edge on a centre: one-pixel lines come out
+			 * two pixels wide, and not on the same side twice. Snapping each
+			 * run puts every edge on a boundary, where nothing ties. */
+			int32_t ox = (cursor_x - TC_CURSOR_MID_X + 8) & ~15;
+			int32_t oy = (cursor_y - TC_CURSOR_MID_Y + 8) & ~15;
+			int32_t x0 = ox + run->x * 16;
+			int32_t y0 = oy + run->y * 16;
+			hand_rect(x0, y0, x0 + run->length * 16, y0 + 16,
+				  run->colour);
+		}
+	}
+
+	/* The camera readout goes with it, over everything the frame drew. */
+	draw_readout();
+}
+
 void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 	     struct tc_stats *stats)
 {
@@ -2793,6 +2836,7 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 		}
 		if (timed)
 			out->phase[TC_PHASE_SPRITE] = 0;
+		draw_overlays();
 		return;
 	}
 	int32_t z_lo = 0, z_hi = land->cells_z - 1;
@@ -2846,41 +2890,5 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 		phase_at = t;
 	}
 
-	/* The pin, if this build was given one: one card standing where it was
-	 * asked to stand, on the ground of the cell it names. It is drawn wherever
-	 * the camera is, which is what makes it a thing in the world rather than
-	 * a thing on the screen. */
-	if (TC_PIN_SET) {
-		int32_t wx, wz;
-		pin_world(&wx, &wz);
-		card_at(wx, ground(wx, wz), wz, 0);
-	}
-
-	// The cursor goes last, so that it lies over everything else. Its middle
-	// is the mouse's position, and the sprite it draws is the frame's or the
-	// crosshair's depending on what is held.
-	if (cam_driven) {
-		unsigned which =
-			(cursor_buttons &
-			 (TC_MOUSE_LEFT | TC_MOUSE_MIDDLE | TC_MOUSE_RIGHT))
-				? 1u : 0u;
-		for (uint32_t i = 0; i < cursor_runs_used[which]; i++) {
-			const struct hand_run *run = &cursor_runs[which][i];
-			/* The sprite is drawn on whole framebuffer pixels. The fill keeps
-			 * a pixel whose centre lies on a triangle's edge, and the
-			 * midpoint is a half pixel, so a sprite placed at a whole-pixel
-			 * position has every edge on a centre: one-pixel lines come out
-			 * two pixels wide, and not on the same side twice. Snapping each
-			 * run puts every edge on a boundary, where nothing ties. */
-			int32_t ox = (cursor_x - TC_CURSOR_MID_X + 8) & ~15;
-			int32_t oy = (cursor_y - TC_CURSOR_MID_Y + 8) & ~15;
-			int32_t x0 = ox + run->x * 16;
-			int32_t y0 = oy + run->y * 16;
-			hand_rect(x0, y0, x0 + run->length * 16, y0 + 16,
-				  run->colour);
-		}
-	}
-
-	/* The camera readout goes with it, over everything the frame drew. */
-	draw_readout();
+	draw_overlays();
 }
