@@ -588,6 +588,20 @@ static int32_t height(uint32_t altitude)
 #ifndef TC_PLANTS
 #define TC_PLANTS 0
 #endif
+/* How far away a tree is drawn as one card instead of five, in Q4 world
+ * units; 0 keeps the five-card picture at every distance. The tile it stands
+ * in for itself with is the picture's top middle, stretched over the whole
+ * tree, because a tree more than a few pixels across is worth five commands
+ * and one that is not is not. */
+#ifndef TC_PLANT_LOD
+#define TC_PLANT_LOD 0
+#endif
+/* 1 skips a plant the eye cannot see over the land between them; 0 draws
+ * every plant in a drawn block. */
+#ifndef TC_PLANT_CULL
+#define TC_PLANT_CULL 1
+#endif
+#define TC_PLANT_LOD_TILE (TC_PLANT_TILES + 1)
 #ifndef TC_PLANT_TILES
 #define TC_PLANT_TILES 16
 #endif
@@ -1778,10 +1792,39 @@ static void readout_number(int32_t value, int32_t *x, int32_t y, int32_t w,
 	}
 }
 
+/* The frame rate over the last half second, from the board's own clock: the
+ * rate the display was actually fed at, which is the cadence and the frame's
+ * own cost together. A host build has no counter, so it measures nothing and
+ * draws nothing. */
+static uint32_t fps_value;
+static uint32_t fps_frames;
+static uint64_t fps_at;
+
+static void readout_measure_fps(void)
+{
+	if (out->now == NULL || out->clock_hz == 0)
+		return;
+	uint64_t now = out->now();
+	if (fps_at == 0) {
+		fps_at = now;
+		return;
+	}
+	fps_frames++;
+	uint64_t dt = now - fps_at;
+	if (dt * 2u < (uint64_t)out->clock_hz)
+		return;
+	fps_value = (uint32_t)((uint64_t)fps_frames * out->clock_hz / dt);
+	if (fps_value > 99u)
+		fps_value = 99u;
+	fps_frames = 0;
+	fps_at = now;
+}
+
 static void draw_readout(void)
 {
 	if (!cam_driven)
 		return;
+	readout_measure_fps();
 	int32_t fx, fz, ex, ez, turn;
 	tc_camera(&fx, &fz, &ex, &ez, &turn);
 	const int32_t w = 96, h = 144, t = 32;   // six by nine pixels, two thick
@@ -1796,6 +1839,13 @@ static void draw_readout(void)
 	readout_number(ez, &x, y, w, h, t, TC_CURSOR_HELD);
 	x += 2 * 16;
 	readout_number(turn, &x, y, w, h, t, TC_SEA_COLOUR);
+	/* Frames a second, in the same colour as the bearing and after it. */
+	if (out->clock_hz != 0) {
+		x += 3 * 16;
+		readout_digit(fps_value / 10u, x, y, w, h, t, TC_SEA_COLOUR);
+		x += w + t;
+		readout_digit(fps_value % 10u, x, y, w, h, t, TC_SEA_COLOUR);
+	}
 }
 #else
 static void draw_readout(void)
@@ -2421,6 +2471,7 @@ static void card_at_pose(int32_t wx, int32_t wy, int32_t wz, uint32_t tile,
 			uint32_t t1 = (uint32_t)((uint64_t)(k + 1) * 65536u / cols);
 			int32_t lo = 0x7fffffff, hi = -0x7fffffff;
 			int32_t top = 0x7fffffff, bottom = -0x7fffffff;
+			int32_t qx[4], qy[4], qz[4];
 			for (unsigned e = 0; e < 4; e++) {
 				unsigned ca = ci[e < 2 ? 0 : 2];
 				unsigned cb = ci[e < 2 ? 1 : 3];
@@ -2432,6 +2483,7 @@ static void card_at_pose(int32_t wx, int32_t wy, int32_t wz, uint32_t tile,
 				if (z < NEAR)
 					z = NEAR;
 				project_xy(x, y, z, &sx, &sy);
+				qx[e] = sx; qy[e] = sy; qz[e] = z;
 				lo = sx < lo ? sx : lo;
 				hi = sx > hi ? sx : hi;
 				top = sy < top ? sy : top;
@@ -2483,6 +2535,18 @@ static void card_at_pose(int32_t wx, int32_t wy, int32_t wz, uint32_t tile,
 					      (int32_t)du) >> 4);
 			card.v0 = (uint32_t)(((j0 * 16 + 8 - top) *
 					      (int32_t)card.dv) >> 4);
+			/* The depth plane through this column's corners: 1/z is
+			 * linear across a projected plane, so three of them fix
+			 * it, and the fill steps it as it steps the texel. */
+			int64_t D[3];
+			int32_t Dx[3], Dy[3];
+			for (unsigned n = 0; n < 3; n++) {
+				Dx[n] = qx[n];
+				Dy[n] = qy[n];
+				D[n] = ((int64_t)1 << 30) / qz[n];
+			}
+			tex_plane(Dx, Dy, D, i0, j0, &card.d0, &card.dx,
+				  &card.dy);
 			out->card(out->ctx, &card);
 		}
 	}
@@ -2507,7 +2571,7 @@ static void card_at(int32_t wx, int32_t wy, int32_t wz, uint32_t tile)
  * 23 | 3 | 23 across the top, 17 below the middle, and 1 at the base, all
  * square 32 by 32 tiles, so it is five cards rather than one 96 by 96 card
  * the fabric cannot sample.  Bushes stay single cards whatever their size. */
-static void draw_big_tree(const struct tc_plant *p)
+static int draw_big_tree(const struct tc_plant *p)
 {
 	/* Three villager-height cards each way: the picture's 3 by 3 cells at
 	 * the same card size as a bush, so a tree is exactly three bush heights
@@ -2521,6 +2585,19 @@ static void draw_big_tree(const struct tc_plant *p)
 	int32_t gy = ground(p->x, p->z) - unit / 4;
 	int32_t saved_units = card_units, saved_height = card_height;
 
+#if TC_PLANT_LOD > 0
+	int32_t lx = p->x - cam_x, lz = p->z - cam_z;
+	if ((int64_t)lx * lx + (int64_t)lz * lz >
+	    (int64_t)TC_PLANT_LOD * TC_PLANT_LOD) {
+		card_units = unit * 3;
+		card_height = unit * 3;
+		card_at_yaw(p->x, gy, p->z, TC_PLANT_LOD_TILE, yaw);
+		card_units = saved_units;
+		card_height = saved_height;
+		return 1;
+	}
+#endif
+
 	card_units = unit;
 	card_height = unit;
 	card_at_yaw(p->x, gy, p->z, TC_PLANT_TILES + 3, yaw);
@@ -2530,12 +2607,14 @@ static void draw_big_tree(const struct tc_plant *p)
 			    i ? TC_PLANT_TILES : TC_PLANT_TILES + 1, yaw);
 	card_units = saved_units;
 	card_height = saved_height;
+	return 5;
 }
 
-static void draw_plant_cell(uint32_t gx, uint32_t gz)
+/* The plants whose grid cell this is: the table is sorted by cell, so a
+ * binary search finds the run and the run is all of them. */
+static const struct tc_plant *plant_at(uint32_t gx, uint32_t gz,
+				       unsigned *count)
 {
-	if (out->card == NULL && out->tex == NULL)
-		return;
 	const uint32_t key = (gz << 16) | gx;
 	unsigned lo = 0, hi = TC_PLANT_COUNT;
 	while (lo < hi) {
@@ -2547,26 +2626,56 @@ static void draw_plant_cell(uint32_t gx, uint32_t gz)
 		else
 			hi = mid;
 	}
+	unsigned n = 0;
+	while (lo + n < TC_PLANT_COUNT &&
+	       ((((uint32_t)tc_plants[lo + n].gz << 16) |
+		 tc_plants[lo + n].gx) == key))
+		n++;
+	*count = n;
+	return &tc_plants[lo];
+}
+
+static void draw_plant(const struct tc_plant *p)
+{
+	if (p->units >= TC_PLANT_BIG && p->kind != 13 &&
+	    p->kind != 14 && p->kind != 15) {
+		counts->plant_cards += draw_big_tree(p);
+		return;
+	}
+	counts->plant_cards++;
+	/* A one-tile plant is exactly one villager height, whatever the
+	 * script's scale said; the scale only decides tree or bush. */
+	const int32_t height = TC_PLANT_UNITS;
+	card_units = height;
+	card_height = height;
+	card_at_yaw(p->x, ground(p->x, p->z) - height / 4, p->z,
+		    p->tile % ART_TILES, p->yaw);
+}
+
+/* Emit n plants, leaving the caller's card size as it was: a tree sets its
+ * own for its five cards and puts it back. When emit is given it collects the
+ * cycles the cards themselves cost, which is what separates emission from the
+ * scan that found them. */
+static void draw_plants(const struct tc_plant *ps, unsigned n, uint64_t *emit)
+{
 	int32_t saved_units = card_units, saved_height = card_height;
-	for (; lo < TC_PLANT_COUNT; lo++) {
-		const struct tc_plant *p = &tc_plants[lo];
-		if ((((uint32_t)p->gz << 16) | p->gx) != key)
-			break;
-		if (p->units >= TC_PLANT_BIG && p->kind != 13 &&
-		    p->kind != 14 && p->kind != 15) {
-			draw_big_tree(p);
-			continue;
-		}
-		/* A one-tile plant is exactly one villager height, whatever the
-		 * script's scale said; the scale only decides tree or bush. */
-		const int32_t height = TC_PLANT_UNITS;
-		card_units = height;
-		card_height = height;
-		card_at_yaw(p->x, ground(p->x, p->z) - height / 4, p->z,
-			    p->tile % ART_TILES, p->yaw);
+	for (unsigned k = 0; k < n; k++) {
+		uint64_t e0 = emit != NULL && out->now != NULL ? out->now() : 0;
+		draw_plant(&ps[k]);
+		if (e0 != 0)
+			*emit += out->now() - e0;
 	}
 	card_units = saved_units;
 	card_height = saved_height;
+}
+
+static void draw_plant_cell(uint32_t gx, uint32_t gz)
+{
+	if (out->card == NULL && out->tex == NULL)
+		return;
+	unsigned n;
+	const struct tc_plant *ps = plant_at(gx, gz, &n);
+	draw_plants(ps, n, NULL);
 }
 #endif
 
@@ -2720,6 +2829,84 @@ static void draw_beyond_blocks(int32_t cx, int32_t cz)
 	}
 }
 
+#if TC_PLANTS
+/* A card writes no depth, so a tree behind a hill would paint over it: the
+ * fabric's terrain is all down before the first card. Skip a plant whose
+ * ground the eye cannot see, sampled along the ray from the plant to the
+ * camera; a sample standing above the ray hides it. Eight samples is coarse --
+ * a ridge between two of them still lets a tree through -- and this is the
+ * interim fix until the fill depth-tests a card. */
+#if TC_PLANT_CULL
+static int plant_visible(const struct tc_plant *p)
+{
+	const int32_t px = p->x, pz = p->z;
+	/* The ray goes to the plant's top, because that is the part a ridge has
+	 * to hide: a tree whose canopy clears the hill is still in view. */
+	const int tree = p->units >= TC_PLANT_BIG && p->kind != 13 &&
+			 p->kind != 14 && p->kind != 15;
+	const int32_t py = ground(px, pz) +
+			   (tree ? 3 * TC_PLANT_UNITS : TC_PLANT_UNITS);
+	if (cam_y <= py)
+		return 1;
+	for (int k = 1; k < 8; k++) {
+		int32_t wx = px + ((cam_x - px) * k >> 3);
+		int32_t wz = pz + ((cam_z - pz) * k >> 3);
+		int32_t ry = py + ((cam_y - py) * k >> 3);
+		if (ground(wx, wz) > ry)
+			return 0;
+	}
+	return 1;
+}
+#endif
+
+/* Draw every plant standing in the blocks this frame drew. A CPU walk emits
+ * each cell's plants as it reaches that cell; a fabric walk never runs the
+ * cell loop, so without this pass its frames carry no plants at all. The
+ * blocks are the ones the cull kept and those handed to the CPU, the same set
+ * the CPU walk draws terrain for, and the cards go out after that terrain so
+ * the fill's depth test decides what stands in front of what. */
+static void draw_plant_blocks(void)
+{
+	if (out->card == NULL && out->tex == NULL)
+		return;
+	const int timed = out->now != NULL && out->phase != NULL;
+	uint64_t t0 = timed ? out->now() : 0;
+	uint64_t emit = 0;
+	if (timed) {
+		out->phase[TC_PHASE_PLANT] = 0;
+		out->phase[TC_PHASE_PSCAN] = 0;
+	}
+	/* The table holds the land's plants in cell order, so one pass over it
+	 * visits every plant once, where a pass over the drawn blocks' cells
+	 * searched forty thousand cells to find fourteen hundred plants. A plant
+	 * is drawn when its block is one this frame drew -- the blocks the cull
+	 * kept and those handed to the CPU. */
+	for (unsigned i = 0; i < TC_PLANT_COUNT; i++) {
+		const struct tc_plant *p = &tc_plants[i];
+		uint32_t bx = (uint32_t)p->gx / BLOCK;
+		uint32_t bz = (uint32_t)p->gz / BLOCK;
+		if (bx >= blocks_x || bz >= blocks_z)
+			continue;
+		if (block_shown[bz * blocks_x + bx] == 0)
+			continue;
+		counts->plant_seen++;
+#if TC_PLANT_CULL
+		if (!plant_visible(p)) {
+			counts->plant_culled++;
+			continue;
+		}
+#endif
+		draw_plants(p, 1, timed ? &emit : NULL);
+	}
+	if (timed) {
+		uint64_t total = out->now() - t0;
+		out->phase[TC_PHASE_PLANT] = (uint32_t)emit;
+		out->phase[TC_PHASE_PSCAN] =
+			(uint32_t)(total > emit ? total - emit : 0);
+	}
+}
+#endif
+
 /* What lies over the land, drawn after it whichever walk drew it: the pin,
  * the cursor and the camera readout. */
 static void draw_overlays(void)
@@ -2774,6 +2961,9 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 #endif
 	stats->triangles = 0;
 	stats->cells = 0;
+	stats->plant_seen = 0;
+	stats->plant_culled = 0;
+	stats->plant_cards = 0;
 	generation++;
 #if TC_PHASE_DETAIL
 	out->phase[TC_PHASE_VERTEX] = 0;
@@ -2892,6 +3082,9 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 			  land->cells_x, land->cells_z, cam,
 			  (uint32_t)cx, (uint32_t)cz);
 		draw_beyond_blocks(cx, cz);
+#if TC_PLANTS
+		draw_plant_blocks();
+#endif
 		if (timed) {
 			uint64_t t = out->now();
 			out->phase[TC_PHASE_WALK] = (uint32_t)(t - w0);

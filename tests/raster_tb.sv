@@ -793,9 +793,10 @@ module raster_tb;
                     // opcode -- three corners and nine plane numbers.
                     tris_sent[slot] = tris_sent[slot] + 1; rest = 12;
                 end else if (rest == 0 && w[31:28] == 4'd3) begin
-                    // A card: four words after its opcode. The fabric counts
-                    // it as a fill, not a triangle, so it is skipped here.
-                    rest = 4;
+                    // A card: seven words after its opcode, the last three
+                    // its depth plane. The fabric counts it as a fill, not a
+                    // triangle, so it is skipped here.
+                    rest = 7;
                 end else if (rest == 0 && w[31:28] == 4'd5) begin
                     rest = 2;          // a shaded vertex: its corner and depth
                 end else if (rest == 0 && w[31:28] == 4'd6) begin

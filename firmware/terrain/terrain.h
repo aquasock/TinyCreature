@@ -63,6 +63,12 @@ struct tc_card {
 	uint32_t i0, j0, i1, j1;  /* pixels: [i0, i1) across, [j0, j1) down */
 	uint32_t du, dv;          /* Q8 texels a pixel, across and down */
 	uint32_t u0, v0;          /* Q8 texels the first pixel stands at */
+	/* The depth plane, as a stored triangle carries one: D = (1 << 30) / z
+	 * at the first pixel, and its step a pixel across and a row down. The
+	 * fill tests and writes it, so a card drawn after the ground it stands
+	 * behind is occluded by it, which draw order alone could not do once
+	 * the fabric began drawing the terrain. */
+	int32_t d0, dx, dy;
 };
 
 /* A textured triangle: three Q4 screen corners, one tile of the art, and the
@@ -150,6 +156,10 @@ struct tc_target {
 	void (*walk)(void *ctx, const uint8_t *shown, uint32_t blocks_x,
 		     uint32_t blocks_z, uint32_t cells_x, uint32_t cells_z,
 		     const int32_t cam[7], uint32_t cx, uint32_t cz);
+	/* The clock the counter above counts at, in hertz, which is what turns
+	 * cycles into the seconds a frame rate is stated in. Zero for a target
+	 * with no counter, which is every host build. */
+	uint32_t clock_hz;
 };
 
 /* The shading the fill does. A triangle's three corners carry three palette
@@ -230,6 +240,11 @@ void tc_soft_tri(void *soft, uint32_t a, uint32_t b, uint32_t c, int textured);
 struct tc_stats {
 	uint32_t triangles;
 	uint32_t cells;
+	/* The plant pass: the plants its scan considered and the cards it
+	 * emitted, which is what its cost is read against. */
+	uint32_t plant_seen;
+	uint32_t plant_culled;
+	uint32_t plant_cards;
 };
 
 /* The phases tc_draw records into tc_target.phase when it has a clock. The
@@ -248,6 +263,7 @@ enum {
 	TC_PHASE_SUBMIT,     /* inside submit(), emission included */
 	TC_PHASE_EMIT,       /* inside the fill's own triangle call */
 	TC_PHASE_PLANT,      /* draw_plant_cell, the ready-made plants */
+	TC_PHASE_PSCAN,      /* the fabric walk's plant pass: its cell scan */
 	TC_PHASE_SPRITE,     /* draw_sprite, the tall sprite */
 	TC_PHASE_SAMPLES,
 	TC_PHASE_COUNT

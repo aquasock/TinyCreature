@@ -276,3 +276,39 @@ The user asked for a steady frame rate over a higher one, so `TC_BLANKS_PER_FRAM
 - User Test: PASS
 
 ---
+## 10 COMMIT Unreleased 2026-10-23T02:34:01-07:00
+
+#### Coming From:
+
+Unreleased fad6dec
+
+#### Purpose:
+
+Draw the level script's trees in fabric-walk frames, measure and raise the frame rate, and make the fabric depth-test a card so a tree behind the land is occluded by it instead of painting over it.
+
+#### Outcome:
+
+The fabric walk had taken the plant pass with it: `draw_plant_cell()` was called only from the CPU walk loop, which a fabric frame never runs, so the board drew no trees at all. `draw_plant_blocks()` now draws them from the fabric branch after `draw_beyond_blocks()`, over the blocks the cull kept and those handed to the CPU, and with `PLANTS=1 PLANT_ART=1 TILES=1 PLANT_RANDOM=1 PLANT_SEED=1` and the table from `Scripts/Playgrounds/2- The Celtic God (OB).txt` against `2Celticgodland.lnd` it reports 1,405 plants and 4,619 cards a frame, `TRIS=44663` against entry 9's 36,096, at `PERIOD=65676us`, 15.2 fps. The frame rate then got a permanent readout: `tc_target` gained `clock_hz`, the board passes `TN_CORE_HZ`, and `draw_readout()` measures the rate over the last half second and draws two digits after the bearing. The plant pass itself was mostly the search: 46,412 cells were being binary-searched for 1,235 plants, and iterating the table instead took `PSCAN` from 11,892 us to 443 us and the frame to `PERIOD=54298us`, 18.4 fps, with the cards unchanged. Level of detail came next: `TC_PLANT_LOD` (9,600 Q4, 600 world units) draws a tree past that distance as one card instead of five, which cut `PCARDS` from 4,619 to 1,417 and the frame to `PERIOD=50008us`, 20 fps on the three-blank cadence floor with `MAX=44108us`; the user flew it, called the frame rate much better and reported the trees visible through the landscape. That is the card's missing depth: `fpga/raster.sv` tested nothing for `TRI`, `TEX` or `CARD`, and the CPU walk had hidden it by drawing each tree between terrain cells. A horizon cull, `plant_visible()` sampling the land along the ray from each plant's top to the camera, removed 110 of 1,235 plants at a cost of about a millisecond and the user flew it and accepted the result, but the mechanism does not belong there. `CARD` is now eight words with a depth plane -- D at the first pixel and its steps across and down, each 32 bits -- and the fill compares and writes it exactly as a stored triangle does, with the depth buffer read following `card_addr`; the firmware works the plane out per column through `tex_plane()` and sends it whole. `tests/card_tb.sv` checks six cases on written-pixel counts and passes, and a copy with the comparison forced true fails five of the six, so the bench is live; `tests/raster_tb.sv` counts the card's seven following words. The land regression still matches the model -- `nearcut_tb` passes, 21,223 cells and 84,892 slots over them agree, and the land store reads back -- but its frame CRC checks are lost to the pre-existing `vvp` segfault in the bench's own read-back, so no frame was compared this cycle. Synthesis is 18,492 `LUT4` and 11,271 `ALU`, nine LUTs over entry 9 for the comparator and the 32-bit stepping, and the eight-seed sweep was stopped at the user's direction while all eight were still routing: no seed wrote a timing report, nothing was placed and routed, nothing was deployed, and the core on the card and in `build/tang32/ae350_soc.bin` is still `b59a78eb` from entry 8. Three times during the cycle another agent's `tangload` of a `ddrdll` core reprogrammed the FPGA under the running program and blacked the screen; each time the board was rebooted, and none of it came from this project's tooling. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md`, `.ai/core-reference.md` and `.ai/core-syntax.md` are unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+Run `tools/build_tang32.sh` again and let the eight seeds finish: the card fill has not been placed and routed, so its timing, its clean seed and the board's picture are all unknown, and the change is not proven until a clean seed is deployed and flown. Once it is on the board the horizon cull in `plant_visible()` should come back out, since a depth-tested card needs no guess, and the fabric's own near clip, 837 `LUT4` and unused since entry 9, is still a candidate for removal. The `vvp` segfault in the raster bench's buffer read-back blocks the frame comparison and should be fixed before the next change that touches the fill. Beyond that the LOD distance wants tuning against the picture, the feeder's cost and the back-face cull remain the route to thirty frames a second, and the archived entry 51 `BAD TINYCREATURE PIXELS` and the art queue stay open.
+
+#### Files Modified:
+
+- firmware/terrain/Makefile
+- firmware/terrain/main.c
+- firmware/terrain/terrain.c
+- firmware/terrain/terrain.h
+- fpga/raster.sv
+- tests/card_tb.sv
+- tests/raster_tb.sv
+- tools/run_tang32_feel.sh
+
+#### Status:
+
+- Build: FAIL
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---

@@ -43,19 +43,24 @@
 //   TRI   4 words: 1 << 28 | c2 << 16 | c1 << 8 | c0, then y << 16 | x for
 //         each corner, as 16-bit two's-complement Q4 screen coordinates.
 //         c0, c1 and c2 are the corners' palette entries, one byte each.
-//   CARD  5 words: 3 << 28 | tile << 16, then i0 | j0 << 16, then
-//         i1 | j1 << 16, then du | dv << 16, then u0 | v0 << 16: an
-//         axis-aligned rectangle of pixels, [i0, i1) across and [j0, j1)
-//         down, filled with one 32 by 32 tile of the art, whose texel is
+//   CARD  8 words: 3 << 28 | tile << 16, then i0 | j0 << 16, then
+//         i1 | j1 << 16, then du | dv << 16, then u0 | v0 << 16, then the
+//         depth plane: its value at the first pixel, then its step a pixel
+//         across, then its step a row down, each a 32-bit signed D as a
+//         stored triangle's. The rectangle [i0, i1) across and [j0, j1)
+//         down is filled with one 32 by 32 tile of the art, whose texel is
 //         taken by accumulating du and dv, in Q8 texels a pixel, from u0 and
-//         v0. The caller works the pixel range, the steps and the starting
-//         accumulators out, because the fabric has no divider; the fill only
-//         adds. A texel is written as the palette entry ART_FIRST plus its
-//         own index, so the art's entries are written rather than searched
-//         for and the shading table is not consulted at all -- which is why
-//         art cannot take colour off the land the way a shaded triangle's
-//         nearest-entry search can. A card is two clocks a pixel: the store
-//         is asked at one address and its byte is written the next.
+//         v0, and it is tested against the depth buffer as a stored triangle
+//         is, so a card drawn after the ground it stands behind is occluded
+//         by it. The caller works the pixel range, the steps and the
+//         starting accumulators out, because the fabric has no divider; the
+//         fill only adds. A texel is written as the palette entry ART_FIRST
+//         plus its own index, so the art's entries are written rather than
+//         searched for and the shading table is not consulted at all --
+//         which is why art cannot take colour off the land the way a shaded
+//         triangle's nearest-entry search can. A card is three clocks a
+//         pixel: the store and the depth buffer are asked at one address,
+//         their bytes are ready the next, and the third writes them.
 //   TEX   13 words: 4 << 28 | tile << 16, the three corners as a TRI's, then
 //         the value at the first pixel of the clamped bounding box and the
 //         step a pixel across and a row down of three planes: the tile's u,
@@ -84,8 +89,9 @@
 // value a pixel: a covered pixel is written, with its depth, only when its D
 // >> 6, held to 18 bits, is no less than the buffer's, so the nearer wins and
 // a tie goes to the later triangle. ROWS writes depth 0 as it fills, which
-// clears the buffer each frame; TRI, TEX and CARD test nothing and write no
-// depth, and neither does a transparent texel.
+// clears the buffer each frame; TRI and TEX test nothing and write no depth,
+// a CARD tests and writes it exactly as a stored triangle does, and a
+// transparent texel does neither whatever drew it.
 // A triangle fills pixel (i, j) when, at its centre (16i + 8, 16j + 8), all
 // three edge functions F = (by - ay)(px - ax) - (bx - ax)(py - ay) over its
 // edges a to b are >= 0; pixels outside the screen are never visited. The
@@ -151,7 +157,7 @@ module raster #(
     function automatic [3:0] op_len(input [3:0] op);
         case (op)
             4'd1: op_len = 4'd4;
-            4'd3: op_len = 4'd5;
+            4'd3: op_len = 4'd8;
             4'd4: op_len = 4'd13;
             4'd5: op_len = 4'd3;
             4'd6: op_len = 4'd3;
@@ -616,6 +622,8 @@ module raster #(
                     // half.
                     if (cmd_op == 4'd4 && got > 4'd3) begin
                         cmd_p[got - 4] <= fifo_q;
+                    end else if (cmd_op == 4'd3 && got > 4'd4) begin
+                        cmd_p[got - 5] <= fifo_q;
                     end else begin
                         cmd_x[got - 1] <= fifo_q[15:0];
                         cmd_y[got - 1] <= fifo_q[31:16];
@@ -1525,11 +1533,17 @@ module raster #(
     // assembler has already started gathering the next command's words.
     reg [7:0] card_tile = 0;
     reg [1:0] card_phase = 0;
+    // The card's depth plane, stepped with the pixel: the value at the first
+    // pixel, the row's first value, and the steps across and down. D is the
+    // reciprocal of camera-space depth a stored triangle carries.
+    reg signed [31:0] card_d = 0, card_drow = 0, card_ds = 0, card_dj = 0;
+    wire [17:0] d18_c = depth18(card_d);
     // Setup's copy of a card, which the fill takes at the hand-over.
     reg [8:0] hc_i0 = 0, hc_i1 = 0;
     reg [7:0] hc_j0 = 0, hc_j1 = 0;
     reg [15:0] hc_du = 0, hc_dv = 0, hc_u0 = 0, hc_v0 = 0, hc_addr = 0;
     reg [7:0] hc_tile = 0;
+    reg signed [31:0] hc_d0 = 0, hc_ds = 0, hc_dj = 0;
     assign take = cmd_full && state == S_IDLE;
     assign slots_read = fifo_empty && !q_valid && got == 0 && !cmd_full &&
                         state != S_VRD;
@@ -1877,6 +1891,9 @@ module raster #(
                         hc_u0 <= cmd_x[3];
                         hc_v0 <= cmd_y[3];
                         hc_tile <= cmd_tile;
+                        hc_d0 <= cmd_p[0];
+                        hc_ds <= cmd_p[1];
+                        hc_dj <= cmd_p[2];
                         hc_addr <= {cmd_y[0][7:0], 8'd0} +
                                    {2'd0, cmd_y[0][7:0], 6'd0} +
                                    {7'd0, cmd_x[0][8:0]};
@@ -2217,6 +2234,8 @@ module raster #(
                         card_du <= hc_du; card_dv <= hc_dv;
                         card_u0 <= hc_u0; card_u <= hc_u0; card_v <= hc_v0;
                         card_tile <= hc_tile; card_addr <= hc_addr;
+                        card_d <= hc_d0; card_drow <= hc_d0;
+                        card_ds <= hc_ds; card_dj <= hc_dj;
                         card_phase <= 0;
                         fstate <= F_CARD;
                     end else begin
@@ -2258,21 +2277,30 @@ module raster #(
                 end else if (card_phase == 2'd1) begin
                     card_phase <= 2'd2;
                 end else begin
-                    we <= (tile_q[7:0] != TEX_KEY);
+                    // A cutout texel writes nothing; any other is written
+                    // where it is no further away than the buffer holds, and
+                    // it takes the buffer's value with it.
+                    we <= tile_q[7:0] != TEX_KEY && d18_c >= zq;
+                    zwe <= tile_q[7:0] != TEX_KEY && d18_c >= zq;
                     waddr <= card_addr;
                     wdata <= ART_FIRST_W + tile_q[7:0];
-                    if (tile_q[7:0] != TEX_KEY)
+                    zwaddr <= card_addr;
+                    zwdata <= d18_c;
+                    if (tile_q[7:0] != TEX_KEY && d18_c >= zq)
                         pixels <= pixels + 1'b1;
                     card_phase <= 2'd0;
                     if (card_i + 1'b1 < card_i1) begin
                         card_i <= card_i + 1'b1;
                         card_u <= card_u + card_du;
+                        card_d <= card_d + card_ds;
                         card_addr <= card_addr + 1'b1;
                     end else if (card_j + 1'b1 < card_j1) begin
                         card_i <= card_i0;
                         card_u <= card_u0;
                         card_v <= card_v + card_dv;
                         card_j <= card_j + 1'b1;
+                        card_drow <= card_drow + card_dj;
+                        card_d <= card_drow + card_dj;
                         card_addr <= {card_j + 1'b1, 8'd0} +
                                      {2'd0, card_j + 1'b1, 6'd0} +
                                      {7'd0, card_i0};
@@ -2454,7 +2482,8 @@ module raster #(
     // The depth read is issued a pixel ahead: in phase 0 zq holds this
     // pixel's depth. The hand-over cycle primes it with the first pixel's
     // address, since faddr still holds the previous triangle's last.
-    wire [15:0] zraddr = fill_start && hand_kind == H_TRI ? addr : faddr;
+    wire [15:0] zraddr = fill_start && hand_kind == H_TRI ? addr :
+                         (fstate == F_CARD ? card_addr : faddr);
     always @(posedge clk) begin
         if (zwe) zbuf[zwaddr] <= zwdata;
         zq <= zbuf[zraddr];

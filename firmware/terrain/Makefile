@@ -215,6 +215,8 @@ PLANTS        ?= 0
 PHASE_DETAIL  ?= 0
 PLANT_UNITS   ?= 80
 PLANT_BIG     ?= 120
+PLANT_LOD     ?= 0
+PLANT_CULL    ?= 1
 PLANT_RANDOM  ?= 0
 PLANT_SEED    ?= 0
 PLANT_SCRIPT  ?= ../../build/wineprefix/drive_c/Program Files (x86)/Lionhead Studios Ltd/Black & White/Scripts/Land1.txt
@@ -237,7 +239,8 @@ PLANT_ROTATION_FLAG := $(if $(filter 1,$(PLANT_RANDOM)),--random-rotation,)
 ifeq ($(PLANTS),1)
 PLANT_FLAGS := -I$(BUILD)/plants -DTC_PLANTS_HEADER='"$(notdir $(PLANT_H))"' \
                -DTC_PLANT_TILES=$(PLANT_TILES) -DTC_PLANT_UNITS=$(PLANT_UNITS) \
-               -DTC_PLANT_BIG=$(PLANT_BIG)
+               -DTC_PLANT_BIG=$(PLANT_BIG) -DTC_PLANT_LOD=$(PLANT_LOD) \
+               -DTC_PLANT_CULL=$(PLANT_CULL)
 COMMON_CPPFLAGS += $(PLANT_FLAGS)
 CPPFLAGS += $(PLANT_FLAGS)
 CPPFLAGS += $(if $(filter 1,$(PHASE_DETAIL)),-DTC_PHASE_DETAIL=1)

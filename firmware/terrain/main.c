@@ -421,6 +421,12 @@ static void fabric_card(void *ctx, const struct tc_card *c)
 	RASTER_FIFO = c->j1 << 16 | c->i1;
 	RASTER_FIFO = c->dv << 16 | c->du;
 	RASTER_FIFO = c->v0 << 16 | c->u0;
+	/* The depth plane whole: D at the first pixel and its two steps, each
+	 * 32 bits, because a near card's D is near 2^23 and a step between
+	 * adjacent pixels of it does not fit in sixteen. */
+	RASTER_FIFO = (uint32_t)c->d0;
+	RASTER_FIFO = (uint32_t)c->dx;
+	RASTER_FIFO = (uint32_t)c->dy;
 }
 
 // A textured triangle's thirteen words, which fpga/raster.sv reads as TEX: the
@@ -570,6 +576,7 @@ int main(void)
 	uint64_t phase[TC_PHASE_COUNT] = {0};
 	uint64_t phase_sum[TC_PHASE_COUNT] = {0};
 	uint64_t cells = 0;
+	uint64_t plant_seen = 0, plant_culled = 0, plant_cards = 0;
 	const struct tc_target target = FABRIC ?
 		(struct tc_target){fabric_rows, fabric_triangle, fabric_card,
 				   fabric_tex, 0, phase_now, phase,
@@ -579,10 +586,10 @@ int main(void)
 #else
 				   0
 #endif
-				   } :
+				   , TN_CORE_HZ} :
 		(struct tc_target){tc_soft_rows, tc_soft_triangle, tc_soft_card,
 				   tc_soft_tex, &soft, phase_now, phase,
-				   tc_soft_vertex, tc_soft_tri, 0};
+				   tc_soft_vertex, tc_soft_tri, 0, TN_CORE_HZ};
 #if TC_FABRIC_WALK
 	if (FABRIC)
 		fabric_land_upload(&land);
@@ -634,6 +641,9 @@ int main(void)
 		for (unsigned p = 0; p < TC_PHASE_COUNT; p++)
 			phase_sum[p] += phase[p];
 		cells += stats.cells;
+		plant_seen += stats.plant_seen;
+		plant_culled += stats.plant_culled;
+		plant_cards += stats.plant_cards;
 		if (FABRIC)
 			while (RASTER_STATUS & RASTER_BUSY)
 				if (tn_cycles64() - t1 > TN_CORE_HZ / 10u)
@@ -722,7 +732,8 @@ int main(void)
 	       "PIXELS=%lu DRAW=%luus MAX=%luus FINISH=%luus STALLS=%lu "
 	       "VBL=%lu VBLMIN=%lu VBLMAX=%lu PERIOD=%luus INPUT=%lu LATE=%lu "
 	       "CRC=%08lx CELLS=%lu PHROWS=%luus PHCULL=%luus PHWALK=%luus "
-	       "FABRIC=%luus CAMFOCUS=%ld,%ld CAMEYE=%ld,%ld CAMTURN=%ld",
+	       "FABRIC=%luus CAMFOCUS=%ld,%ld CAMEYE=%ld,%ld CAMTURN=%ld "
+	       "PLANT=%luus PSCAN=%luus PCARDS=%lu PSEEN=%lu PCULL=%lu",
 	       FABRIC ? "FABRIC" : "SOFT", (unsigned long)land_crc, (unsigned)FRAMES,
 	       (unsigned long)(tris / FRAMES), (unsigned long)(pixels / FRAMES),
 	       (unsigned long)(draw / FRAMES / us), (unsigned long)(longest / us),
@@ -736,7 +747,12 @@ int main(void)
 	       (unsigned long)(phase_sum[TC_PHASE_WALK] / FRAMES / us),
 	       (unsigned long)(fabric / FRAMES / RASTER_BUS_MHZ),
 	       (long)cam_focus_x, (long)cam_focus_z, (long)cam_eye_x,
-	       (long)cam_eye_z, (long)cam_turn);
+	       (long)cam_eye_z, (long)cam_turn,
+	       (unsigned long)(phase_sum[TC_PHASE_PLANT] / FRAMES / us),
+	       (unsigned long)(phase_sum[TC_PHASE_PSCAN] / FRAMES / us),
+	       (unsigned long)(plant_cards / FRAMES),
+	       (unsigned long)(plant_seen / FRAMES),
+	       (unsigned long)(plant_culled / FRAMES));
 	/* The cell this build stands its card on, if it has one: the one thing in the
 	 * world that is not the camera, and what a pinned build is for. */
 	int32_t pin_x, pin_z;
