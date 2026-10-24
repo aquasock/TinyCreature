@@ -312,3 +312,38 @@ Run `tools/build_tang32.sh` again and let the eight seeds finish: the card fill 
 - User Test: NOT RUN
 
 ---
+## 11 COMMIT Unreleased 2026-10-24T10:07:39-07:00
+
+#### Coming From:
+
+Unreleased e47b526
+
+#### Purpose:
+
+Finish entry 10's card-depth cycle by getting a core onto the board that draws the depth-tested cards, then attack the bus timing the design has never met and prove the fabric's near clip was dead code.
+
+#### Outcome:
+
+Entry 10's card-depth core had never been placed, routed, deployed or flown. Twelve seeds were routed against it: seed 1 reached 74.78 MHz on the bus and 84.32 on the pixel clock, seed 8 74.33, seed 10 74.74, seed 9 75.31 but refused for routing the pixel clock through the unmeasured SPINE27 bridge, and the rest between 68.40 and 72.26, so no seed was clean. At the user's direction seed 1 was packed by hand with the project's Apicula fork and the timing check skipped, its card image 5,251,448 bytes at SHA-256 `d787002b9767d946` from the 42,048,325-byte SRAM image at `d2f98b1e4f655e9c`, and deployed over two-wire with the Celtic land, `PLANTS=1 PLANT_ART=1 TILES=1 PLANT_RANDOM=1 PLANT_SEED=1 PLANT_LOD=9600`, reporting `AE350 OK`, `SDRAM OK 32M`, 140,820 bytes loaded at 185.6 KB/s and 162,942 bytes of land; the user flew it, confirmed the fabric now depth-tests a card so a tree behind the land is occluded, and adopted that seed as the one to use going forward. The board's card had meanwhile been rebuilt with its other four applications named `tinynes`, `tinygbc`, `tiny89` and `tinyphosphor`, each an `<app>.bin` that `tangload` reads with its paired `.fs` gzipped beside it as an openFPGALoader companion the board does not read, so TinyCreature was installed the same way as `/root/cores/console138k/tinycreature.bin` with `tinycreature.fs.gz` beside it, and `tools/run_tang32.sh`, `tools/run_tang32_feel.sh` and `tools/tinycreature.tdsh` were renamed off `tinycreature-tang32.bin` and made to write the gzipped `.fs`. Six more seeds and then another six found no clean one, the second batch worse than the first at 64.05 to 73.06, and the critical path of the best seed was then read rather than guessed: 13.377 ns against a 13.333 ns period, 44 picoseconds over, of which 1.080 ns is the AE350's own `EXTS_HADDR4` clock-to-Q and 1.516 ns the first routing hop out to the fabric. The near clip was removed on the strength of entry 9's cull: the `CK_IDLE` to `CK_LAND2` state machine, the `nearcut` divider and `tests/nearcut_tb.sv` with its invocation, the transform's `camx`, `camy` and `camz` outputs, and the clip's request path into the transform's input mux, the assembler's push and the land store's read address, with the feeder now skipping a triangle the store cannot carry. Synthesis fell from 18,492 to 18,155 `LUT4`, 11,271 to 10,607 `ALU` and 14,187 to 13,455 `DFFRE` with the block RAMs unchanged and no multiple-conflicting-driver report; `tests/card_tb.sv` passes its six cases, `tests/raster_tb.sv` compiles, and the walk then proved the removal changed nothing: 21,223 cells match the model, every slot agrees, `walk: 0 triangles skipped as uncarryable`, and the walk cost 2,307,059 clocks, exactly entry 8's figure for the same land. The removal did not recover the timing, the best seed of the clip-free design being 74.76 against 75.00, and seed 9's 75.31 belonged to the design with the clip. The bench's frame read-back still segfaults as entry 10 recorded, and its buffered stdout is lost when it does, which made an earlier run look as though the bench had never started; `vvp` needs more than 300 seconds to reach the crash. The user then reported two open defects on the flying seed, a band of flickering pixels about a third from the bottom of the screen and a grab that stays sticky for about a second before the land moves, and neither had a cause established: the input path was ruled out because a live report names frame `0xffff` and is applied at once rather than parked, and a mid-fill flip was ruled out because the firmware waits on `RASTER_BUSY` before `TN_VIDEO_CTRL` and that term covers the fill's own state including the card path. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md`, `.ai/core-reference.md` and `.ai/core-syntax.md` are unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+The flickering band comes first and needs evidence rather than another sweep: a screenshot, or two a second apart, to say whether it sits at a fixed height, whether it is garbage or a shifted copy, and whether it moves with the camera, with `tools/run_tang32.sh`'s gated run as the stronger test because it reports late SDRAM line fetches and compares the board's frame CRC against the host twin. The sticky grab is separate and needs to be known as constant or only at the start of a grab, which decides between late input and the camera model's pick. The 44-picosecond bus deficit is one logic level on the path that leaves the AE350's `EXTS_HADDR4` and ends at `screen.shown_buf`, a framebuffer bank select that has no business in the write-data path, and the alternative of admitting SPINE27 to the measured bridge set is now backed by three accepted flights, entry 7's 600 frames and two more today. The bench's read-back segfault still blocks every frame comparison and its buffered stdout should be flushed as well. Smaller items stand: the horizon cull in `plant_visible()` once the picture is trusted, `tests/card_tb.sv` wired into `tools/test_tang32_raster.sh` rather than run by hand, and core-reference records for SPINE27, for the card's short-name `.bin` and `.fs.gz` convention and for the bench's buffered stdout. The archived entry 51 `BAD TINYCREATURE PIXELS` and the art queue stay open.
+
+#### Files Modified:
+
+- fpga/raster.sv
+- tests/nearcut_tb.sv
+- tests/raster_tb.sv
+- tools/run_tang32.sh
+- tools/run_tang32_feel.sh
+- tools/test_tang32_raster.sh
+- tools/tinycreature.tdsh
+
+#### Status:
+
+- Build: FAIL
+- Deployment: PASS
+- User Test: PASS
+
+---

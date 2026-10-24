@@ -51,7 +51,6 @@ module raster_tb;
     wire signed [15:0] eng_sx, eng_sy;
     wire [31:0] eng_depth;
     wire [1:0] eng_state;
-    wire signed [31:0] eng_camx, eng_camy, eng_camz;
     transform eng(.clk(clk), .resetn(resetn),
         .cam_x(vm_cam_x), .cam_y(vm_cam_y), .cam_z(vm_cam_z),
         .sin_yaw(vm_sin_yaw), .cos_yaw(vm_cos_yaw),
@@ -60,20 +59,22 @@ module raster_tb;
         .in_gx(eng_gx), .in_gz(eng_gz), .in_alt(eng_alt),
         .out_valid(eng_out_valid), .out_tag(eng_out_tag),
         .out_gx(eng_out_gx), .out_gz(eng_out_gz), .out_alt(eng_out_alt),
-        .sx(eng_sx), .sy(eng_sy), .depth(eng_depth), .state(eng_state),
-        .camx(eng_camx), .camy(eng_camy), .camz(eng_camz));
+        .sx(eng_sx), .sy(eng_sy), .depth(eng_depth), .state(eng_state));
 
     integer errors = 0;
     integer tck = 0;
     always @(posedge clk) tck = tck + 1;
     // Watched inside the unit: the clocks the assembly holds a word for room
-    // in the command queue, and the triangles that reach the near clip's fan.
-    integer asm_holds = 0, clip_cuts = 0;
+    // in the command queue, and the triangles the feeder cannot carry now
+    // that the fabric no longer clips. The cull gives every block whose
+    // corners leave the store to the CPU, so this must stay zero.
+    integer asm_holds = 0, skipped = 0;
     always @(posedge clk) begin
-        if (dut.asm_full && ((dut.fst == dut.FD_PUSH && dut.f_tri_draw) ||
-                              dut.ck == dut.CK_WORD0))
+        if (dut.asm_full && dut.fst == dut.FD_PUSH && dut.f_tri_draw)
             asm_holds = asm_holds + 1;
-        if (dut.ck == dut.CK_FAN) clip_cuts = clip_cuts + 1;
+        if (dut.fst == dut.FD_PUSH && !dut.f_tri_draw &&
+            dut.f_flags[1 + dut.f_tri])
+            skipped = skipped + 1;
     end
 
     // One AHB transfer: the address phase on the edge after hready is
@@ -465,8 +466,8 @@ module raster_tb;
                     // The assembly's words queue for the fill, which is
                     // still drawing them when the walk reports done.
                     idle("the walk's triangles");
-                    $display("walk: %0d triangles at the near clip, %0d clocks held for queue room",
-                             clip_cuts, asm_holds);
+                    $display("walk: %0d triangles skipped as uncarryable, %0d clocks held for queue room",
+                             skipped, asm_holds);
                     // The frame the walk drew, word for word, so two builds
                     // of the unit can be compared on the same walk.
                     if ($value$plusargs("walkdump=%s", dump_name)) begin

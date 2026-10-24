@@ -77,11 +77,6 @@ print("0x%08x 0x%08x %d %d" % (zlib.crc32(a), zlib.crc32(a + b),
 PY
 )
 read -r crc0 crc01 nz0 nz1 <<<"$crcs"
-# The near clip's crossing arithmetic against C's on its own, first.
-iverilog -g2012 -s nearcut_tb -o "$out/nearcut_tb" \
-    "$root/tests/nearcut_tb.sv" "$raster"
-vvp -n "$out/nearcut_tb" | tee "$out/nearcut_tb.log"
-grep -q '^PASS nearcut_tb' "$out/nearcut_tb.log"
 iverilog -g2012 -s raster_tb -o "$out/raster_tb" \
     "$root/tests/raster_tb.sv" "$root/tests/vert_model.sv" "$raster"
 vvp -n "$out/raster_tb" +cmd0="$out/$dump0.cmd" +cmd1="$out/$dump1.cmd" \

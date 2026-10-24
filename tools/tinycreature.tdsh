@@ -43,7 +43,7 @@
 #
 # The two programs it needs on the card, and the core:
 #
-#     the core     /root/cores/console138k/tinycreature-tang32.bin
+#     the core     /root/cores/console138k/tinycreature.bin
 #     the demo     /root/ae350/tinycreature-cards.elf
 #     the land     /root/media/tinycreature/Land1.tcl
 #
@@ -62,7 +62,7 @@
 # screen to.
 
 if "$CORE" == ""
-    CORE=/root/cores/console138k/tinycreature-tang32.bin
+    CORE=/root/cores/console138k/tinycreature.bin
 endif
 if "$PROGRAM" == ""
     PROGRAM=cards

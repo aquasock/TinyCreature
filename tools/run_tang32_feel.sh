@@ -22,7 +22,8 @@ handover="${TINYCREATURE_FEEL_HANDOVER:-20}"
 port="${TINYTANG_PORT:-/dev/ttyACM0}"
 build="$root/build/feel"
 tinytang="${TINYTANG_DIR:-$(dirname "$root")/TinyTang}"
-remote=/root/cores/console138k/tinycreature-tang32.bin
+remote=/root/cores/console138k/tinycreature.bin
+remote_fs=/root/cores/console138k/tinycreature.fs.gz
 
 [[ -f "$lnd" ]] || {
     echo "Land file missing: $lnd (set TINYCREATURE_LND)" >&2
@@ -85,6 +86,11 @@ python3 "$tinytang/tools/tinytang_run.py" --port "$port" --seconds 1 \
     "mkdir -p /root/cores/console138k" >/dev/null
 python3 "$tinytang/tools/tinytang_put.py" --port "$port" \
     "$out/ae350_soc.bin" "$remote" >/dev/null
+# The paired .fs goes beside the .bin gzipped, as every core on the card has
+# it, for openFPGALoader's one-wire path; the board does not read this file.
+gzip -9 -n -c "$out/ae350_soc.fs" >"$out/tinycreature.fs.gz"
+python3 "$tinytang/tools/tinytang_put.py" --port "$port" \
+    "$out/tinycreature.fs.gz" "$remote_fs" >/dev/null
 python3 "$tinytang/tools/tinytang_run.py" --port "$port" --wait 120 --seconds 1 \
     "tangload $remote" "echo core-loaded" >/dev/null
 

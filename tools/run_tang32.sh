@@ -96,7 +96,8 @@ one-wire)
 two-wire)
     tinytang="${TINYTANG_DIR:-$(dirname "$root")/TinyTang}"
     port="${TINYTANG_PORT:-/dev/ttyACM0}"
-    remote=/root/cores/console138k/tinycreature-tang32.bin
+    remote=/root/cores/console138k/tinycreature.bin
+    remote_fs=/root/cores/console138k/tinycreature.fs.gz
     [[ -f "$tinytang/tools/tinytang_put.py" ]] || {
         echo "TinyTang tools missing in $tinytang" >&2
         exit 2
@@ -105,6 +106,13 @@ two-wire)
         "mkdir -p /root/cores/console138k"
     python3 "$tinytang/tools/tinytang_put.py" --port "$port" \
         "$out/ae350_soc.bin" "$remote"
+    # Every core the card carries is installed as a short-named .bin that
+    # tangload reads, with its paired .fs gzipped beside it for openFPGALoader's
+    # one-wire path; the board does not read the .fs.gz (TinyTang README,
+    # /root/cores/console138k).
+    gzip -9 -n -c "$out/ae350_soc.fs" >"$out/tinycreature.fs.gz"
+    python3 "$tinytang/tools/tinytang_put.py" --port "$port" \
+        "$out/tinycreature.fs.gz" "$remote_fs"
     python3 "$tinytang/tools/tinytang_run.py" --port "$port" --wait 120 --seconds 1 \
         "tangload $remote" "echo tinycreature: core-loaded"
     python3 "$source_dir/tools/load_ae350.py" "$elf" "${file_args[@]}" \

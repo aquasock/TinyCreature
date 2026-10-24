@@ -234,12 +234,6 @@ module raster #(
     // carries a tag and each caller takes only its own results. The feeder
     // has the earlier claim on a round.
     reg feed_req = 0, feed_en = 0, feed_done = 0, feed_start = 0;
-    // The near clip re-runs a triangle's corners through the transform while
-    // the feeder waits for it, with a request of its own: one register has
-    // one always block driving it.
-    reg ck_req = 0;
-    reg [15:0] ck_gx = 0, ck_gz = 0;
-    reg [7:0] ck_alt = 0;
     // The walker's assembly declares its own triangles: a TRIV word the
     // engine draws exactly as it draws one the program sent.
     wire asm_push;
@@ -259,26 +253,24 @@ module raster #(
     wire [1:0] xf_state;
     wire xf_done, xf_in_ready;
     wire [15:0] xf_out_gx, xf_out_gz;
-    wire signed [31:0] xf_camx, xf_camy, xf_camz;
     wire [7:0] xf_out_alt;
     // The unit takes a vertex when it says it is ready, so the start write
     // is held until then; the pipeline is four rounds deep and takes one a
     // round, so a start waits at most one round.
-    wire xf_go = xf_start && xf_in_ready && !feed_req && !ck_req;
+    wire xf_go = xf_start && xf_in_ready && !feed_req;
     wire xf_out_tag;
     transform xf(.clk(clk), .resetn(resetn),
         .cam_x(cam_reg[0]), .cam_y(cam_reg[1]), .cam_z(cam_reg[2]),
         .sin_yaw(cam_reg[3]), .cos_yaw(cam_reg[4]),
         .sin_pitch(cam_reg[5]), .cos_pitch(cam_reg[6]),
-        .in_valid(feed_req || ck_req || xf_start), .in_ready(xf_in_ready),
-        .in_tag(feed_req || ck_req),
-        .in_gx(ck_req ? ck_gx : feed_req ? f_gx : xf_gx),
-        .in_gz(ck_req ? ck_gz : feed_req ? f_gz : xf_gz),
-        .in_alt(ck_req ? ck_alt : feed_req ? f_alt : xf_alt),
+        .in_valid(feed_req || xf_start), .in_ready(xf_in_ready),
+        .in_tag(feed_req),
+        .in_gx(feed_req ? f_gx : xf_gx),
+        .in_gz(feed_req ? f_gz : xf_gz),
+        .in_alt(feed_req ? f_alt : xf_alt),
         .out_valid(xf_done), .out_tag(xf_out_tag),
         .out_gx(xf_out_gx), .out_gz(xf_out_gz), .out_alt(xf_out_alt),
-        .sx(xf_sx), .sy(xf_sy), .depth(xf_depth), .state(xf_state),
-        .camx(xf_camx), .camy(xf_camy), .camz(xf_camz));
+        .sx(xf_sx), .sy(xf_sy), .depth(xf_depth), .state(xf_state));
     always @(posedge clk or negedge resetn)
         if (!resetn) begin
             xf_ready <= 0; xf_sx_r <= 0; xf_sy_r <= 0;
@@ -703,7 +695,7 @@ module raster #(
     // the 241 the store is sized at.
     localparam FD_IDLE = 0, FD_CLEAR = 1, FD_POP = 2, FD_NEXT = 3, FD_WAIT = 4,
                FD_WORD = 5, FD_SEND = 6, FD_DONE = 7, FD_TRI = 8, FD_TRI2 = 9,
-               FD_PUSH = 10, FD_PUSH2 = 11, FD_CLIP = 12;
+               FD_PUSH = 10, FD_PUSH2 = 11;
     reg [3:0] fst = FD_IDLE;
     reg [2:0] f_flags = 0;
     // The row of the cell in hand, {front, gz}, and whether one has been
@@ -792,8 +784,8 @@ module raster #(
     // is the slower side whenever its triangles are large, and a word offered
     // to a full queue is lost.
     wire triv_push = fst == FD_PUSH && f_tri_draw && !asm_full;
-    assign asm_push = triv_push || ck_push;
-    assign asm_word = triv_push ? triv_word : fan_word;
+    assign asm_push = triv_push;
+    assign asm_word = triv_word;
     always @(posedge clk) begin
         owner_q <= owner[owner_ra];
         if (owner_we) owner[owner_wa] <= owner_wd;
@@ -806,7 +798,7 @@ module raster #(
             f_stride <= 1; f_cx <= 0; f_z <= 0; f_k <= 0; f_front <= 0;
             f_vi <= 0; f_slot <= 0; f_colour <= 0; f_vbase <= 0; f_id <= 0;
             f_pop <= 0; f_flags <= 0; f_t <= 0; f_ok <= 0; f_tri <= 0;
-            asm_idle <= 0; ck_go <= 0; ck_t <= 0;
+            asm_idle <= 0;
         end else begin
             fw_we <= 0;
             // A result comes back in the order it was sent, so the queue's
@@ -939,19 +931,7 @@ module raster #(
                     if (f_tri_draw) begin
                         if (!asm_full)
                             fst <= FD_PUSH2;
-                    end else if (!f_flags[1 + f_tri])
-                        fst <= FD_PUSH2;
-                    else begin
-                        // The store cannot carry it: cut it at the near plane.
-                        ck_t <= f_tri[1:0];
-                        ck_go <= 1;
-                        fst <= FD_CLIP;
-                    end
-                end
-                FD_CLIP: begin
-                    if (ck_go)
-                        ck_go <= 0;
-                    else if (!ck_busy)
+                    end else
                         fst <= FD_PUSH2;
                 end
                 FD_PUSH2: begin
@@ -971,197 +951,6 @@ module raster #(
                 owner_wa <= q_slot[q_rd];
                 owner_wd <= {f_draw_ok, q_id[q_rd]};
             end
-        end
-    end
-
-    // ---- The near clip: a triangle the store cannot carry ----
-    // terrain.c's submit_slow, for the near plane alone. The store holds
-    // screen corners, so the three corners are re-derived in camera space,
-    // the edges that cross the plane are cut, each cut point is projected at
-    // NEAR -- where the reciprocal is exactly 2^23, so that projection is a
-    // five-bit shift -- and the polygon is drawn as a fan of whole triangles.
-    // A cut corner takes the palette entry of the corner it was cut from; the
-    // CPU shades it from the interpolated weights instead, so that entry is
-    // this path's one difference from the CPU's picture.
-    localparam CK_IDLE = 0, CK_LAND = 1, CK_WORD = 2, CK_ACC = 3, CK_WAIT = 4,
-               CK_EDGE = 5, CK_DIVX = 6, CK_DIVY = 7, CK_FAN = 8,
-               CK_WORD0 = 9, CK_STEP = 10, CK_LAND2 = 11;
-    reg [3:0] ck = CK_IDLE;
-    reg ck_busy = 0, ck_go = 0;
-    reg [7:0] ck_tri_seen = 0;   // diagnostic: clipped triangles, free-running
-    wire ck_push = ck == CK_WORD0 && !asm_full;
-    reg [1:0] ck_t = 0, ck_i = 0, ck_fk = 0;
-    reg [1:0] ck_fw = 0;
-    reg signed [31:0] ck_x0 = 0, ck_y0 = 0;
-    reg signed [31:0] cx3 [0:2], cy3 [0:2], cz3 [0:2];
-    reg signed [15:0] csx [0:2], csy [0:2];
-    reg [1:0] cst [0:2];
-    reg [7:0] ccol [0:2];
-    reg signed [15:0] p_x [0:3], p_y [0:3];
-    reg [7:0] p_c [0:3];
-    reg [2:0] p_n = 0;
-    reg signed [31:0] ck_a = 0, ck_b = 0, ck_den = 0;
-    reg ck_start = 0;
-    wire ck_done;
-    wire signed [31:0] ck_q;
-    nearcut ckd(.clk(clk), .resetn(resetn), .start(ck_start),
-                .a(ck_a), .b(ck_b), .d(ck_den), .q(ck_q), .done(ck_done));
-    // The triangle's corners in the CPU's order, and one of them by index.
-    reg [1:0] k0, k1, k2;
-    always @(*) begin
-        if (f_flags[0]) begin
-            if (ck_t == 2'd0) begin k0 = 2'd2; k1 = 2'd0; k2 = 2'd1; end
-            else begin k0 = 2'd2; k1 = 2'd1; k2 = 2'd3; end
-        end else begin
-            if (ck_t == 2'd0) begin k0 = 2'd0; k1 = 2'd1; k2 = 2'd3; end
-            else begin k0 = 2'd0; k1 = 2'd3; k2 = 2'd2; end
-        end
-    end
-    wire [1:0] ck_k = ck_i == 2'd0 ? k0 : ck_i == 2'd1 ? k1 : k2;
-    wire [1:0] ck_j = ck_i == 2'd2 ? 2'd0 : ck_i + 2'd1;
-    wire ck_front_i = cst[ck_i] != 2'd1;
-    wire ck_front_j = cst[ck_j] != 2'd1;
-    wire signed [31:0] ck_dx = cx3[ck_j] - cx3[ck_i];
-    wire signed [31:0] ck_dy = cy3[ck_j] - cy3[ck_i];
-    wire signed [31:0] ck_near = 32'sd128 - cz3[ck_i];
-    wire signed [31:0] ck_span = cz3[ck_j] - cz3[ck_i];
-    wire [15:0] ck_lx = {7'd0, f_cx} + {15'd0, ck_k[0]};
-    wire [15:0] ck_lz = {8'd0, f_z} + {15'd0, ck_k[1]};
-    wire [15:0] ck_lrow = f_vbase + (ck_k[1] ? f_stride : 16'd0);
-    wire [16:0] ck_li = {1'b0, ck_lrow} + {1'b0, ck_lx};
-    // The fan: triangles (0, k, k + 1) of the polygon, drawn whole.
-    wire [1:0] fk1 = ck_fk;
-    wire [1:0] fk2 = ck_fk + 2'd1;
-    wire [31:0] fan_word =
-        ck_fw == 2'd0 ? {4'd1, 4'd0, p_c[fk2], p_c[fk1], p_c[2'd0]} :
-        ck_fw == 2'd1 ? {p_y[2'd0], p_x[2'd0]} :
-        ck_fw == 2'd2 ? {p_y[fk1], p_x[fk1]} : {p_y[fk2], p_x[fk2]};
-    always @(posedge clk or negedge resetn) begin
-        if (!resetn) begin
-            ck <= CK_IDLE; ck_busy <= 0; ck_start <= 0; p_n <= 0;
-            ck_req <= 0; ck_i <= 0; ck_fk <= 0; ck_fw <= 0;
-            ck_x0 <= 0; ck_y0 <= 0;
-        end else begin
-            ck_start <= 0;
-            case (ck)
-                CK_IDLE: begin
-                    if (ck_go) begin
-                        ck_busy <= 1;
-                        ck_i <= 0;
-                        p_n <= 0;
-                        ck <= CK_LAND;
-                    end
-                end
-                // The store registers the address on one edge and the word
-                // on the next, as the feeder's NEXT and WAIT allow it.
-                CK_LAND: ck <= CK_LAND2;
-                CK_LAND2: ck <= CK_WORD;
-                CK_WORD: begin
-                    ccol[ck_i] <= ck_li[0] ? land_vq[31:24] : land_vq[15:8];
-                    ck_alt <= ck_li[0] ? land_vq[23:16] : land_vq[7:0];
-                    ck_gx <= ck_lx; ck_gz <= ck_lz;
-                    ck_req <= 1;
-                    ck <= CK_ACC;
-                end
-                CK_ACC: begin
-                    if (xf_in_ready) begin
-                        ck_req <= 0;
-                        ck <= CK_WAIT;
-                    end
-                end
-                CK_WAIT: begin
-                    if (xf_done && xf_out_tag) begin
-                        cx3[ck_i] <= xf_camx; cy3[ck_i] <= xf_camy;
-                        cz3[ck_i] <= xf_camz;
-                        csx[ck_i] <= xf_sx; csy[ck_i] <= xf_sy;
-                        cst[ck_i] <= xf_state;
-                        if (ck_i == 2'd2) begin
-                            ck_i <= 0; p_n <= 0;
-                            ck <= CK_EDGE;
-                        end else begin
-                            ck_i <= ck_i + 1'b1;
-                            ck <= CK_LAND;
-                        end
-                    end
-                end
-                CK_EDGE: begin
-                    if (ck_front_i) begin
-                        p_x[p_n[1:0]] <= csx[ck_i];
-                        p_y[p_n[1:0]] <= csy[ck_i];
-                        p_c[p_n[1:0]] <= ccol[ck_i];
-                        p_n <= p_n + 1'b1;
-                    end
-                    if (ck_front_i != ck_front_j) begin
-                        ck_a <= ck_dx; ck_b <= ck_near;
-                        ck_den <= ck_span;
-                        ck_start <= 1;
-                        ck <= CK_DIVX;
-                    end else if (ck_i == 2'd2)
-                        ck <= CK_FAN;
-                    else
-                        ck_i <= ck_i + 1'b1;
-                end
-                CK_DIVX: begin
-                    if (ck_done) begin
-                        ck_x0 <= cx3[ck_i] + ck_q;
-                        ck_a <= ck_dy; ck_b <= ck_near;
-                        ck_den <= ck_span;
-                        ck_start <= 1;
-                        ck <= CK_DIVY;
-                    end
-                end
-                CK_DIVY: begin
-                    if (ck_done) begin
-                        ck_y0 <= cy3[ck_i] + ck_q;
-                        p_x[p_n[1:0]] <= 16'((ck_x0 << 5) + 32'sd2560);
-                        p_y[p_n[1:0]] <= 16'(32'sd1440 - ((cy3[ck_i] + ck_q) << 5));
-                        p_c[p_n[1:0]] <= ccol[ck_i];
-                        p_n <= p_n + 1'b1;
-                        if (ck_i == 2'd2)
-                            ck <= CK_FAN;
-                        else begin
-                            ck_i <= ck_i + 1'b1;
-                            ck <= CK_EDGE;
-                        end
-                    end
-                end
-                CK_FAN: begin
-                    ck_tri_seen <= ck_tri_seen + 1'b1;
-                    // Two fan triangles for a quad, one for a triangle, and
-                    // none when every corner is behind the plane: terrain.c
-                    // returns then, and the fan count below would wrap.
-                    ck_fk <= 2'd1;
-                    ck_fw <= 2'd0;
-                    if (p_n < 3) begin
-                        ck_busy <= 0;
-                        ck <= CK_IDLE;
-                    end else
-                        ck <= CK_WORD0;
-                end
-                CK_WORD0: begin
-                    // A fan word waits, like a triangle, for room in the queue.
-                    if (asm_full)
-                        ;
-                    else if (ck_fw == 2'd3) begin
-                        ck_fw <= 2'd0;
-                        ck <= CK_STEP;
-                    end else
-                        ck_fw <= ck_fw + 1'b1;
-                end
-                CK_STEP: begin
-                    // The fan runs k = 1 to p_n - 2: one triangle for a
-                    // three-corner polygon, two for the four a cut makes.
-                    if (p_n[2:0] - 3'd2 <= ck_fk) begin
-                        ck_busy <= 0;
-                        ck <= CK_IDLE;
-                    end else begin
-                        ck_fk <= ck_fk + 1'b1;
-                        ck_fw <= 2'd0;
-                        ck <= CK_WORD0;
-                    end
-                end
-                default: ck <= CK_IDLE;
-            endcase
         end
     end
 
@@ -1204,8 +993,7 @@ module raster #(
     // address would leave the wrong vertex in the store's output register.
     wire [15:0] land_vra = fst == FD_NEXT ? f_vi_n[15:1]
                         : (fst == FD_WAIT || fst == FD_WORD || fst == FD_SEND)
-                          ? f_vi[15:1]
-                        : fst == FD_CLIP ? ck_li[15:1] : land_raddr[15:1];
+                          ? f_vi[15:1] : land_raddr[15:1];
     reg [15:0] land_ra = 0;
     reg [31:0] land_vq = 0;          // the store's own output register
     always @(posedge clk) begin
@@ -2670,11 +2458,7 @@ module transform(
     output reg out_valid, output reg out_tag,
     output reg [15:0] out_gx, out_gz, output reg [7:0] out_alt,
     output reg signed [15:0] sx, sy,
-    output reg [31:0] depth, output reg [1:0] state,
-    // The camera-space corner the screen values came from. terrain.c's
-    // submit_slow clips in camera space, so a triangle that needs cutting
-    // needs these beside its screen corner.
-    output reg signed [31:0] camx, camy, camz
+    output reg [31:0] depth, output reg [1:0] state
 );
     localparam PH_ACC = 5'd16, PH_END = 5'd17;
     reg [4:0] ph = 0;
@@ -2788,7 +2572,6 @@ module transform(
             c_x <= b_x; c_y <= b_y; c_z <= b_z; c_inv <= dv_inv;
             c_front <= b_front;
             c_gx <= b_gx; c_gz <= b_gz; c_alt <= b_alt; c_v <= b_v;
-            camx <= c_x; camy <= c_y; camz <= c_z;
             if (c_front) begin
                 sx <= sxc; sy <= syc; depth <= c_inv;
                 state <= wide ? 2'd2 : 2'd0;
@@ -2806,76 +2589,5 @@ module transform(
             out_tag <= c_tag;
         end else
             out_valid <= 0;
-    end
-endmodule
-
-// ---- The near clip's crossing: a * b / d, truncating toward zero ----
-// The near clip interpolates a crossing as (x[j] - x[i]) * num / den with a
-// 64-bit product, and C truncates that quotient toward zero, so the product's
-// magnitude is divided by the divisor's and the sign put back afterwards. One
-// multiplier lane makes the product in sixteen clocks, and the divide is
-// radix 4, two quotient bits a clock, sixteen clocks for the 32-bit quotient.
-// A crossing's |num| is at most |den|, so the quotient is no larger than
-// |a|: the product's high word is below the divisor and is the divide's
-// starting remainder, and only the low word's bits are shifted in.
-module nearcut(
-    input wire clk, input wire resetn,
-    input wire start,
-    input wire signed [31:0] a, b, d,
-    output reg signed [31:0] q,
-    output reg done
-);
-    localparam IDLE = 0, MUL = 1, DIV = 2;
-    reg [1:0] st = IDLE;
-    reg [3:0] step = 0;
-    wire signed [63:0] p;
-    mullane m(.clk(clk), .resetn(resetn), .load(start), .a(a), .b(b), .p(p));
-    reg [31:0] den = 0, lo = 0, rem = 0, quo = 0;
-    reg dneg = 0, neg = 0;
-    wire [63:0] pm = p[63] ? -p : p;
-    wire [33:0] digit_in = {rem, lo[31:30]};
-    wire [33:0] den1 = {2'd0, den};
-    wire [33:0] den2 = {1'b0, den, 1'b0};
-    wire [33:0] den3 = den1 + den2;
-    wire [1:0] digit = digit_in >= den3 ? 2'd3 : digit_in >= den2 ? 2'd2 :
-                       digit_in >= den1 ? 2'd1 : 2'd0;
-    wire [33:0] rem_n = digit_in - (digit == 2'd3 ? den3 :
-                                    digit == 2'd2 ? den2 :
-                                    digit == 2'd1 ? den1 : 34'd0);
-    wire [31:0] quo_n = {quo[29:0], digit};
-    always @(posedge clk or negedge resetn) begin
-        if (!resetn) begin
-            st <= IDLE; step <= 0; done <= 0; q <= 0;
-        end else if (start) begin
-            st <= MUL; step <= 0; done <= 0;
-            den <= d[31] ? -d : d;
-            dneg <= d[31];
-        end else if (done) begin
-            // One clock: a caller that starts the next crossing straight
-            // away must not see this one's done as the next one's.
-            done <= 0;
-        end else case (st)
-            MUL: begin
-                // Fifteen clocks after the load the last digit is in, and
-                // the product holds until the next load.
-                step <= step + 1'b1;
-                if (step == 4'd15) begin
-                    rem <= pm[63:32]; lo <= pm[31:0]; quo <= 0;
-                    neg <= p[63] ^ dneg;
-                    step <= 0;
-                    st <= DIV;
-                end
-            end
-            DIV: begin
-                rem <= rem_n[31:0]; lo <= lo << 2; quo <= quo_n;
-                step <= step + 1'b1;
-                if (step == 4'd15) begin
-                    done <= 1;
-                    q <= neg ? -quo_n : quo_n;
-                    st <= IDLE;
-                end
-            end
-            default: ;
-        endcase
     end
 endmodule
