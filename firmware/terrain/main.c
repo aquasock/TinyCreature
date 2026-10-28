@@ -647,6 +647,11 @@ int main(void)
 		}
 		struct tc_stats stats;
 		uint64_t t0 = tn_cycles64();
+#if TC_DIAG
+		/* The video unit's own count of lines it had to show before it had
+		 * fetched them, which a diagnostic build draws on the readout. */
+		tc_diag_late(TN_VIDEO_LATE);
+#endif
 		tc_draw(&target, frame, FRAMES, &stats);
 		uint64_t t1 = tn_cycles64();
 		for (unsigned p = 0; p < TC_PHASE_COUNT; p++)
@@ -803,16 +808,20 @@ int main(void)
 	}
 #endif
 #if TC_LAUNCHER
+	/* The launcher reads this line as a framed text frame, not as raw bytes:
+	 * once the program prints its LINK line, TinyTang stops reading text and
+	 * waits for the core's frames, and desk_link frames the CPU's bytes only
+	 * in link mode. TinyNES and Tiny89 switch CTRL to link mode on that line
+	 * for exactly this reason. This program cannot switch at that point -- it
+	 * reads TinyTang's input frames out of the raw receive buffer, which link
+	 * mode stops filling -- so it switches here, where it has one thing left to
+	 * say and nothing left to hear. The write completes once the bytes before
+	 * it have left the pin, desk_link frames this line as it arrives, and the
+	 * boot ROM's own CTRL = 0 write flushes anything still buffered before the
+	 * reset, so returning straight after it cannot outrun the frame. */
+	TN_UART_CTRL = TN_UART_LINK_MODE;
 	printf("TinyCreature EXIT 0\n");
 	fflush(stdout);
-	/* A newline commits the link's text frame, but the UART becoming empty
-	 * only means the byte reached desk_link: that block still has to frame it
-	 * and send it back to TinyTang. Returning immediately reboots the AE350 and
-	 * can erase the queued EXIT before the launcher sees it. Ten milliseconds
-	 * is several complete 128-byte response frames at the 2 Mbaud link rate. */
-	uint64_t exit_sent = tn_cycles64();
-	while (tn_cycles64() - exit_sent < TN_CORE_HZ / 100u)
-		;
 #endif
 	return 0;
 }

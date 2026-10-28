@@ -382,3 +382,35 @@ Finish the board gate with the rebuilt player: confirm its exit line reaches `ae
 - User Test: NOT RUN
 
 ---
+## 13 COMMIT Unreleased 2026-10-27T22:47:49-07:00
+
+#### Coming From:
+
+Unreleased fcdead7
+
+#### Purpose:
+
+Find why the launcher never sees the player's exit line, fix it, and establish with board evidence which of the renderer paths causes the flickering band the user has flown since entry 11.
+
+#### Outcome:
+
+The exit line never reached the launcher because the player never put the UART into link mode: after `TinyCreature LINK` TinyTang stops reading raw text and waits for the core's `0x20` text frames, and `desk_link` frames the CPU's bytes only while `exts_uart`'s CTRL bit 0 is set, which `firmware/terrain/main.c` printed past and never wrote, while TinyNES's `nes_bench` and Tiny89's `tiemu_smoke` both write it on that same line. Entry 12's ten-millisecond drain could not have helped, because a line written in loader mode never enters the link's buffer for the boot ROM's `CTRL = 0` write to flush; the drain was removed and `TN_UART_CTRL = TN_UART_LINK_MODE` now precedes the EXIT print, placed at the exit rather than at the LINK line because this program reads TinyTang's `0x16` input frames out of the raw receive buffer, which link mode stops filling, and `_exit`'s `tn_wait_tx_idle()` already covers buffered link text before the reboot. The launcher bundle was rebuilt and deployed, its player `tinycreature-play.elf` SHA-256 `e64ff35488060257fed9ee144812809733f486a83b60d03a11c87db6ae9188cd` at 515,800 bytes with the core and scene unchanged at `d787002b9767d946` and `13a8d6408c4a51d5`, and the four installed sizes were read back from the card and matched; the fix is not verified, because the one flight that would have shown the exit arriving lost its console reader when a background job was killed with its parent shell, so no user-test pass is claimed. The band was then attacked with six board experiments, each a player built from the shipped configuration with one knob changed: trees removed cut most of the flicker but left it on the beach, so the cards were not the primary cause; the horizon cull removed (`PLANT_CULL=0`) left it unchanged or slightly worse; the LOD threshold removed (`PLANT_LOD=0`) was indistinguishable from the shipped build; every block handed to the CPU removed (`BEYOND=0`) left it unchanged while the near land visibly clipped away, proving the removal took effect; and a new on-screen diagnostic readout showed late line fetches pinned at zero for whole flights, which cleared scan-out contention, and blocks handed to the CPU rising from zero to two or three exactly as the near sand clipped into view and falling back with it, which cleared the two-renderer handoff and explained why the run that removed it changed nothing. What the readout and a row ruler established is that the band is about ten rows tall centred on row 120 of 180, fixed in screen space however the camera moves, still flickering with the camera stopped and the frame counter climbing, and visible only where geometry is drawn at that position, being absent over open water and present on silhouettes. Rows 115 to 125 are depth-buffer entries 36,800 to 40,000, which at 3.2 rows to a 1024-entry block RAM is roughly block RAMs 36 to 39 of the only buffer with that period, and the core runs 74.78 MHz against a 75 MHz period, so a marginal depth read there remains the leading hypothesis and is not yet established. The two build knobs added for this, `BEYOND` and `DIAG`, are inert by default: the `DIAG=0 BEYOND=1` build's `.text` is byte-identical to the shipped player at `e3916ca0ec0e0430`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md`, `.ai/core-reference.md` and `.ai/core-syntax.md` are unchanged and that no settled entry was rewritten, and validated this entry's six sections, sequential number, prose, Status values and the 100-entry limit.
+
+#### Next Steps:
+
+Verify the exit before anything else: `/root/ae350/tinycreature-diag.elf` is the same launcher player at `FRAMES=30`, so it stops by itself in about two seconds and `ae350run` returning promptly instead of sitting out its 300-second silence timeout proves the link-mode fix without a keyboard, after which the full desktop gate still needs the user. Then settle the band with one cheap build that changes `TC_BLANKS_PER_FRAME`: if the band moves on the ruler it is a collision in time, and if it stays at row 120 it is a fixed address range in the depth buffer. Whichever way that lands, fix the `vvp` segfault in `tests/raster_tb.sv`'s read-back, which has now blocked frame comparison in three consecutive cycles, and draw one frame twice with a fixed camera to learn whether the fill reproduces itself at all; that answer decides between repairing the depth path's timing and repairing its addressing, and a lower-clock core is worth building only if the bench proves the fill deterministic. The diagnostic players on the card and the shipped bundle should be tidied up, the ruler kept or dropped, and the README's claim that F12 or Escape exits cleanly stands unverified until the gate runs.
+
+#### Files Modified:
+
+- firmware/terrain/Makefile
+- firmware/terrain/main.c
+- firmware/terrain/terrain.c
+- firmware/terrain/terrain.h
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

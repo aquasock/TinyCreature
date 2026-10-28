@@ -162,6 +162,20 @@ struct tc_target {
 	uint32_t clock_hz;
 };
 
+/* Whether the on-screen readout carries the diagnostic numbers as well as the
+ * camera and the frame rate. 0 is every shipped build; 1 exists because a run
+ * that never exits cannot report anything as text, and the questions worth
+ * asking about a frame are answered on the glass or not at all. */
+#ifndef TC_DIAG
+#define TC_DIAG 0
+#endif
+
+#if TC_DIAG
+/* A live number for the diagnostic row: the lines the video unit had to show
+ * before it had fetched them, which only the board can count. */
+void tc_diag_late(uint32_t late);
+#endif
+
 /* The shading the fill does. A triangle's three corners carry three palette
  * entries, and each pixel takes the entry nearest the point of that
  * triangle's colour plane whose barycentric weights are the pixel's, those

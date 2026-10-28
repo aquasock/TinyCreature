@@ -1232,6 +1232,17 @@ static int outside(int32_t x, int32_t y, int32_t z)
 	       ((int64_t)y * 128 > z45) << 3 | ((int64_t)y * 128 < -z45) << 4;
 }
 
+/* Whether a block the fabric cannot carry -- one whose bounding box reaches
+ * behind the near plane or past the guard band -- is handed to the CPU, or
+ * left to the fabric's own walk, which skips the triangles it cannot store.
+ * 1 is every shipped build. 0 is a diagnostic: it removes the split between
+ * two renderers so a frame can be drawn by one, at the cost of the near land
+ * the fabric cannot clip. */
+#ifndef TC_BEYOND
+#define TC_BEYOND 1
+#endif
+
+#if TC_BEYOND
 /* A corner the fabric's vertex store could not carry exactly: behind the
  * near plane, or projecting past the guard band, which is where terrain.c's
  * submit() hands a triangle to submit_slow(). The margin covers the
@@ -1247,6 +1258,12 @@ static int beyond_store(int32_t x, int32_t y, int32_t z)
 	       -y12 > (g - TC_HEIGHT * 8) * (int64_t)z ||
 	       y12 > (g + TC_HEIGHT * 8) * (int64_t)z;
 }
+#endif
+
+#if TC_DIAG
+/* Blocks the frame just culled into the CPU's half of the work. */
+static uint32_t split_blocks;
+#endif
 
 /* A block is culled (0) when all its corners are outside one plane of the
  * view, and shown otherwise: 1, or 2 when one of its corners is beyond what
@@ -1256,6 +1273,11 @@ static int beyond_store(int32_t x, int32_t y, int32_t z)
  * submit_slow(). A fabric walk is given the 1s and the program draws the 2s. */
 static void cull_blocks(void)
 {
+#if TC_DIAG
+	/* How many blocks this frame hands to the CPU, which is the one number
+	 * that says whether a build testing that handoff is measuring anything. */
+	split_blocks = 0;
+#endif
 	for (uint32_t bz = 0; bz < blocks_z; bz++)
 		for (uint32_t bx = 0; bx < blocks_x; bx++) {
 			uint32_t b = bz * blocks_x + bx;
@@ -1269,9 +1291,16 @@ static void cull_blocks(void)
 					  (int32_t)(bz + (k >> 2 & 1)) * BLOCK * CELL,
 					  &x, &y, &z);
 				all &= outside(x, y, z);
+#if TC_BEYOND
 				beyond |= beyond_store(x, y, z);
+#else
+				(void)beyond;
+#endif
 			}
 			block_shown[b] = all ? 0 : beyond ? 2 : 1;
+#if TC_DIAG
+			split_blocks += block_shown[b] == 2;
+#endif
 		}
 }
 
@@ -1800,6 +1829,18 @@ static uint32_t fps_value;
 static uint32_t fps_frames;
 static uint64_t fps_at;
 
+#if TC_DIAG
+/* The frame being drawn, and the video unit's late line fetches, for the
+ * diagnostic row. A run that never exits cannot report either as text. */
+static uint32_t diag_frame;
+static uint32_t diag_late;
+
+void tc_diag_late(uint32_t late)
+{
+	diag_late = late;
+}
+#endif
+
 static void readout_measure_fps(void)
 {
 	if (out->now == NULL || out->clock_hz == 0)
@@ -1846,6 +1887,30 @@ static void draw_readout(void)
 		x += w + t;
 		readout_digit(fps_value % 10u, x, y, w, h, t, TC_SEA_COLOUR);
 	}
+#if TC_DIAG
+	/* Along the top edge, where the readout never goes: the frame, the line
+	 * fetches the video took late, and the blocks handed to the CPU this frame.
+	 * A run that never exits cannot say any of this as text, and a still
+	 * picture cannot be told from a stopped one without the frame. */
+	{
+		int32_t dx = 2 * 16, dy = 2 * 16;
+		readout_number((int32_t)diag_frame, &dx, dy, w, h, t,
+			       TC_SEA_COLOUR);
+		dx += 2 * 16;
+		readout_number((int32_t)diag_late, &dx, dy, w, h, t,
+			       TC_CURSOR_HELD);
+		dx += 2 * 16;
+		readout_number((int32_t)split_blocks, &dx, dy, w, h, t,
+			       TC_CURSOR_IDLE);
+	}
+	/* A ruler down the left edge, a tick every ten source rows and a longer one
+	 * every thirty, so a band in the picture can be named by its row instead of
+	 * by eye. The picture is 320 by 180 source pixels; the display scales it. */
+	for (int32_t row = 10; row < TC_HEIGHT; row += 10) {
+		const int32_t len = (row % 30 == 0) ? 8 : 4;
+		hand_rect(0, row * 16, len * 16, row * 16 + 16, TC_CURSOR_HELD);
+	}
+#endif
 }
 #else
 static void draw_readout(void)
@@ -2955,6 +3020,9 @@ void tc_draw(const struct tc_target *target, uint32_t frame, uint32_t frames,
 {
 	out = target;
 	counts = stats;
+#if TC_DIAG
+	diag_frame = frame;
+#endif
 #ifdef TC_TRACE
 	trace_now = trace_file != NULL && frame == trace_frame;
 	vtrace_now = vtrace_file != NULL && frame == vtrace_frame;

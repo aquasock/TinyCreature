@@ -20,6 +20,13 @@
 # none of them.
 
 TINYNES ?= $(abspath ../../build/tang32-src)
+# Whether a block the fabric cannot carry goes to the CPU. 1 is every shipped
+# build; 0 is a diagnostic that leaves the whole island to the fabric (see
+# TC_BEYOND in terrain.c).
+BEYOND   ?= 1
+# Whether the on-screen readout carries the diagnostic numbers (see TC_DIAG in
+# terrain.h). 0 is every shipped build.
+DIAG     ?= 0
 ifeq ($(wildcard $(TINYNES)/firmware/rt/rt.mk),)
 $(error TinyNES runtime not found in $(TINYNES): run tools/fetch_tang32.sh)
 endif
@@ -28,7 +35,8 @@ APP      := terrain
 SOURCES  := main.c terrain.c $(TINYNES)/firmware/boot/load.c
 CPPFLAGS += -I$(TINYNES)/firmware/boot $(if $(FRAMES),-DFRAMES=$(FRAMES)) \
             $(if $(FABRIC),-DFABRIC=$(FABRIC)) \
-            $(if $(FABRIC_WALK),-DTC_FABRIC_WALK=$(FABRIC_WALK))
+            $(if $(FABRIC_WALK),-DTC_FABRIC_WALK=$(FABRIC_WALK)) \
+            -DTC_BEYOND=$(BEYOND) -DTC_DIAG=$(DIAG)
 
 # In place of the runtime's -O2: this renderer is integer and index-heavy, and
 # the board draws measurably faster for it. OPT= on the command line still wins.
