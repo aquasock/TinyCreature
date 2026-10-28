@@ -347,3 +347,38 @@ The flickering band comes first and needs evidence rather than another sweep: a 
 - User Test: PASS
 
 ---
+## 12 COMMIT Unreleased 2026-10-27T18:49:13-07:00
+
+#### Coming From:
+
+Unreleased 254f689
+
+#### Purpose:
+
+Make TinyCreature a first-class TinyDesk-launched application with a reproducible Celtic bundle and a clean return to the desktop.
+
+#### Outcome:
+
+The terrain program gained a launcher build separate from its deterministic gates: `LAUNCHER=1` requires `HANDOVER=1`, names its file request and linked session as `TinyCreature WANT` and `TinyCreature LINK`, decodes TinyTang's seven-byte keyboard frame `0x17`, and finishes after the current complete frame when Escape or F12 is present, reporting the number of frames actually drawn and `TinyCreature EXIT 0`; ordinary builds still say `TinyNES WANT` and `TinyNES LINK`, and a one-frame regular build confirmed those strings remain. `firmware/terrain/launcher.h` holds the two HID usages and its host regression passes five cases, including rejecting a usage in the modifier byte. `tools/build_launcher.sh` is build-only unless `--deploy` is explicit: it converts the user's Tribal Celtic land, compiles the matched 1,405-plant player with the accepted settings, takes the adopted entry 11 card-depth seed from `build/tang32/seed1-hold`, and collects the core, deterministic compressed `.fs`, player and `celtic.tcl` under `build/launcher/card`. The first board run proved that F12 reached the player and rebooted its AE350, but the core reset before the queued `TinyCreature EXIT 0` text frame crossed the link, leaving `ae350run` to its five-minute silence timeout; the launcher now holds link mode for ten milliseconds after flushing that line, enough for several maximum-sized response frames at 2 Mbaud. The rebuilt Celtic player passed at 139,158 bytes of text and SHA-256 `0f592e4118f9ffab78afd3a9b96dd1e826fbe1ececf827c79cd42e62db745928`; `celtic.tcl` remains SHA-256 `13a8d6408c4a51d55906786863397b988367c7457354eae0b5f432fdcc1a113a`, and strings in the player confirm all three TinyCreature protocol lines. TinyTang firmware `dfc7bdc-dirty.c00cc02`, SHA-256 `389b8a149a470d0deb0325239d014f6eb42ca84046e67036355acd75986a2e6f`, was flashed and confirmed by `platform`; the four-file bundle was installed with matching sizes, and the rebuilt player was installed last at 516,264 bytes. At the user's stop, that rebuilt exit-drain fix and the native app had not been run, so no user-test pass is claimed. The core-syntax audit re-read `.ai/core.md` and the byte-identical `.ai/core-syntax.md` used by both repositories, inspected the complete `.ai/` diff, confirmed `.ai/core.md`, `.ai/core-reference.md` and settled entries are unchanged, and validated this entry as number 12 of 100 with exactly six sections, one-sentence Purpose, prose, eligible file paths and allowed Status values.
+
+#### Next Steps:
+
+Finish the board gate with the rebuilt player: confirm its exit line reaches `ae350run`, then test the native app's installed-file report, one launch of the Celtic scene, live mouse control, Escape exit, desktop-core restoration and a second launch; the known flickering band and sticky initial grab remain renderer defects rather than launcher work, and an arbitrary land library stays deferred until plant and scene data travel together instead of being compiled for Celtic.
+
+#### Files Modified:
+
+- README.md
+- firmware/terrain/Makefile
+- firmware/terrain/launcher.h
+- firmware/terrain/main.c
+- tests/launcher_tb.c
+- tools/build_launcher.sh
+- tools/test_launcher.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

@@ -61,6 +61,15 @@ SPRITE_CPPFLAGS := -I$(BUILD)/sprite -DTC_SPRITE_HEADER='"$(notdir $(SPRITE_H))"
 # file's tail and a live mouse must not move the camera under them; the demo
 # and feel builds pass HANDOVER=1.
 HANDOVER    ?= 0
+# The TinyDesk launcher build names its own WANT/LINK/EXIT protocol and accepts
+# Escape or F12 as a clean request to return to the desktop. It requires the
+# handed-over link so TinyTang can deliver the keyboard report.
+LAUNCHER    ?= 0
+ifeq ($(LAUNCHER),1)
+ifneq ($(HANDOVER),1)
+$(error LAUNCHER=1 requires HANDOVER=1)
+endif
+endif
 
 CARDS       ?= 0
 CARDS_N     ?= 64
@@ -122,6 +131,7 @@ COMMON_CPPFLAGS := $(SPRITE_CPPFLAGS) -DTC_CARDS=$(CARDS) \
                    -DTC_CARD_UNITS=$(CARD_UNITS) \
                    -DTC_CARD_COLUMN_PX=$(CARD_COLUMN_PX) -DTC_TEX=$(CARD_TEX) \
                    -DTC_CARD_EDGE=$(CARD_EDGE) -DTC_HANDOVER=$(HANDOVER) \
+                   -DTC_LAUNCHER=$(LAUNCHER) \
                    -DTC_TREE_WHOLE=$(TREE_WHOLE) -DTC_PLANTS=$(PLANTS)
 
 # The art's tiles: a generated header, off by default because the art is

@@ -775,6 +775,45 @@ SHA-256
 `23c0166497ddc081be8b4276b1b42d5c1b5833bef296c29a20f8d4581455309d`, drew the
 plants' sunk bases behind the terrain, and the user passed it.
 
+## TinyDesk launcher
+
+TinyCreature has a first-class TinyDesk app in TinyTang. Version one launches
+the accepted Celtic scene rather than presenting an arbitrary land library:
+the plant table is still compiled from that level's script, so pairing the
+player with another `.tcl` would put its plants on the wrong land. The app
+loads `tinycreature.bin`, runs `tinycreature-play.elf` with `celtic.tcl`, and
+restores `tinytang.bin` after the player exits. F12 or Escape exits cleanly;
+the mouse keeps its terrain controls while the scene runs.
+
+`tools/build_launcher.sh` builds the player and the user-derived scene and
+collects the core, compressed `.fs`, player and scene under
+`build/launcher/card/`. It is build-only by default and does not contact the
+board. The explicit `--deploy` form installs these four paths:
+
+```text
+/root/cores/console138k/tinycreature.bin
+/root/cores/console138k/tinycreature.fs.gz
+/root/ae350/tinycreature-play.elf
+/root/media/tinycreature/celtic.tcl
+```
+
+```sh
+tools/build_launcher.sh             # local bundle only
+tools/build_launcher.sh --deploy    # install it after TinyTang has the app
+```
+
+The source landscape and level script come from the user's patched Black &
+White installation and are not distributed. `TINYCREATURE_GAME` can name a
+different installation root; `TINYCREATURE_LAUNCHER_LAND` and
+`TINYCREATURE_LAUNCHER_SCRIPT` override the two source files directly. The
+launcher deliberately uses the adopted card-depth seed in
+`build/tang32/seed1-hold` unless `TINYCREATURE_LAUNCHER_CORE` names another
+completed core build.
+
+The older `tools/tinycreature.tdsh` remains a diagnostic path. Normal desktop
+launching is in-process and does not allocate a shell worker or script line
+table.
+
 ## openblack on a PC
 
 The landscape playground keeps each original world's dimensions, terrain,

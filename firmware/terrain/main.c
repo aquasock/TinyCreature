@@ -49,6 +49,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "launcher.h"
 #include "load.h"
 #include "terrain.h"
 #include "tinynes.h"
@@ -58,6 +59,9 @@
 #endif
 #ifndef FABRIC
 #define FABRIC 1
+#endif
+#ifndef TC_LAUNCHER
+#define TC_LAUNCHER 0
 #endif
 #define FILE_MAGIC 0x31524e54u /* "TNR1", from load_ae350.py --file */
 #define FILE_MAX   (1u << 20)
@@ -162,6 +166,7 @@ static int32_t live_dx, live_dy, live_wheel;
 static uint8_t live_buttons;
 static uint8_t live_report;              /* the link delivered one */
 static uint32_t in_applied;
+static uint8_t launcher_quit;
 
 /* Where the decoder is: 0 magic, 1 length high, 2 length low, 3 type, 4
  * payload. A length high byte of 8 or more cannot be a frame, and neither
@@ -241,6 +246,9 @@ static void input_byte(uint8_t byte)
 	}
 	if (rx_type == TC_FRAME_INPUT && rx_at == TC_IN_PAYLOAD)
 		input_report(rx_payload);
+	else if (TC_LAUNCHER && rx_type == TC_FRAME_KEYBOARD &&
+		 rx_at == TC_KEYBOARD_PAYLOAD && tc_launcher_quit_report(rx_payload))
+		launcher_quit = 1;
 	rx_state = 0;
 }
 
@@ -290,7 +298,9 @@ static const uint8_t *receive(uint32_t *bytes)
 	uint8_t *buffer = malloc(FILE_MAX + 8);
 	if (!buffer)
 		fail("MEMORY");
-	printf("TinyNES WANT %08lx %08lx\n", (unsigned long)(uintptr_t)buffer,
+	printf(TC_LAUNCHER ? "TinyCreature WANT %08lx %08lx\n" :
+			       "TinyNES WANT %08lx %08lx\n",
+	       (unsigned long)(uintptr_t)buffer,
 	       (unsigned long)(FILE_MAX + 8));
 	fflush(stdout);
 	tn_load_reset();
@@ -617,9 +627,10 @@ int main(void)
 	 * of the land file's tail and must not have a live mouse moving the camera
 	 * under them. */
 #if TC_HANDOVER
-	printf("TinyNES LINK\n");
+	printf(TC_LAUNCHER ? "TinyCreature LINK\n" : "TinyNES LINK\n");
 	fflush(stdout);
 #endif
+	uint32_t frames_drawn = 0;
 	for (uint32_t frame = 0; frame < FRAMES; frame++) {
 		uint32_t blanks = TN_VIDEO_FRAMES;
 		in_applied += input_frame(frame);
@@ -701,6 +712,9 @@ int main(void)
 		uint32_t spent = TN_VIDEO_FRAMES - blanks;
 		vbl_min = spent < vbl_min ? spent : vbl_min;
 		vbl_max = spent > vbl_max ? spent : vbl_max;
+		frames_drawn++;
+		if (TC_LAUNCHER && launcher_quit)
+			break;
 	}
 	uint64_t elapsed = tn_cycles64() - start;
 	if (FABRIC) {
@@ -734,25 +748,28 @@ int main(void)
 	       "CRC=%08lx CELLS=%lu PHROWS=%luus PHCULL=%luus PHWALK=%luus "
 	       "FABRIC=%luus CAMFOCUS=%ld,%ld CAMEYE=%ld,%ld CAMTURN=%ld "
 	       "PLANT=%luus PSCAN=%luus PCARDS=%lu PSEEN=%lu PCULL=%lu",
-	       FABRIC ? "FABRIC" : "SOFT", (unsigned long)land_crc, (unsigned)FRAMES,
-	       (unsigned long)(tris / FRAMES), (unsigned long)(pixels / FRAMES),
-	       (unsigned long)(draw / FRAMES / us), (unsigned long)(longest / us),
-	       (unsigned long)(finish / FRAMES / us), (unsigned long)(stalls / FRAMES),
+	       FABRIC ? "FABRIC" : "SOFT", (unsigned long)land_crc,
+	       (unsigned)frames_drawn,
+	       (unsigned long)(tris / frames_drawn),
+	       (unsigned long)(pixels / frames_drawn),
+	       (unsigned long)(draw / frames_drawn / us), (unsigned long)(longest / us),
+	       (unsigned long)(finish / frames_drawn / us),
+	       (unsigned long)(stalls / frames_drawn),
 	       (unsigned long)vbl, (unsigned long)vbl_min, (unsigned long)vbl_max,
-	       (unsigned long)(elapsed / FRAMES / us), (unsigned long)in_applied,
+	       (unsigned long)(elapsed / frames_drawn / us), (unsigned long)in_applied,
 	       (unsigned long)late, (unsigned long)crc,
-	       (unsigned long)(cells / FRAMES),
-	       (unsigned long)(phase_sum[TC_PHASE_ROWS] / FRAMES / us),
-	       (unsigned long)(phase_sum[TC_PHASE_CULL] / FRAMES / us),
-	       (unsigned long)(phase_sum[TC_PHASE_WALK] / FRAMES / us),
-	       (unsigned long)(fabric / FRAMES / RASTER_BUS_MHZ),
+	       (unsigned long)(cells / frames_drawn),
+	       (unsigned long)(phase_sum[TC_PHASE_ROWS] / frames_drawn / us),
+	       (unsigned long)(phase_sum[TC_PHASE_CULL] / frames_drawn / us),
+	       (unsigned long)(phase_sum[TC_PHASE_WALK] / frames_drawn / us),
+	       (unsigned long)(fabric / frames_drawn / RASTER_BUS_MHZ),
 	       (long)cam_focus_x, (long)cam_focus_z, (long)cam_eye_x,
 	       (long)cam_eye_z, (long)cam_turn,
-	       (unsigned long)(phase_sum[TC_PHASE_PLANT] / FRAMES / us),
-	       (unsigned long)(phase_sum[TC_PHASE_PSCAN] / FRAMES / us),
-	       (unsigned long)(plant_cards / FRAMES),
-	       (unsigned long)(plant_seen / FRAMES),
-	       (unsigned long)(plant_culled / FRAMES));
+	       (unsigned long)(phase_sum[TC_PHASE_PLANT] / frames_drawn / us),
+	       (unsigned long)(phase_sum[TC_PHASE_PSCAN] / frames_drawn / us),
+	       (unsigned long)(plant_cards / frames_drawn),
+	       (unsigned long)(plant_seen / frames_drawn),
+	       (unsigned long)(plant_culled / frames_drawn));
 	/* The cell this build stands its card on, if it has one: the one thing in the
 	 * world that is not the camera, and what a pinned build is for. */
 	int32_t pin_x, pin_z;
@@ -766,24 +783,36 @@ int main(void)
 	 * triangle call, and in the cell's own work, which is the walk less the
 	 * other two.  Zero on a build that did not ask for the detail. */
 	if (phase_sum[TC_PHASE_SAMPLES] != 0) {
-		uint64_t cells_a_frame = cells / FRAMES;
+		uint64_t cells_a_frame = cells / frames_drawn;
 		uint64_t vert = phase_sum[TC_PHASE_VERTEX] /
 				phase_sum[TC_PHASE_SAMPLES] * cells_a_frame / us;
 		uint64_t sub = phase_sum[TC_PHASE_SUBMIT] /
 			       phase_sum[TC_PHASE_SAMPLES] * cells_a_frame / us;
 		uint64_t emit = phase_sum[TC_PHASE_EMIT] /
 				phase_sum[TC_PHASE_SAMPLES] * cells_a_frame / us;
-		uint64_t walk = phase_sum[TC_PHASE_WALK] / FRAMES / us;
-		uint64_t plant = phase_sum[TC_PHASE_PLANT] / FRAMES / us;
-		uint64_t sprite = phase_sum[TC_PHASE_SPRITE] / FRAMES / us;
+		uint64_t walk = phase_sum[TC_PHASE_WALK] / frames_drawn / us;
+		uint64_t plant = phase_sum[TC_PHASE_PLANT] / frames_drawn / us;
+		uint64_t sprite = phase_sum[TC_PHASE_SPRITE] / frames_drawn / us;
 		printf("TinyCreature PHASE CELL=%luus VERT=%luus SUB=%luus "
 		       "EMIT=%luus PLANT=%luus SPRITE=%luus SAMPLES=%lu\n",
 		       (unsigned long)(walk - vert - sub - plant - sprite),
 		       (unsigned long)vert, (unsigned long)sub,
 		       (unsigned long)emit, (unsigned long)plant,
 		       (unsigned long)sprite,
-		       (unsigned long)(phase_sum[TC_PHASE_SAMPLES] / FRAMES));
+		       (unsigned long)(phase_sum[TC_PHASE_SAMPLES] / frames_drawn));
 	}
+#endif
+#if TC_LAUNCHER
+	printf("TinyCreature EXIT 0\n");
+	fflush(stdout);
+	/* A newline commits the link's text frame, but the UART becoming empty
+	 * only means the byte reached desk_link: that block still has to frame it
+	 * and send it back to TinyTang. Returning immediately reboots the AE350 and
+	 * can erase the queued EXIT before the launcher sees it. Ten milliseconds
+	 * is several complete 128-byte response frames at the 2 Mbaud link rate. */
+	uint64_t exit_sent = tn_cycles64();
+	while (tn_cycles64() - exit_sent < TN_CORE_HZ / 100u)
+		;
 #endif
 	return 0;
 }
